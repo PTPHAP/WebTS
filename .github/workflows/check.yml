@@ -1,4 +1,4 @@
-name: Rust checks
+name: Build and checks
 on:
   push:
     branches: [main]
@@ -8,7 +8,7 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -26,3 +26,39 @@ jobs:
         run: cargo test --workspace --locked
       - name: Lint project code
         run: cargo clippy --package web-ts --no-deps --locked -- -D warnings
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.20.0
+      - name: Frontend
+        working-directory: web
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: Linux release package
+        run: |
+          cargo build --release --package web-ts --locked
+          mkdir -p .cache/package/webts-0.1.0-linux-x64/web
+          cp target/release/web-ts .cache/package/webts-0.1.0-linux-x64/
+          cp -r web/dist .cache/package/webts-0.1.0-linux-x64/web/
+          cp -r deploy docs scripts README.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-0.1.0-linux-x64/
+          sh scripts/collect-licenses.sh .cache/package/webts-0.1.0-linux-x64/licenses
+          chmod +x .cache/package/webts-0.1.0-linux-x64/scripts/run.sh
+          tar -czf .cache/webts-0.1.0-linux-x64.tar.gz -C .cache/package webts-0.1.0-linux-x64
+          sha256sum .cache/webts-0.1.0-linux-x64.tar.gz > .cache/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: webts-0.1.0-linux-x64
+          path: |
+            .cache/webts-0.1.0-linux-x64.tar.gz
+            .cache/SHA256SUMS
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate deployment and build container
+        run: |
+          WEBTS_DOMAIN=voice.example.com docker compose config --quiet
+          docker build -t webts:ci .
+          docker run --rm webts:ci init-key /tmp/master.key

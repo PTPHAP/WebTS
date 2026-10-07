@@ -1,0 +1,508 @@
+use crate::{
+    app::{Api, App},
+    media::Media,
+};
+use anyhow::{Context, Result, bail};
+use axum::{
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::HeaderMap,
+    response::Response,
+};
+use futures::{SinkExt, StreamExt};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, atomic::Ordering},
+    time::{Duration, Instant},
+};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tsclientlib::{
+    Connection, DisconnectOptions, OutCommandExt, StreamItem, messages::s2c::InMessage,
+};
+use tsproto_packets::packets::{
+    AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType,
+};
+use tsproto_types::{Codec, CodecEncryptionMode};
+
+struct Entry {
+    owner: i64,
+    session: String,
+    identity: String,
+    uid: String,
+    target: String,
+    page: String,
+    port: u16,
+    cancel: CancellationToken,
+}
+pub struct Connections {
+    max: usize,
+    entries: Mutex<HashMap<String, Entry>>,
+}
+struct Lease {
+    registry: Arc<Connections>,
+    id: String,
+    port: u16,
+    cancel: CancellationToken,
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.registry.entries.lock().unwrap().remove(&self.id);
+    }
+}
+impl Connections {
+    pub fn new(max: usize) -> Self {
+        Self {
+            max,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+    pub fn cancel(&self, owner: i64, session: Option<&str>, identity: Option<&str>) {
+        for e in self.entries.lock().unwrap().values() {
+            if e.owner == owner
+                && session.is_none_or(|s| s == e.session)
+                && identity.is_none_or(|i| i == e.identity)
+            {
+                e.cancel.cancel();
+            }
+        }
+    }
+    fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= self.max {
+            bail!("网关连接已满");
+        }
+        if entries.values().any(|e| {
+            (e.uid == entry.uid && e.target == entry.target)
+                || (e.owner == entry.owner && e.page == entry.page)
+        }) {
+            bail!("该身份已连接此服务器，或当前页面仍有连接");
+        }
+        let port = (min..=max)
+            .find(|p| !entries.values().any(|e| e.port == *p))
+            .context("语音端口已用尽")?;
+        entry.port = port;
+        let cancel = entry.cancel.clone();
+        let id = crate::vault::token()?;
+        entries.insert(id.clone(), entry);
+        Ok(Lease {
+            registry: self.clone(),
+            id,
+            port,
+            cancel,
+        })
+    }
+    pub fn shutdown(&self) {
+        for e in self.entries.lock().unwrap().values() {
+            e.cancel.cancel();
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Connect {
+    server: String,
+    identity: String,
+    page: String,
+    name: String,
+    #[serde(default)]
+    password: String,
+}
+pub async fn upgrade(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Api<Response> {
+    app.session(&headers)?;
+    let permit = app.sockets.clone().try_acquire_owned().map_err(|_| {
+        crate::app::Error(axum::http::StatusCode::TOO_MANY_REQUESTS, "网关连接已满")
+    })?;
+    Ok(ws
+        .max_message_size(256 * 1024)
+        .max_frame_size(256 * 1024)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            run(app, headers, socket).await
+        }))
+}
+fn emit(tx: &mpsc::Sender<Value>, value: Value) -> Result<()> {
+    tx.try_send(value).context("网页接收过慢，连接已停止")
+}
+async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
+    let (mut sink, mut input) = socket.split();
+    let (tx, mut rx) = mpsc::channel::<Value>(64);
+    let done = CancellationToken::new();
+    let writer_done = done.clone();
+    let mut writer = tokio::spawn(async move {
+        while let Some(value) = rx.recv().await {
+            if !matches!(
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    sink.send(Message::Text(value.to_string().into())),
+                )
+                .await,
+                Ok(Ok(()))
+            ) {
+                break;
+            }
+        }
+        writer_done.cancel();
+        let _ = sink.close().await;
+    });
+    let result = bridge(&app, &headers, &mut input, &tx, &done).await;
+    if let Err(error) = result {
+        let _ = emit(&tx, json!({"type":"error","message":error.to_string()}));
+    }
+    let _ = emit(&tx, json!({"type":"disconnected"}));
+    drop(tx);
+    if tokio::time::timeout(Duration::from_secs(3), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
+}
+async fn bridge(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    input: &mut futures::stream::SplitStream<WebSocket>,
+    tx: &mpsc::Sender<Value>,
+    done: &CancellationToken,
+) -> Result<()> {
+    let first = tokio::time::timeout(Duration::from_secs(10), input.next())
+        .await?
+        .context("网页连接已关闭")??;
+    let Message::Text(first) = first else {
+        bail!("连接请求格式无效");
+    };
+    let request: Connect =
+        serde_json::from_str(&first).map_err(|_| anyhow::anyhow!("连接请求格式无效"))?;
+    if request.name.trim().is_empty()
+        || request.name.chars().count() > 80
+        || request.name.chars().any(char::is_control)
+        || request.password.len() > 256
+        || request.page.len() > 64
+        || request.page.is_empty()
+    {
+        bail!("连接参数无效");
+    }
+    let session = app
+        .session(headers)
+        .map_err(|_| anyhow::anyhow!("请重新登录"))?;
+    let server = app
+        .config
+        .servers
+        .iter()
+        .find(|s| s.id == request.server)
+        .cloned()
+        .context("服务器不在站长配置列表中")?;
+    let owner = session.user.id;
+    let id = request.identity.clone();
+    let (identity, uid) = app
+        .work(move |a| {
+            let record =
+                a.db.identity(owner, &id)
+                    .map_err(|_| crate::app::Error::bad("身份不存在"))?;
+            let bytes = a.vault.open(owner, &id, &record.uid, &record.ciphertext)?;
+            let value = crate::identity::parse(
+                std::str::from_utf8(&bytes).map_err(|_| crate::app::Error::bad("身份无效"))?,
+            )?;
+            Ok((value, record.uid))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("身份无法读取"))?;
+    let lease = app.connections.reserve(
+        Entry {
+            owner,
+            session: session.hash,
+            identity: request.identity.clone(),
+            uid,
+            target: server.address.to_ascii_lowercase(),
+            page: request.page,
+            port: 0,
+            cancel: CancellationToken::new(),
+        },
+        app.config.rtc.udp_min,
+        app.config.rtc.udp_max,
+    )?;
+    app.session(headers)
+        .map_err(|_| anyhow::anyhow!("登录已失效"))?;
+    app.db
+        .identity(owner, &request.identity)
+        .map_err(|_| anyhow::anyhow!("身份已删除"))?;
+    emit(tx, json!({"type":"status","message":"正在连接 TeamSpeak…"}))?;
+    let mut conn = Connection::build(server.address)
+        .identity(identity)
+        .name(request.name)
+        .password(request.password)
+        .input_hardware_enabled(true)
+        .output_hardware_enabled(true)
+        .log_commands(false)
+        .log_packets(false)
+        .log_udp_packets(false)
+        .connect()
+        .map_err(|_| anyhow::anyhow!("无法建立TeamSpeak连接"))?;
+    let cancel = lease.cancel.clone();
+    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak拒绝连接，请检查地址、密码和身份安全等级"))?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(_)=>bail!("请先在原生客户端提高身份安全等级后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.context("TeamSpeak握手超时")??;
+    enforce(&conn)?;
+    command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
+    let (audio_tx, mut audio_rx) = mpsc::channel(8);
+    let mut media =
+        Media::new(app, owner, lease.port, tx.clone(), audio_tx, cancel.clone()).await?;
+    let result = connected(
+        app,
+        headers,
+        &mut conn,
+        &mut media,
+        input,
+        tx,
+        &cancel,
+        done,
+        &mut audio_rx,
+    )
+    .await;
+    media.close().await;
+    let _ = conn.disconnect(DisconnectOptions::new());
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while conn.events().next().await.is_some() {}
+    })
+    .await;
+    result
+}
+fn enforce(conn: &Connection) -> Result<()> {
+    let state = conn.get_state()?;
+    if state.server.codec_encryption_mode != CodecEncryptionMode::ForcedOn {
+        bail!("服务器必须将语音加密设置为 Globally on；已停止连接");
+    }
+    if let Some(own) = state.clients.get(&state.own_client)
+        && let Some(channel) = state.channels.get(&own.channel)
+        && !matches!(channel.codec, Codec::OpusVoice | Codec::OpusMusic)
+    {
+        bail!("当前频道需使用Opus编码");
+    }
+    Ok(())
+}
+fn snapshot(conn: &Connection) -> Result<Value> {
+    let state = conn.get_state()?;
+    Ok(
+        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
+    )
+}
+// These borrows belong to a single connection actor; keeping ownership together
+// avoids independent tasks that can outlive revocation.
+#[allow(clippy::too_many_arguments)]
+async fn connected(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    conn: &mut Connection,
+    media: &mut Media,
+    input: &mut futures::stream::SplitStream<WebSocket>,
+    tx: &mpsc::Sender<Value>,
+    cancel: &CancellationToken,
+    done: &CancellationToken,
+    audio: &mut mpsc::Receiver<rtc::rtp::Packet>,
+) -> Result<()> {
+    let mut timer = tokio::time::interval(Duration::from_millis(100));
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut changed = true;
+    let mut transmit = false;
+    let mut muted = false;
+    let mut deafened = false;
+    let mut whisper_clients = Vec::<u16>::new();
+    let mut whisper_channels = Vec::<u64>::new();
+    let mut sequence = 0u16;
+    let mut pending = HashMap::<u16, (String, Instant)>::new();
+    let mut rate = (Instant::now(), 0u32);
+    let mut check = Instant::now() - Duration::from_secs(2);
+    let mut cipher = None;
+    let mut speaking = HashMap::<u16, Instant>::new();
+    let mut negotiated = Instant::now();
+    loop {
+        tokio::select! {
+            _=cancel.cancelled()=>break,
+            _=done.cancelled()=>break,
+            _=timer.tick()=>{
+                enforce(conn)?;
+                if changed{let s=conn.get_state()?;let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
+                if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
+                if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){bail!("浏览器语音协商超时");}
+                if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();pending.retain(|_,(id,start)|{if start.elapsed()>Duration::from_secs(15){let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});}
+            },
+            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){enforce(conn)?;let codec=if conn.get_state()?.clients.get(&conn.get_state()?.own_client).and_then(|c|conn.get_state().ok()?.channels.get(&c.channel)).is_some_and(|c|c.codec==Codec::OpusMusic){CodecType::OpusMusic}else{CodecType::OpusVoice};let data=if whisper_clients.is_empty()&&whisper_channels.is_empty(){AudioData::C2S{id:sequence,codec,data:&packet.payload}}else{AudioData::C2SWhisper{id:sequence,codec,clients:whisper_clients.clone(),channels:whisper_channels.clone(),data:&packet.payload}};conn.send_audio(OutAudio::new(&data))?;sequence=sequence.wrapping_add(1);}},
+            event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak网络或协议错误"))?;enforce(conn)?;match event{
+                StreamItem::BookEvents(_)|StreamItem::AudioChange(_)=>changed=true,
+                StreamItem::DisconnectedTemporarily(_)=>bail!("TeamSpeak连接中断，请重新连接"),
+                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if speaking.get(from).is_none_or(|t|t.elapsed()>Duration::from_millis(300)){emit(tx,json!({"type":"speaking","client":from}))?;speaking.insert(*from,Instant::now());}},_=>{}}},
+                StreamItem::MessageEvent(InMessage::TextMessage(messages))=>for m in messages.iter(){emit(tx,json!({"type":"chat","scope":format!("{:?}",m.target).to_lowercase(),"from":m.invoker_id.0,"name":m.invoker_name,"text":m.message,"target":m.target_client_id.map(|i|i.0)}))?;},
+                StreamItem::MessageEvent(InMessage::ClientPokeNormal(messages))=>for m in messages.iter(){emit(tx,json!({"type":"poke","from":m.invoker_id.0,"name":m.invoker_name,"text":m.message}))?;},
+                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){emit(tx,json!({"type":"result","id":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string())}))?;},
+                _=>{}
+            }},
+            message=input.next()=>{let Some(message)=message else{break;};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){break;}continue;};
+                if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
+                let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
+                match value["type"].as_str().unwrap_or(""){
+                    "answer"=>media.answer(serde_json::from_value(value["description"].clone())?).await?,
+                    "ice"=>media.peer.add_ice_candidate(serde_json::from_value(value["candidate"].clone())?).await?,
+                    "transmit"=>transmit=value["enabled"].as_bool().unwrap_or(false),
+                    "whisper"=>{let clients=targets(&value["clients"],u16::MAX as u64)?;let channels=targets(&value["channels"],u64::MAX)?;let s=conn.get_state()?;if clients.iter().any(|id|!s.clients.keys().any(|c|u64::from(c.0)==*id))||channels.iter().any(|id|!s.channels.keys().any(|c|c.0==*id)){bail!("耳语目标不存在");}whisper_clients=clients.into_iter().map(|c|c as u16).collect();whisper_channels=channels;emit(tx,json!({"type":"whisper","active":!whisper_clients.is_empty()||!whisper_channels.is_empty()}))?;},
+                    "mute"=>{muted=value["muted"].as_bool().unwrap_or(false);deafened=value["deafened"].as_bool().unwrap_or(false);command("clientupdate",&[("client_input_muted",u8::from(muted).to_string()),("client_output_muted",u8::from(deafened).to_string())]).send_with_result(conn)?;},
+                    "disconnect"=>break,
+                    "command"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();if pending.len()>=32{bail!("待处理操作过多");}match user_command(conn,&value){Ok(cmd)=>{let handle=cmd.send_with_result(conn)?;pending.insert(handle.0,(id,Instant::now()));},Err(error)=>emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?,}},
+                    _=>bail!("不支持的网页请求")
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn targets(value: &Value, max: u64) -> Result<Vec<u64>> {
+    let list = value.as_array().context("耳语目标需为列表")?;
+    if list.len() > 16 {
+        bail!("耳语最多16个目标");
+    }
+    list.iter()
+        .map(|v| {
+            v.as_u64()
+                .filter(|id| *id > 0 && *id <= max)
+                .context("目标ID无效")
+        })
+        .collect()
+}
+fn command(name: &str, args: &[(&str, String)]) -> OutCommand {
+    let mut out = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, name);
+    for (key, value) in args {
+        out.write_arg(key, value);
+    }
+    out
+}
+fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
+    let number = |key: &str, max: u64| -> Result<String> {
+        Ok(value[key]
+            .as_u64()
+            .filter(|n| *n > 0 && *n <= max)
+            .context("目标ID无效")?
+            .to_string())
+    };
+    let text = |key: &str, max: usize| -> Result<String> {
+        let s = value[key].as_str().context("缺少文本参数")?;
+        if s.len() > max || s.contains('\0') {
+            bail!("文本参数过长或无效");
+        }
+        Ok(s.to_owned())
+    };
+    let mut args = Vec::new();
+    let name = match value["action"].as_str().unwrap_or("") {
+        "move" => {
+            args.push((
+                "clid",
+                value["client"]
+                    .as_u64()
+                    .unwrap_or(u64::from(conn.get_state()?.own_client.0))
+                    .to_string(),
+            ));
+            args.push(("cid", number("channel", u64::MAX)?));
+            args.push((
+                "cpw",
+                wire_password(
+                    value["password"]
+                        .as_str()
+                        .filter(|s| s.len() <= 256)
+                        .unwrap_or(""),
+                ),
+            ));
+            "clientmove"
+        }
+        "chat" => {
+            let mode = match value["scope"].as_str() {
+                Some("private") => 1,
+                Some("channel") => 2,
+                Some("server") => 3,
+                _ => bail!("聊天范围无效"),
+            };
+            args.push(("targetmode", mode.to_string()));
+            args.push(("msg", text("text", 1024)?));
+            if mode == 1 {
+                args.push(("target", number("client", u16::MAX as u64)?));
+            }
+            "sendtextmessage"
+        }
+        "poke" => {
+            args.push(("clid", number("client", u16::MAX as u64)?));
+            args.push(("msg", text("text", 512)?));
+            "clientpoke"
+        }
+        "kick" => {
+            args.push(("clid", number("client", u16::MAX as u64)?));
+            let reason = match value["scope"].as_str() {
+                Some("channel") => 4,
+                Some("server") => 5,
+                _ => bail!("踢出范围无效"),
+            };
+            args.push(("reasonid", reason.to_string()));
+            args.push(("reasonmsg", text("text", 512)?));
+            "clientkick"
+        }
+        "channel_create" => {
+            let title = text("name", 160)?;
+            if title.trim().is_empty() {
+                bail!("频道名称不能为空");
+            }
+            args.push(("channel_name", title));
+            args.push(("channel_codec", "4".to_owned()));
+            args.push(("cpid", value["parent"].as_u64().unwrap_or(0).to_string()));
+            args.push(("channel_description", text("description", 4096)?));
+            args.push(("channel_password", wire_password(&text("password", 256)?)));
+            "channelcreate"
+        }
+        "channel_edit" => {
+            args.push(("cid", number("channel", u64::MAX)?));
+            for (key, wire, max) in [
+                ("name", "channel_name", 160),
+                ("description", "channel_description", 4096),
+                ("password", "channel_password", 256),
+            ] {
+                if value.get(key).is_some() {
+                    let value = text(key, max)?;
+                    args.push((
+                        wire,
+                        if key == "password" {
+                            wire_password(&value)
+                        } else {
+                            value
+                        },
+                    ));
+                }
+            }
+            "channeledit"
+        }
+        "channel_delete" => {
+            let channel = value["channel"].as_u64().context("频道ID无效")?;
+            if conn
+                .get_state()?
+                .clients
+                .values()
+                .any(|c| c.channel.0 == channel)
+            {
+                bail!("只允许删除空频道");
+            }
+            args.push(("cid", number("channel", u64::MAX)?));
+            args.push(("force", "0".to_owned()));
+            "channeldelete"
+        }
+        _ => bail!("不支持的操作"),
+    };
+    Ok(command(name, &args))
+}
+fn wire_password(value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        tsproto_types::crypto::encode_password(value.as_bytes())
+    }
+}

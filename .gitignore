@@ -25,5 +25,6 @@ __pycache__/
 *.db-shm
 *.db-wal
 *.log
+web/*.tsbuildinfo
 *.ini
 !.env.example

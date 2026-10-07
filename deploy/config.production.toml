@@ -1,0 +1,28 @@
+bind = "127.0.0.1:8080"
+public_url = "https://voice.example.com"
+database = "data/web-ts.db"
+master_key_file = "secrets/master.key"
+web_dir = "web/dist"
+max_connections = 50
+trusted_proxy = ["127.0.0.1", "::1"]
+allow_insecure_localhost = false
+
+[[servers]]
+id = "community"
+name = "我的 TeamSpeak"
+address = "ts.example.com:9987"
+
+[smtp]
+host = "smtp.example.com"
+port = 465
+username = "mailer@example.com"
+password_file = "secrets/smtp-password"
+from = "WebTS <mailer@example.com>"
+
+[rtc]
+public_ip = "203.0.113.10"
+udp_min = 40000
+udp_max = 40100
+# Optional, authenticated TURN; secret must match Coturn static-auth-secret.
+# turn_url = "turns:turn.example.com:5349?transport=tcp"
+# turn_secret_file = "secrets/turn-secret"

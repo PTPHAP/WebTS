@@ -1,6 +1,9 @@
+pub mod app;
 pub mod config;
 pub mod db;
+pub mod gateway;
 pub mod identity;
+pub mod media;
 pub mod password;
 pub mod probe;
 pub mod vault;

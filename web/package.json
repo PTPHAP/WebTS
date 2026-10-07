@@ -1,0 +1,6 @@
+{
+  "name": "web-ts-client", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": {"dev": "vite --host 127.0.0.1", "build": "tsc -b && vite build", "check": "tsc -b --pretty false"},
+  "dependencies": {"react": "19.3.0", "react-dom": "19.3.0"},
+  "devDependencies": {"typescript": "5.9.3", "vite": "7.1.7", "@types/react": "19.2.2", "@types/react-dom": "19.2.2"}
+}

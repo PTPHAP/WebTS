@@ -11,6 +11,8 @@ pub struct Config {
     pub web_dir: String,
     pub max_connections: usize,
     #[serde(default)]
+    pub trusted_proxy: Vec<std::net::IpAddr>,
+    #[serde(default)]
     pub allow_insecure_localhost: bool,
     #[serde(default)]
     pub servers: Vec<Server>,
@@ -105,6 +107,12 @@ impl Config {
         }
         if config.rtc.turn_url.is_some() != config.rtc.turn_secret_file.is_some() {
             bail!("TURN地址与认证密钥必须同时配置");
+        }
+        if config.rtc.udp_min == 0
+            || config.rtc.udp_max < config.rtc.udp_min
+            || usize::from(config.rtc.udp_max - config.rtc.udp_min) + 1 < config.max_connections
+        {
+            bail!("WebRTC UDP端口范围必须能够容纳配置的连接数");
         }
         Ok(config)
     }

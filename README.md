@@ -17,11 +17,11 @@
 
 WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管理自己的多个 TeamSpeak 身份，让社区成员通过浏览器加入已有服务器。
 
-> **首版正在制作。** 当前公开代码包含身份与账号安全基础、协议探针；完整网页、邮件流程和双向语音还未交付。可用功能与启动方式将随验证结果更新。
+> **0.1 预览版**：已提供可启动的网页、账号与多身份接口、真实 TS 协议网关、WebRTC Opus 转发及部署配置。TS3 / TS6 原生客户端兼容、真实邮件送达和容量目标仍需联调验证，请先在独立测试环境部署。
 
 ## 为你的社区而设计
 
-| 体验 | 首版目标 |
+| 体验 | 0.1 提供 |
 | --- | --- |
 | 浏览器加入 | 中文界面、深浅主题，频道、聊天和成员同屏显示 |
 | 一个账号，多个身份 | 邮箱注册与找回，导入、创建、命名、切换和导出身份 |
@@ -43,10 +43,28 @@ WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管
 git clone --recurse-submodules https://github.com/PTPHAP/WebTS.git
 cd WebTS
 sh scripts/prepare-vendor.sh
-cargo test --workspace --locked
+cd web && npm ci && npm run build && cd ..
+cargo build --release --package web-ts --locked
+mkdir -p secrets data
+cargo run --release --locked -- init-key secrets/master.key
+cp config.example.toml config.local.toml
+# 填写 TS 服务器、SMTP；本地开发默认 localhost:8080
+cargo run --release --locked -- serve config.local.toml
 ```
 
 Windows开发、配置和协议探针见[部署指南](docs/DEPLOYMENT.md)。不要把身份文件、密钥、数据库或真实配置提交到仓库。
+
+## 部署前准备
+
+一个 HTTPS 域名、一台可访问目标 TS 的 Linux 主机、可通过 TLS 发信的 SMTP 账号，以及开启 **Globally on** 语音加密的 Opus 频道。受限网络可选配置带认证的 TURN。
+
+提供 Docker Compose、Caddy HTTPS 配置、systemd 服务和 Linux 构建包。构建成功后，可在 [Actions](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml) 下载带 SHA-256 校验的 Linux 包；完整步骤见[部署指南](docs/DEPLOYMENT.md)。
+
+### 使用流程
+
+邮箱注册 → 验证邮箱 → 创建或导入身份 → 选择服务器 → 连接。默认按住空格发言，可改为语音激活；双击频道切换，选择成员可私聊、戳一戳和调整音量。
+
+聊天和管理使用当前 TS 身份权限，网站账号不会额外授予管理员权限。文件传输、屏幕共享、组权限编辑和旧语音编码尚未提供。
 
 ## 项目与许可
 

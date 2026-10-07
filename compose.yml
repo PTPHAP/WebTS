@@ -1,0 +1,41 @@
+# Linux only: host networking keeps real UDP candidates and avoids extra NAT.
+services:
+  webts:
+    build: .
+    image: webts:0.1.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.local.toml:/app/config.local.toml:ro
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    read_only: true
+    tmpfs: [/tmp:size=32m,mode=1777]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    stop_grace_period: 15s
+    mem_limit: 1g
+    cpus: 2
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      WEBTS_DOMAIN: ${WEBTS_DOMAIN:?请在.env中填写网站域名}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+  turn:
+    image: coturn/coturn:4.6.3
+    profiles: [turn]
+    restart: unless-stopped
+    network_mode: host
+    command: ["-c", "/etc/coturn/turnserver.conf", "--log-file=stdout"]
+    volumes:
+      - ./secrets/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./secrets/turn-cert.pem:/etc/coturn/cert.pem:ro
+      - ./secrets/turn-key.pem:/etc/coturn/key.pem:ro
+volumes:
+  caddy_data:
+  caddy_config:

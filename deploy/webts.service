@@ -1,0 +1,23 @@
+[Unit]
+Description=WebTS browser gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webts
+Group=webts
+WorkingDirectory=/opt/webts
+ExecStart=/opt/webts/web-ts serve /opt/webts/config.local.toml
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/webts/data
+TimeoutStopSec=15
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

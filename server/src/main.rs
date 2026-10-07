@@ -9,6 +9,24 @@ async fn main() -> Result<()> {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("serve") if args.len() == 2 => {
+            let config = web_ts::config::Config::load(&args[1])?;
+            let bind = config.bind.clone();
+            let app = web_ts::app::App::new(config)?;
+            let listener = tokio::net::TcpListener::bind(&bind).await?;
+            tracing::info!(address = %bind, "WebTS 服务已启动");
+            let shutdown = app.clone();
+            axum::serve(
+                listener,
+                web_ts::app::router(app)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                shutdown_signal().await;
+                shutdown.connections.shutdown();
+            })
+            .await?;
+        }
         Some("init-key") if args.len() == 2 => {
             let mut key = zeroize::Zeroizing::new([0u8; 32]);
             getrandom::fill(key.as_mut()).map_err(|_| anyhow::anyhow!("随机源不可用"))?;
@@ -36,10 +54,23 @@ async fn main() -> Result<()> {
             println!("协议探针报告已保存。此报告不代表原生客户端双向语音已验收。");
         }
         _ => bail!(
-            "用法：web-ts init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
+            "用法：web-ts serve <配置.toml> | init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
         ),
     }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut terminate) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn write_new(path: &str, data: &[u8]) -> Result<()> {

@@ -11,7 +11,7 @@ index a58f145..9ff022d 100644
  # Use default-features=false on tsclientlib to configure reqwest differently.
  default-tls = ["reqwest/charset", "reqwest/default-tls", "reqwest/http2"]
 diff --git a/tsclientlib/src/lib.rs b/tsclientlib/src/lib.rs
-index 24ea029..3181e91 100644
+index 24ea029..0dde5b7 100644
 --- a/tsclientlib/src/lib.rs
 +++ b/tsclientlib/src/lib.rs
 @@ -38,7 +38,7 @@ use tsproto::client;
@@ -32,7 +32,17 @@ index 24ea029..3181e91 100644
  	Audio(InAudioBuf),
  	/// The needed level.
  	IdentityLevelIncreasing(u8),
-@@ -1254,7 +1254,7 @@ impl Connection {
+@@ -787,7 +787,8 @@ impl Connection {
+ 	/// If this returns `None`, the level was increased and we should try
+ 	/// connecting again.
+ 	fn increase_identity_level(&mut self, needed: u8) -> Result<()> {
+-		if needed > 20 {
++		// A hosted gateway must not start uncancellable per-connection CPU jobs.
++		if needed > 20 || cfg!(feature = "raw-audio") {
+ 			return Err(Error::IdentityLevel(needed));
+ 		}
+ 
+@@ -1254,7 +1255,7 @@ impl Connection {
  	/// If the current channel (and server) allow unencrypted voice packets.
  	///
  	/// For whisper packets, only the server setting is checked.
@@ -41,7 +51,7 @@ index 24ea029..3181e91 100644
  	fn intern_can_receive_unencrypted_audio(book: &data::Connection, whisper: bool) -> bool {
  		match book.server.codec_encryption_mode {
  			CodecEncryptionMode::ForcedOn => false,
-@@ -1378,7 +1378,7 @@ impl Connection {
+@@ -1378,7 +1379,7 @@ impl Connection {
  						ProtoStreamItem::Error(error) => {
  							warn!(%error, "Connection got a non-fatal error");
  						}
@@ -50,6 +60,14 @@ index 24ea029..3181e91 100644
  						ProtoStreamItem::Audio(audio) => {
  							if !Self::intern_can_receive_audio(book, &self.options) {
  								info!("Received audio packet while output is muted, ignoring");
+@@ -1393,6 +1394,7 @@ impl Connection {
+ 									== PacketType::VoiceWhisper;
+ 								if encrypted
+ 									|| Self::intern_can_receive_unencrypted_audio(book, whisper)
++									|| cfg!(feature = "raw-audio")
+ 								{
+ 									return Poll::Ready(Some(Ok(StreamItem::Audio(audio))));
+ 								} else {
 diff --git a/tsclientlib/src/sync.rs b/tsclientlib/src/sync.rs
 index 900f2a9..6837ffe 100644
 --- a/tsclientlib/src/sync.rs

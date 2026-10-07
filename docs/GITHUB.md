@@ -25,6 +25,8 @@ MIT允许使用、修改、再分发和商业使用，需保留版权及许可�
 
 推送前检查暂存文件和秘密泄露，确认补丁可重现。只上传开发快照，不创建正式发布标签；发布成功以远端提交核验为准。实际发布状态见PROJECT_STATE.md与PROGRESS.md。
 
+2026-10-07首批开发源码已上传main，提交`d51a1545841224a959f11e6a2ef6c588d756048a`，已核验远端一致。后续文档更新追加普通提交，不强推。
+
 ## 官方参考
 
 - [创建仓库](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository)

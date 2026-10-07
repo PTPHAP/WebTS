@@ -13,6 +13,7 @@ README.md → PROJECT_STATE.md → PROGRESS.md → REQUIREMENTS.md → ROADMAP.m
 - 公开仓库PTPHAP/WebTS，main起始历史来自用户原始提交；origin已设置。恢复时核实远端head及PROJECT_STATE.md发布状态，避免重复上传。
 - 协议vendor子模块固定提交，raw-audio补丁仅改Cargo.toml、lib.rs、sync.rs；patches/raw-audio.patch保存可重现补丁。子模块呈dirty是已应用该补丁的预期状态。
 - 项目内工具已安装，中文目录构建使用scripts/with-tools.ps1及linker.py，不改系统PATH，不迁移工程。Rust构建、10项测试、项目Clippy、格式检查已通过。
+- 首批源码d51a154的Ubuntu 24.04 GitHub CI已全步骤通过，运行37641254191；后续代码改动仍需对应验证。
 - server/src有identity/vault/db/password/config/probe与CLI实现。尚无React网站、HTTP认证、SMTP、WebRTC桥接或活动连接撤销，不能当作完整功能。
 - .cache/servers含独立TS3 3.13.8和TS6 beta13.1服务文件，未启动；需要遵守对应服务许可与授权测试条件。
 - 实际CLI验证产生的测试密钥/身份只在忽略的.cache/tmp，不输出或上传文件内容。构建日志位于.cache/check.log、tests.log、clippy.log、build.log；不作为真实语音证明。

@@ -10,6 +10,8 @@ config.local.toml
 .env.*
 *.key
 *.pem
+__pycache__/
+*.pyc
 *.db
 *.db-shm
 *.db-wal

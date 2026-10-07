@@ -6,7 +6,7 @@
 
 | 必须通过的项目 | 状态 |
 | --- | --- |
-| 本地Rust构建 | Windows Rust 1.99.0 check/build通过；LinuxCI待核验 |
+| Rust基础构建 | Windows Rust 1.99.0 check/build通过；Ubuntu 24.04 Linux CI通过 |
 | 前端构建 | 尚未建立前端，不记为通过 |
 | 身份创建/导入/导出UID一致 | 库内INI及规范表示往返测试通过；原生客户端导入未验证 |
 | 账号、恢复令牌、身份归属和密文安全测试 | 10项自动测试通过；HTTP/邮件/活动连接流程未实现 |
@@ -16,7 +16,8 @@
 | Chrome/Edge/Firefox 原生客户端互通 | 待执行 |
 | 50 连接/10 发言/30 分钟性能 | 待执行 |
 | 公网 HTTPS、受限网络 TURN | 待执行 |
-| GitHub 开源发布、Linux 发布包 | 待执行 |
+| GitHub开发源码 | 首批提交d51a154已上传，远端head核验一致；未创建正式发布标签 |
+| Linux发布包、容器 | 待实现，未验收 |
 
 ## 2026-10-07 · 本地基础验证
 
@@ -35,5 +36,11 @@
 上游tsproto-packets产生13条future_incompatible同名方法警告，当前编译通过。未修整无关第三方代码。密码哈希将来必须经有界阻塞计算队列调用；当前尚无HTTP调用路径。
 
 不包含真实SMTP、原生客户端、WebRTC协商、语音延迟或容量证明。探针仅接收与统计包，不实现双向发言。
+
+## 2026-10-07 · Linux自动检查
+
+代码提交：`d51a1545841224a959f11e6a2ef6c588d756048a`。环境：GitHub Actions ubuntu-24.04，Rust 1.99.0。
+
+[检查运行37641254191](https://github.com/PTPHAP/WebTS/actions/runs/37641254191)已核验job及全部step为success：固定工具链安装、递归子模块、协议补丁、格式、cargo check、cargo test、项目Clippy。Linux基础构建门槛通过；尚未制作和验收正式Linux发布包。
 
 性能参考：Linux 2 核/4GB，网关 RSS ≤1GB，平均 CPU ≤1.5核，RTT ≤30ms时语音延迟 P95 ≤300ms。TS6 单服按实际许可容量验收；50 是多目标网关总容量。

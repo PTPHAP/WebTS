@@ -22,7 +22,7 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tsclientlib::{
-    Connection, DisconnectOptions, OutCommandExt, StreamItem, messages::s2c::InMessage,
+    Connection, DisconnectOptions, MessageTarget, OutCommandExt, StreamItem, events::Event,
 };
 use tsproto_packets::packets::{
     AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType,
@@ -335,11 +335,10 @@ async fn connected(
             },
             packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){enforce(conn)?;let codec=if conn.get_state()?.clients.get(&conn.get_state()?.own_client).and_then(|c|conn.get_state().ok()?.channels.get(&c.channel)).is_some_and(|c|c.codec==Codec::OpusMusic){CodecType::OpusMusic}else{CodecType::OpusVoice};let data=if whisper_clients.is_empty()&&whisper_channels.is_empty(){AudioData::C2S{id:sequence,codec,data:&packet.payload}}else{AudioData::C2SWhisper{id:sequence,codec,clients:whisper_clients.clone(),channels:whisper_channels.clone(),data:&packet.payload}};conn.send_audio(OutAudio::new(&data))?;sequence=sequence.wrapping_add(1);}},
             event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak网络或协议错误"))?;enforce(conn)?;match event{
-                StreamItem::BookEvents(_)|StreamItem::AudioChange(_)=>changed=true,
+                StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
+                StreamItem::AudioChange(_)=>changed=true,
                 StreamItem::DisconnectedTemporarily(_)=>bail!("TeamSpeak连接中断，请重新连接"),
                 StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if speaking.get(from).is_none_or(|t|t.elapsed()>Duration::from_millis(300)){emit(tx,json!({"type":"speaking","client":from}))?;speaking.insert(*from,Instant::now());}},_=>{}}},
-                StreamItem::MessageEvent(InMessage::TextMessage(messages))=>for m in messages.iter(){emit(tx,json!({"type":"chat","scope":format!("{:?}",m.target).to_lowercase(),"from":m.invoker_id.0,"name":m.invoker_name,"text":m.message,"target":m.target_client_id.map(|i|i.0)}))?;},
-                StreamItem::MessageEvent(InMessage::ClientPokeNormal(messages))=>for m in messages.iter(){emit(tx,json!({"type":"poke","from":m.invoker_id.0,"name":m.invoker_name,"text":m.message}))?;},
                 StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){emit(tx,json!({"type":"result","id":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string())}))?;},
                 _=>{}
             }},

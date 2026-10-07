@@ -11,6 +11,8 @@ WebTS 0.1为可启动的预览版。先在独立环境小规模验证，再向�
 
 网站不会安装或修改现有TS。用户权限来自真实身份，不使用站长Query账号代操作。
 
+当前协议库拒绝回环及私有网络目标。`servers.address` 请填写获授权的 TS 公网域名或公网 IP 和 UDP 端口；同机部署也需使用实际可达的公网地址。网关自身的 `bind` 仍可使用回环地址，由 HTTPS 代理转发。
+
 ## Linux构建包
 
 从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载 `webts-0.1.0-linux-x64`。解压ZIP后计算tar包SHA-256，与SHA256SUMS对应行比较；只有构建通过才生成包。

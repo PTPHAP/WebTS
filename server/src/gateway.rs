@@ -313,9 +313,9 @@ async fn bridge(
         .log_packets(false)
         .log_udp_packets(false)
         .connect()
-        .map_err(|_| anyhow::anyhow!("无法建立TeamSpeak连接"))?;
+        .map_err(report_connection_error)?;
     let cancel = lease.cancel.clone();
-    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak拒绝连接，请检查地址、密码和身份安全等级"))?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(_)=>bail!("请先在原生客户端提高身份安全等级后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.context("TeamSpeak握手超时")??;
+    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.context("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁")??;
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
@@ -341,6 +341,75 @@ async fn bridge(
     .await;
     result
 }
+fn report_connection_error(error: tsclientlib::Error) -> anyhow::Error {
+    let message = connection_error(&error);
+    tracing::warn!(reason = %message, "TeamSpeak连接失败");
+    anyhow::anyhow!(message)
+}
+
+fn connection_error(error: &tsclientlib::Error) -> String {
+    use tsclientlib::Error;
+    use tsproto_types::errors::Error as TsError;
+    match error {
+        Error::ConnectFailed { errors, .. } => errors
+            .last()
+            .map(connection_error)
+            .unwrap_or_else(|| "TeamSpeak目标无法连接，请检查服务器地址和UDP端口".into()),
+        Error::IdentityLevel(level) => {
+            format!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入")
+        }
+        Error::IdentityLevelCorrupted { needed, have } => format!(
+            "身份安全等级校验异常（服务器要求 {needed}，本地为 {have}），请从原生客户端重新导出并导入"
+        ),
+        Error::ConnectTs(reason) => {
+            let message = match reason {
+                TsError::ServerInvalidPassword | TsError::ClientInvalidPassword => {
+                    "TeamSpeak服务器密码错误，请填写TS服务器密码（不是网站登录密码）"
+                }
+                TsError::ConnectFailedBanned => {
+                    "TeamSpeak拒绝连接：网关IP或当前身份被封禁，请联系TS服务器管理员"
+                }
+                TsError::ClientIsFlooding | TsError::BanFlooding => {
+                    "TeamSpeak拒绝连接：连接过于频繁或触发防刷限制，请稍后重试"
+                }
+                TsError::ServerMaxclientsReached => "TeamSpeak服务器连接人数已满",
+                TsError::ClientTooManyClonesConnected => {
+                    "TeamSpeak拒绝连接：同一身份连接数量已达上限，请先断开旧客户端"
+                }
+                TsError::ClientNicknameInuse => "TeamSpeak昵称已被使用，请更换昵称",
+                TsError::ClientCouldNotValidateIdentity => {
+                    "TeamSpeak无法验证身份，请检查身份安全等级并从原生客户端重新导入"
+                }
+                TsError::ClientVersionOutdated | TsError::ServerVersionOutdated => {
+                    "TeamSpeak协议版本不兼容，需要检查网关和TS服务器版本"
+                }
+                _ => return format!("TeamSpeak拒绝连接（{reason}，错误代码 {}）", *reason as u16),
+            };
+            message.into()
+        }
+        Error::Connect(protocol)
+        | Error::ConnectionFailed(protocol)
+        | Error::InitserverWait(protocol)
+        | Error::SendClientinit(protocol) => match protocol {
+            tsproto::client::Error::TsProto(tsproto::Error::Timeout(_)) => {
+                "TeamSpeak UDP通信超时，请检查服务器地址、UDP端口、防火墙和网关IP封禁".into()
+            }
+            tsproto::client::Error::TsProto(tsproto::Error::Network(_)) => {
+                "TeamSpeak UDP网络连接失败，请检查目标端口和网络访问规则".into()
+            }
+            tsproto::client::Error::OutdatedServer => {
+                "TeamSpeak服务器协议过旧，当前网关无法兼容".into()
+            }
+            _ => "TeamSpeak握手失败：服务器协议或网络响应异常".into(),
+        },
+        Error::InitserverTimeout | Error::HandshakeTimeout => {
+            "TeamSpeak握手超时，请检查UDP端口、防火墙和网关IP封禁".into()
+        }
+        Error::ResolveAddress(_) => "TeamSpeak地址无法解析或目标不被允许".into(),
+        _ => "TeamSpeak连接失败：服务器协议或网络响应异常".into(),
+    }
+}
+
 fn enforce(conn: &Connection) -> Result<()> {
     let state = conn.get_state()?;
     if state.server.codec_encryption_mode != CodecEncryptionMode::ForcedOn {
@@ -570,5 +639,34 @@ fn wire_password(value: &str) -> String {
         String::new()
     } else {
         tsproto_types::crypto::encode_password(value.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connection_error;
+    use tsclientlib::Error;
+    use tsproto_types::errors::Error as TsError;
+
+    #[test]
+    fn handshake_failure_preserves_safe_actionable_reason() {
+        let timeout = Error::ConnectFailed {
+            address: "private-target.invalid:9987".into(),
+            errors: vec![Error::Connect(tsproto::client::Error::TsProto(
+                tsproto::Error::Timeout("Packet was not acked"),
+            ))],
+        };
+        let message = connection_error(&timeout);
+        assert!(
+            message.contains("UDP") && message.contains("超时"),
+            "{message}"
+        );
+        assert!(!message.contains("密码") && !message.contains("private-target"));
+        let message = connection_error(&Error::IdentityLevel(30));
+        assert!(message.contains("30") && message.contains("重新导入"));
+        let message = connection_error(&Error::ConnectTs(TsError::ServerInvalidPassword));
+        assert!(message.contains("服务器密码") && !message.contains("安全等级"));
+        let message = connection_error(&Error::ConnectTs(TsError::ConnectFailedBanned));
+        assert!(message.contains("封禁"));
     }
 }

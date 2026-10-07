@@ -6,12 +6,12 @@ web_dir = "web/dist"
 max_connections = 50
 allow_insecure_localhost = true
 
-# Copy to config.local.toml. Only these configured targets are reachable.
+# Copy to config.local.toml. Custom public targets are disabled until enabled by an admin.
 # Set TeamSpeak server voice encryption to Globally on before voice testing.
 # [[servers]]
 # id = "community"
 # name = "我的 TeamSpeak"
-# address = "127.0.0.1:9987"
+# address = "ts.example.com:9987"
 
 # Registration and recovery require real TLS SMTP; there is no fake-mail mode.
 # [smtp]

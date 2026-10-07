@@ -27,6 +27,133 @@ async fn gateway_ts3_encrypted_voice_whisper_permission_and_revocation() {
         .expect("live test timed out");
 }
 
+#[tokio::test]
+#[ignore = "requires an explicitly authorized isolated TS3 server"]
+async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
+    use tower::ServiceExt;
+    let target = std::env::var("WEBTS_TEST_TARGET").expect("set isolated target");
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("key");
+    std::fs::write(&key, hex::encode([18; 32])).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let origin = format!("http://localhost:{port}");
+    let config: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+    let app = App::new(Config {
+        database: dir.path().join("db").to_string_lossy().into_owned(),
+        master_key_file: key.to_string_lossy().into_owned(),
+        public_url: origin.clone(),
+        servers: vec![Server {
+            id: "isolated".into(),
+            name: "Test".into(),
+            address: target.clone(),
+        }],
+        ..config
+    })
+    .unwrap();
+    app.runtime.write().unwrap().settings.allow_custom = true;
+    let hash = password::hash("custom fixture password").unwrap();
+    let (owner, _, verify) = app.db.register("custom@example.com", &hash).unwrap();
+    app.db.consume_email_token(&verify, "verify", None).unwrap();
+    app.db.grant_admin("custom@example.com").unwrap();
+    let session = app.db.create_session(owner, false, &hash).unwrap();
+    let identity = Identity::create();
+    let id = app
+        .db
+        .add_identity(owner, "custom", &identity, &app.vault)
+        .unwrap();
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .into_future(),
+    );
+    let mut request = format!("ws://127.0.0.1:{port}/api/connect")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", HeaderValue::from_str(&origin).unwrap());
+    request.headers_mut().insert(
+        "cookie",
+        HeaderValue::from_str(&format!("webts_dev={session}")).unwrap(),
+    );
+    let (mut first, _) = connect_async(request.clone()).await.unwrap();
+    first.send(Message::Text(json!({"server":"","address":target,"identity":id,"page":"custom","name":"WebTS custom policy test"}).to_string().into())).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let Some(Ok(Message::Text(text))) = first.next().await else {
+                panic!("unexpected close")
+            };
+            let message: Value = serde_json::from_str(&text).unwrap();
+            assert_ne!(message["type"], "error", "{message}");
+            if message["type"] == "state" {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (mut duplicate, _) = connect_async(request).await.unwrap();
+    duplicate
+        .send(Message::Text(
+            json!({"server":"isolated","identity":id,"page":"alias","name":"WebTS alias test"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let Some(Ok(Message::Text(text))) = duplicate.next().await else {
+                panic!("alias closed without refusal")
+            };
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["type"] == "error" {
+                assert!(message["message"].as_str().unwrap().contains("已连接"));
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let mut settings = app.runtime.read().unwrap().settings.clone();
+    settings.allow_custom = false;
+    let update = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/admin/settings")
+        .header("origin", &origin)
+        .header("cookie", format!("webts_dev={session}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"password":"custom fixture password","settings":settings}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        router(app.clone()).oneshot(update).await.unwrap().status(),
+        axum::http::StatusCode::OK
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match first.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["type"] == "disconnected" {
+                        break;
+                    }
+                }
+                None | Some(Ok(Message::Close(_))) => break,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("custom connection survived policy change");
+    assert!(!app.runtime.read().unwrap().settings.allow_custom);
+    server.abort();
+}
+
 async fn run() {
     let target =
         std::env::var("WEBTS_TEST_TARGET").expect("set WEBTS_TEST_TARGET to an isolated TS3");

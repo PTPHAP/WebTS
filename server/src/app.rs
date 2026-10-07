@@ -14,17 +14,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    transport::smtp::authentication::Credentials,
-};
+use lettre::{AsyncTransport, Message};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, RwLock},
+    time::Instant,
 };
 use tokio::sync::{Semaphore, mpsc};
 use tower_http::services::{ServeDir, ServeFile};
@@ -38,7 +35,8 @@ pub struct App {
     pub sockets: Arc<Semaphore>,
     workers: Arc<Semaphore>,
     limits: Mutex<HashMap<(IpAddr, bool), (Instant, u32)>>,
-    mail: Option<mpsc::Sender<Mail>>,
+    mail: mpsc::Sender<Mail>,
+    pub runtime: Arc<RwLock<crate::settings::Runtime>>,
     dummy_hash: String,
 }
 struct Mail {
@@ -87,33 +85,52 @@ impl App {
             .try_into()
             .map_err(|_| anyhow::anyhow!("部署密钥长度无效"))?;
         let db = Db::open(&config.database)?;
-        let mail = if let Some(smtp) = &config.smtp {
-            let secret = Zeroizing::new(
-                std::fs::read_to_string(&smtp.password_file).context("无法读取SMTP密码文件")?,
-            );
-            let mut builder = if smtp.port == 465 {
-                AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp.host)?
-            } else {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp.host)?
-            };
-            builder = builder
-                .port(smtp.port)
-                .timeout(Some(Duration::from_secs(15)))
-                .credentials(Credentials::new(
-                    smtp.username.clone(),
-                    secret.trim_end().to_owned(),
-                ));
-            let transport = builder.build();
-            let from: lettre::message::Mailbox = smtp.from.parse()?;
-            let origin = config.origin();
-            let (tx, mut rx) = mpsc::channel::<Mail>(32);
-            tokio::spawn(async move {
-                while let Some(job) = rx.recv().await {
+        let vault = Vault::new(key);
+        let settings = if let Some(record) = db.settings()? {
+            let plaintext = vault.open(0, "site-settings", "v1", &record)?;
+            serde_json::from_slice(&plaintext)?
+        } else {
+            crate::settings::Settings {
+                servers: config.servers.clone(),
+                default_server: config
+                    .servers
+                    .first()
+                    .map(|s| s.id.clone())
+                    .unwrap_or_default(),
+                allow_custom: false,
+                smtp: config
+                    .smtp
+                    .as_ref()
+                    .map(|smtp| -> Result<crate::settings::SmtpSettings> {
+                        Ok(crate::settings::SmtpSettings {
+                            host: smtp.host.clone(),
+                            port: smtp.port,
+                            username: smtp.username.clone(),
+                            from: smtp.from.clone(),
+                            password: Zeroizing::new(
+                                std::fs::read_to_string(&smtp.password_file)
+                                    .context("无法读取SMTP密码文件")?,
+                            )
+                            .trim_end()
+                            .to_owned(),
+                        })
+                    })
+                    .transpose()?,
+            }
+        };
+        let runtime = Arc::new(RwLock::new(crate::settings::Runtime::new(settings)?));
+        let (mail, mut rx) = mpsc::channel::<Mail>(32);
+        let mail_runtime = runtime.clone();
+        let origin = config.origin();
+        tokio::spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let mailer = mail_runtime.read().unwrap().mailer.clone();
+                let success = if let Some(mailer) = mailer {
                     let (subject, plain, html) =
                         crate::email::content(job.purpose, &origin, &job.token);
                     let message = job.email.parse().ok().and_then(|to| {
                         Message::builder()
-                            .from(from.clone())
+                            .from(mailer.from)
                             .to(to)
                             .subject(subject)
                             .multipart(lettre::message::MultiPart::alternative_plain_html(
@@ -121,28 +138,28 @@ impl App {
                             ))
                             .ok()
                     });
-                    let success = match message {
-                        Some(message) => transport.send(message).await.is_ok(),
+                    match message {
+                        Some(message) => mailer.transport.send(message).await.is_ok(),
                         None => false,
-                    };
-                    if !success {
-                        tracing::warn!("SMTP发送失败；未记录邮箱、凭据或令牌");
                     }
+                } else {
+                    false
+                };
+                if !success {
+                    tracing::warn!("SMTP发送失败；未记录邮箱、凭据或令牌");
                 }
-            });
-            Some(tx)
-        } else {
-            None
-        };
+            }
+        });
         Ok(Arc::new(Self {
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
             config,
             db,
-            vault: Vault::new(key),
+            vault,
             workers: Arc::new(Semaphore::new(2)),
             limits: Mutex::new(HashMap::new()),
             mail,
+            runtime,
             dummy_hash: password::hash(&crate::vault::token()?)?,
         }))
     }
@@ -209,13 +226,17 @@ impl App {
             }
         )
     }
+    fn smtp_ready(&self) -> bool {
+        self.runtime.read().unwrap().mailer.is_some()
+    }
     fn queue_mail(&self, email: String, purpose: &'static str, token: String) -> Api<()> {
-        self.mail
-            .as_ref()
-            .ok_or(Error(
+        if !self.smtp_ready() {
+            return Err(Error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "站点尚未配置邮箱服务，请联系站长",
-            ))?
+            ));
+        }
+        self.mail
             .try_send(Mail {
                 email,
                 purpose,
@@ -223,7 +244,7 @@ impl App {
             })
             .map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "邮件队列繁忙，请稍后重试"))
     }
-    fn reauthenticate(&self, headers: &HeaderMap, password: &str) -> Api<Session> {
+    pub(crate) fn reauthenticate(&self, headers: &HeaderMap, password: &str) -> Api<Session> {
         let session = self.session(headers)?;
         let hash = self.db.password_by_id(session.user.id)?;
         if !password::verify(password, &hash) {
@@ -236,6 +257,10 @@ impl App {
 pub fn router(app: Arc<App>) -> Router {
     let api = Router::new()
         .route("/health", get(health))
+        .route(
+            "/admin/settings",
+            get(crate::settings::get_settings).post(crate::settings::save_settings),
+        )
         .route("/me", get(me))
         .route("/auth/register", post(register))
         .route("/auth/resend", post(resend))
@@ -393,7 +418,7 @@ struct PasswordBody {
     password: String,
 }
 async fn health(State(app): State<Arc<App>>) -> Json<Value> {
-    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"smtp_ready":app.mail.is_some()}))
+    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"smtp_ready":app.smtp_ready()}))
 }
 async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     Ok(Json(json!({"user":app.session(&headers)?.user})))
@@ -402,7 +427,7 @@ async fn register(
     State(app): State<Arc<App>>,
     Json(body): Json<CredentialsBody>,
 ) -> Api<Json<Value>> {
-    if app.mail.is_none() {
+    if !app.smtp_ready() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "站点尚未配置邮箱服务，请联系站长",
@@ -439,7 +464,9 @@ async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -
             ));
         };
         let token = a.db.create_session(id, body.remember, &hash)?;
-        let mut response = Json(json!({"user":{"id":id,"email":email}})).into_response();
+        let mut response =
+            Json(json!({"user":a.db.session(&token)?.context("登录会话不存在")?.user}))
+                .into_response();
         response.headers_mut().insert(
             "set-cookie",
             HeaderValue::from_str(&a.cookie(&token, body.remember, false)).unwrap(),
@@ -457,7 +484,7 @@ async fn verify(State(app): State<Arc<App>>, Json(body): Json<TokenBody>) -> Api
     .await
 }
 async fn resend(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api<Json<Value>> {
-    if app.mail.is_none() {
+    if !app.smtp_ready() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "站点尚未配置邮箱服务，请联系站长",
@@ -465,13 +492,13 @@ async fn resend(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
     }
     let email = email(&body.email)?;
     app.work(move |a| {
-        let permit = a.mail.as_ref().unwrap().try_reserve().map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "邮件服务繁忙，请稍后再试"))?;
+        let permit = a.mail.try_reserve().map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "邮件服务繁忙，请稍后再试"))?;
         if let Some(token) = a.db.resend_verification(&email)? { permit.send(Mail {email, purpose:"verify", token:Zeroizing::new(token)}); }
         Ok(Json(json!({"message":"如果账号需要验证，我们会发送一封新邮件。请检查收件箱与垃圾邮件，重复请求请间隔至少60秒。"})))
     }).await
 }
 async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api<Json<Value>> {
-    if app.mail.is_none() {
+    if !app.smtp_ready() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "站点尚未配置邮箱服务，请联系站长",
@@ -479,7 +506,7 @@ async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
     }
     let email = email(&body.email)?;
     app.work(move |a| {
-        if a.mail.as_ref().is_some_and(|mail| mail.capacity() == 0) {
+        if a.mail.capacity() == 0 {
             return Err(Error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "邮件队列繁忙，请稍后重试",
@@ -640,7 +667,5 @@ async fn export_identity(
 }
 async fn servers(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.session(&headers)?;
-    Ok(Json(
-        json!({"servers":app.config.servers.iter().map(|s|json!({"id":s.id,"name":s.name})).collect::<Vec<_>>()}),
-    ))
+    Ok(Json(app.runtime.read().unwrap().settings.public()))
 }

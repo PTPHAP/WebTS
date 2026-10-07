@@ -7,4 +7,5 @@ pub mod identity;
 pub mod media;
 pub mod password;
 pub mod probe;
+pub mod settings;
 pub mod vault;

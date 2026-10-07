@@ -35,6 +35,7 @@ struct Entry {
     identity: String,
     uid: String,
     target: String,
+    server: String,
     page: String,
     port: u16,
     cancel: CancellationToken,
@@ -97,6 +98,29 @@ impl Connections {
             cancel,
         })
     }
+    pub fn cancel_disallowed(
+        &self,
+        old: &crate::settings::Settings,
+        new: &crate::settings::Settings,
+    ) {
+        for entry in self.entries.lock().unwrap().values() {
+            let permitted = if entry.server.is_empty() {
+                new.allow_custom
+            } else {
+                old.servers
+                    .iter()
+                    .find(|s| s.id == entry.server)
+                    .is_some_and(|previous| {
+                        new.servers
+                            .iter()
+                            .any(|s| s.id == entry.server && s.address == previous.address)
+                    })
+            };
+            if !permitted {
+                entry.cancel.cancel();
+            }
+        }
+    }
     pub fn shutdown(&self) {
         for e in self.entries.lock().unwrap().values() {
             e.cancel.cancel();
@@ -107,6 +131,8 @@ impl Connections {
 #[serde(deny_unknown_fields)]
 struct Connect {
     server: String,
+    #[serde(default)]
+    address: String,
     identity: String,
     page: String,
     name: String,
@@ -194,13 +220,38 @@ async fn bridge(
     let session = app
         .session(headers)
         .map_err(|_| anyhow::anyhow!("请重新登录"))?;
-    let server = app
-        .config
-        .servers
-        .iter()
-        .find(|s| s.id == request.server)
-        .cloned()
-        .context("服务器不在站长配置列表中")?;
+    let source = {
+        let current = app.runtime.read().unwrap();
+        if !request.address.is_empty() {
+            if !request.server.is_empty() {
+                bail!("自定义地址和服务器ID只能选一个");
+            }
+            if !current.settings.allow_custom {
+                bail!("管理员已关闭自定义连接");
+            }
+            crate::settings::normalize_target(&request.address)
+                .map_err(|_| anyhow::anyhow!("自定义地址无效，只允许公网主机和UDP端口"))?
+        } else {
+            current
+                .settings
+                .servers
+                .iter()
+                .find(|s| s.id == request.server)
+                .context("服务器不在站长配置列表中")?
+                .address
+                .clone()
+        }
+    };
+    let addresses = tsclientlib::resolver::resolve(source.clone());
+    futures::pin_mut!(addresses);
+    let target = tokio::time::timeout(Duration::from_secs(10), addresses.next())
+        .await
+        .context("地址解析超时")?
+        .context("地址无法解析")?
+        .map_err(|_| anyhow::anyhow!("地址无法解析或目标不被允许"))?;
+    if !tsclientlib::resolver::is_public_addr(&target.ip()) {
+        bail!("不能连接内网或回环地址");
+    }
     let owner = session.user.id;
     let id = request.identity.clone();
     let (identity, uid) = app
@@ -216,27 +267,43 @@ async fn bridge(
         })
         .await
         .map_err(|_| anyhow::anyhow!("身份无法读取"))?;
-    let lease = app.connections.reserve(
-        Entry {
-            owner,
-            session: session.hash,
-            identity: request.identity.clone(),
-            uid,
-            target: server.address.to_ascii_lowercase(),
-            page: request.page,
-            port: 0,
-            cancel: CancellationToken::new(),
-        },
-        app.config.rtc.udp_min,
-        app.config.rtc.udp_max,
-    )?;
+    let lease = {
+        let current = app.runtime.read().unwrap();
+        if request.server.is_empty() {
+            if !current.settings.allow_custom {
+                bail!("管理员已关闭自定义连接");
+            }
+        } else if !current
+            .settings
+            .servers
+            .iter()
+            .any(|s| s.id == request.server && s.address == source)
+        {
+            bail!("服务器设置已变化，请重新连接");
+        }
+        app.connections.reserve(
+            Entry {
+                owner,
+                session: session.hash,
+                identity: request.identity.clone(),
+                uid,
+                target: target.to_string(),
+                server: request.server.clone(),
+                page: request.page,
+                port: 0,
+                cancel: CancellationToken::new(),
+            },
+            app.config.rtc.udp_min,
+            app.config.rtc.udp_max,
+        )?
+    };
     app.session(headers)
         .map_err(|_| anyhow::anyhow!("登录已失效"))?;
     app.db
         .identity(owner, &request.identity)
         .map_err(|_| anyhow::anyhow!("身份已删除"))?;
     emit(tx, json!({"type":"status","message":"正在连接 TeamSpeak…"}))?;
-    let mut conn = Connection::build(server.address)
+    let mut conn = Connection::build(target.to_string())
         .identity(identity)
         .name(request.name)
         .password(request.password)

@@ -50,6 +50,162 @@ async fn call(
     )
 }
 #[tokio::test]
+async fn administrator_settings_are_redacted_hot_loaded_and_persistent() {
+    let (_dir, app) = setup();
+    let hash = password::hash("administrator test password").unwrap();
+    let (owner, _, verify) = app.db.register("admin@example.com", &hash).unwrap();
+    app.db.consume_email_token(&verify, "verify", None).unwrap();
+    let session = app.db.create_session(owner, false, &hash).unwrap();
+    let cookie = format!("__Host-webts={session}");
+    assert_eq!(
+        call(&app, "/admin/settings", None, "", "https://webts.example")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            None,
+            &cookie,
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    app.db.grant_admin("admin@example.com").unwrap();
+    let settings = json!({"servers":[{"id":"community","name":"Community","address":"ts.example.com:9987"}],"default_server":"community","allow_custom":true,"smtp":{"host":"smtp.example.com","port":465,"username":"sender@example.com","from":"WebTS <sender@example.com>","password":"private-smtp-test-value"}});
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":"wrong","settings":settings})),
+            &cookie,
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":"administrator test password","settings":settings})),
+            &cookie,
+            "https://other.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":"administrator test password","settings":settings})),
+            &cookie,
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, _, public) = call(&app, "/servers", None, &cookie, "https://webts.example").await;
+    assert_eq!(public["default_server"], "community");
+    assert_eq!(public["allow_custom"], true);
+    assert!(public.get("smtp").is_none());
+    assert_eq!(
+        call(&app, "/health", None, "", "https://webts.example")
+            .await
+            .2["smtp_ready"],
+        true
+    );
+    let (_, _, view) = call(
+        &app,
+        "/admin/settings",
+        None,
+        &cookie,
+        "https://webts.example",
+    )
+    .await;
+    assert_eq!(view["smtp"]["password_set"], true);
+    assert!(view["smtp"].get("password").is_none());
+    let stored = app.db.settings().unwrap().unwrap();
+    assert!(
+        !stored
+            .windows(b"private-smtp-test-value".len())
+            .any(|s| s == b"private-smtp-test-value")
+    );
+    let mut changed = settings.clone();
+    changed["smtp"]["password"] = json!("");
+    changed["allow_custom"] = json!(false);
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":"administrator test password","settings":changed})),
+            &cookie,
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.runtime
+            .read()
+            .unwrap()
+            .settings
+            .smtp
+            .as_ref()
+            .unwrap()
+            .password,
+        "private-smtp-test-value"
+    );
+    let restored = App::new(app.config.clone()).unwrap();
+    assert!(!restored.runtime.read().unwrap().settings.allow_custom);
+    assert_eq!(
+        restored.runtime.read().unwrap().settings.default_server,
+        "community"
+    );
+    assert_eq!(
+        restored
+            .runtime
+            .read()
+            .unwrap()
+            .settings
+            .smtp
+            .as_ref()
+            .unwrap()
+            .password,
+        "private-smtp-test-value"
+    );
+    changed["default_server"] = json!("missing");
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":"administrator test password","settings":changed})),
+            &cookie,
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let record = app.db.settings().unwrap().unwrap();
+    app.db.revoke(owner, None).unwrap();
+    assert!(
+        app.db
+            .save_settings(owner, &web_ts::db::digest(&session), &record)
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn cookie_origin_and_owner_boundaries_and_reset() {
     let (_dir, app) = setup();
     let hash = password::hash("a sufficiently long password").unwrap();

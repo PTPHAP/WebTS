@@ -21,6 +21,7 @@ __pycache__/
 /docs/ACCEPTANCE.md
 /docs/DECISIONS.md
 /docs/GITHUB.md
+/docs/PRIVACY-AUDIT.md
 *.db
 *.db-shm
 *.db-wal

@@ -15,6 +15,7 @@ pub struct Db {
 pub struct User {
     pub id: i64,
     pub email: String,
+    pub is_admin: bool,
 }
 #[derive(Serialize)]
 pub struct IdentityRow {
@@ -53,9 +54,47 @@ impl Db {
           CREATE TABLE IF NOT EXISTS email_tokens(hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, purpose TEXT NOT NULL, expires INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS identities(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, uid TEXT NOT NULL, ciphertext BLOB NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, UNIQUE(user_id,uid));
           CREATE UNIQUE INDEX IF NOT EXISTS one_default_identity ON identities(user_id) WHERE is_default=1;")?;
+        let has_admin: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('users') WHERE name='is_admin')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_admin {
+            connection.execute_batch(
+                "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+    pub fn grant_admin(&self, email: &str) -> Result<()> {
+        let changed = self.connection.lock().unwrap().execute(
+            "UPDATE users SET is_admin=1 WHERE email=? AND verified=1",
+            [email],
+        )?;
+        if changed != 1 {
+            bail!("管理员必须是已验证的现有账号");
+        }
+        Ok(())
+    }
+    pub fn settings(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT ciphertext FROM site_settings WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+    pub fn save_settings(&self, owner: i64, session: &str, ciphertext: &[u8]) -> Result<()> {
+        let changed = self.connection.lock().unwrap().execute("INSERT INTO site_settings(id,ciphertext) SELECT 1,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.hash=? AND u.id=? AND s.expires>? AND u.verified=1 AND u.is_admin=1) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", params![ciphertext,session,owner,now()])?;
+        if changed != 1 {
+            bail!("管理员会话已失效");
+        }
+        Ok(())
     }
     pub fn password(&self, email: &str) -> Result<Option<(i64, String, bool)>> {
         Ok(self
@@ -241,7 +280,7 @@ impl Db {
         }
         let hash = digest(value);
         let c = self.connection.lock().unwrap();
-        let user = c.query_row("SELECT u.id,u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1", params![hash,now()], |r| Ok(User {id:r.get(0)?,email:r.get(1)?})).optional()?;
+        let user = c.query_row("SELECT u.id,u.email,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1", params![hash,now()], |r| Ok(User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?})).optional()?;
         Ok(user.map(|user| Session { user, hash }))
     }
     pub fn revoke(&self, owner: i64, hash: Option<&str>) -> Result<()> {

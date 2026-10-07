@@ -27,6 +27,11 @@ async fn main() -> Result<()> {
             })
             .await?;
         }
+        Some("grant-admin") if args.len() == 3 => {
+            let config = web_ts::config::Config::load(&args[1])?;
+            web_ts::db::Db::open(&config.database)?.grant_admin(&args[2].trim().to_lowercase())?;
+            println!("已授予现有已验证账号网站管理权限；TS权限不变。");
+        }
         Some("init-key") if args.len() == 2 => {
             let mut key = zeroize::Zeroizing::new([0u8; 32]);
             getrandom::fill(key.as_mut()).map_err(|_| anyhow::anyhow!("随机源不可用"))?;
@@ -54,7 +59,7 @@ async fn main() -> Result<()> {
             println!("协议探针报告已保存。此报告不代表原生客户端双向语音已验收。");
         }
         _ => bail!(
-            "用法：web-ts serve <配置.toml> | init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
+            "用法：web-ts grant-admin <配置.toml> <已验证邮箱> | serve <配置.toml> | init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
         ),
     }
     Ok(())

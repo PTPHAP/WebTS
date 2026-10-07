@@ -354,7 +354,7 @@ fn opus_codec() -> RTCRtpCodec {
         mime_type: "audio/opus".to_owned(),
         clock_rate: 48000,
         channels: 2,
-        sdp_fmtp_line: "minptime=10;useinbandfec=1;usedtx=1".to_owned(),
+        sdp_fmtp_line: "minptime=10;useinbandfec=1;usedtx=0".to_owned(),
         rtcp_feedback: vec![],
     }
 }

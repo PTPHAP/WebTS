@@ -31,7 +31,7 @@ jobs:
           node-version: 22.20.0
       - name: Frontend
         working-directory: web
-        run: npm ci --no-audit --no-fund && npm run build
+        run: npm ci --no-audit --no-fund && npm test && npm run build
       - name: Linux release package
         run: |
           cargo build --release --package web-ts --locked

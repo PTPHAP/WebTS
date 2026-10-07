@@ -1,0 +1,40 @@
+[package]
+name = "web-ts"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+bytes = "1"
+futures = "0.3"
+getrandom = "0.3"
+hex = "0.4"
+hmac = "0.12"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "ring", "webpki-roots"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+toml = "0.9"
+tower-http = { version = "0.6", features = ["fs", "limit", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tsclientlib = { path = "../vendor/tsclientlib/tsclientlib", default-features = false, features = ["raw-audio"] }
+tsproto = { path = "../vendor/tsclientlib/tsproto" }
+tsproto-packets = { path = "../vendor/tsclientlib/utils/tsproto-packets" }
+tsproto-types = { path = "../vendor/tsclientlib/utils/tsproto-types" }
+webrtc = "=0.21.0"
+zeroize = "1"
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

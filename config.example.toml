@@ -1,0 +1,30 @@
+bind = "127.0.0.1:8080"
+public_url = "http://localhost:8080"
+database = "data/web-ts.db"
+master_key_file = "secrets/master.key"
+web_dir = "web/dist"
+max_connections = 50
+allow_insecure_localhost = true
+
+# Copy to config.local.toml. Only these configured targets are reachable.
+# Set TeamSpeak server voice encryption to Globally on before voice testing.
+# [[servers]]
+# id = "community"
+# name = "我的 TeamSpeak"
+# address = "127.0.0.1:9987"
+
+# Registration and recovery require real TLS SMTP; there is no fake-mail mode.
+# [smtp]
+# host = "smtp.example.com"
+# port = 465
+# username = "mailer@example.com"
+# password_file = "secrets/smtp-password"
+# from = "Web TS <mailer@example.com>"
+
+[rtc]
+public_ip = ""
+udp_min = 40000
+udp_max = 40100
+# Set authenticated TURN for networks blocking direct UDP.
+# turn_url = "turns:turn.example.com:5349?transport=tcp"
+# turn_secret_file = "secrets/turn-secret"

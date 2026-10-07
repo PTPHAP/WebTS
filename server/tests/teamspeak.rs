@@ -79,8 +79,31 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
         "cookie",
         HeaderValue::from_str(&format!("webts_dev={session}")).unwrap(),
     );
+    let (mut invalid, _) = connect_async(request.clone()).await.unwrap();
+    invalid
+        .send(Message::Text(
+            json!({"server":"","address":target,"identity":id,"page":"nickname","name":"测试"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let rejected = tokio::time::timeout(Duration::from_secs(3), invalid.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let rejected: Value = serde_json::from_str(rejected.to_text().unwrap()).unwrap();
+    assert_eq!(rejected["type"], "error");
+    assert!(
+        rejected["message"]
+            .as_str()
+            .unwrap()
+            .contains("昵称需要3–30")
+    );
+    let _ = invalid.close(None).await;
     let (mut first, _) = connect_async(request.clone()).await.unwrap();
-    first.send(Message::Text(json!({"server":"","address":target,"identity":id,"page":"custom","name":"WebTS custom policy test"}).to_string().into())).await.unwrap();
+    first.send(Message::Text(json!({"server":"","address":target,"identity":id,"page":"custom","name":"测试 · WebTS"}).to_string().into())).await.unwrap();
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let Some(Ok(Message::Text(text))) = first.next().await else {

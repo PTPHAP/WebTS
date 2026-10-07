@@ -208,13 +208,10 @@ async fn bridge(
     };
     let request: Connect =
         serde_json::from_str(&first).map_err(|_| anyhow::anyhow!("连接请求格式无效"))?;
-    if request.name.trim().is_empty()
-        || request.name.chars().count() > 80
-        || request.name.chars().any(char::is_control)
-        || request.password.len() > 256
-        || request.page.len() > 64
-        || request.page.is_empty()
-    {
+    if !valid_nickname(&request.name) {
+        bail!("显示昵称需要3–30个字符，且不能包含控制字符");
+    }
+    if request.password.len() > 256 || request.page.len() > 64 || request.page.is_empty() {
         bail!("连接参数无效");
     }
     let session = app
@@ -341,6 +338,12 @@ async fn bridge(
     .await;
     result
 }
+fn valid_nickname(name: &str) -> bool {
+    name.trim().chars().count() >= 3
+        && name.chars().count() <= 30
+        && !name.chars().any(char::is_control)
+}
+
 fn report_connection_error(error: tsclientlib::Error) -> anyhow::Error {
     let message = connection_error(&error);
     tracing::warn!(reason = %message, "TeamSpeak连接失败");
@@ -377,6 +380,9 @@ fn connection_error(error: &tsclientlib::Error) -> String {
                     "TeamSpeak拒绝连接：同一身份连接数量已达上限，请先断开旧客户端"
                 }
                 TsError::ClientNicknameInuse => "TeamSpeak昵称已被使用，请更换昵称",
+                TsError::ParameterInvalidSize => {
+                    "TeamSpeak拒绝连接参数长度，请检查显示昵称是否为3–30个字符"
+                }
                 TsError::ClientCouldNotValidateIdentity => {
                     "TeamSpeak无法验证身份，请检查身份安全等级并从原生客户端重新导入"
                 }
@@ -644,9 +650,19 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::connection_error;
+    use super::{connection_error, valid_nickname};
     use tsclientlib::Error;
     use tsproto_types::errors::Error as TsError;
+
+    #[test]
+    fn nickname_matches_ts_unicode_length_limits() {
+        assert!(!valid_nickname("测试"));
+        assert!(valid_nickname("测试用户"));
+        assert!(valid_nickname(&"测".repeat(30)));
+        assert!(!valid_nickname(&"测".repeat(31)));
+        assert!(!valid_nickname("   "));
+        assert!(!valid_nickname("测试\n用户"));
+    }
 
     #[test]
     fn handshake_failure_preserves_safe_actionable_reason() {

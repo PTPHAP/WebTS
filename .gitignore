@@ -12,6 +12,15 @@ config.local.toml
 *.pem
 __pycache__/
 *.pyc
+# Internal development records stay local.
+/PROGRESS.md
+/PROJECT_STATE.md
+/REQUIREMENTS.md
+/ROADMAP.md
+/docs/HANDOFF.md
+/docs/ACCEPTANCE.md
+/docs/DECISIONS.md
+/docs/GITHUB.md
 *.db
 *.db-shm
 *.db-wal

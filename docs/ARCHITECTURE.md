@@ -22,4 +22,4 @@ SQLite保存用户、密码哈希、身份密文、登录会话、验证/恢复�
 
 ## 固定依赖
 
-tsclientlib提交与raw-audio补丁记录在PROJECT_STATE.md和patches/。锁文件在第一次成功解析与构建后提交。raw-audio只开放原始音频包，不增加音频转码。
+tsclientlib提交与raw-audio补丁记录在THIRD_PARTY_NOTICES.md和patches/。Cargo.lock固定实际依赖。raw-audio只开放原始音频包，不增加音频转码。

@@ -1,39 +1,55 @@
-# Web TS
+<div align="center">
 
-面向 TS3/TS6 的自托管浏览器客户端。邮箱账号管理多个 TeamSpeak 身份，通过真实身份与原生客户端同频道语音并继承 TS 权限。
+# WebTS
 
-**当前状态：开发中，协议验证尚未通过，不可作为已验收产品部署。** 已实现身份解析与导出、身份密文保存、账号数据层、密码哈希和本地协议探针；网页、HTTP账号流程、SMTP及WebRTC语音仍待实现。具体构建与测试结果见验收记录。
+**把你的 TeamSpeak，带进浏览器。**
 
-开源仓库：[PTPHAP/WebTS](https://github.com/PTPHAP/WebTS)。本项目采用MIT许可，保留第三方独立许可。
+自托管 · 真实身份 · 权限继承 · 加密语音
 
-## 项目文档入口
+[![License: MIT](https://img.shields.io/badge/License-MIT-8b5cf6.svg)](LICENSE)
+[![Rust checks](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml/badge.svg)](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)
 
-| 文档 | 用途 |
+[部署指南](docs/DEPLOYMENT.md) · [身份互用](docs/IDENTITIES.md) · [安全说明](docs/SECURITY.md) · [参与贡献](CONTRIBUTING.md)
+
+</div>
+
+---
+
+WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管理自己的多个 TeamSpeak 身份，让社区成员通过浏览器加入已有服务器。
+
+> **首版正在制作。** 当前公开代码包含身份与账号安全基础、协议探针；完整网页、邮件流程和双向语音还未交付。可用功能与启动方式将随验证结果更新。
+
+## 为你的社区而设计
+
+| 体验 | 首版目标 |
 | --- | --- |
-| [工作进度](PROGRESS.md) | 本轮完成的具体工作、验证结果和下一步 |
-| [项目状态](PROJECT_STATE.md) | 唯一当前状态、版本和阻塞项 |
-| [需求清单](REQUIREMENTS.md) | 已确认功能、安全要求和验收编号 |
-| [未来更新计划](ROADMAP.md) | 长期里程碑、候选更新、用户新要求 |
-| [架构说明](docs/ARCHITECTURE.md) | 技术结构和数据流 |
-| [安全与信任边界](docs/SECURITY.md) | 私钥托管、账号恢复、语音加密 |
-| [部署说明](docs/DEPLOYMENT.md) | 本地工具、配置和正式部署条件 |
-| [身份互用说明](docs/IDENTITIES.md) | 创建、导入、导出及 TS 权限 |
-| [验收记录](docs/ACCEPTANCE.md) | 实际测试证据与未验证项目 |
-| [决策记录](docs/DECISIONS.md) | 关键技术决策与原因 |
-| [续开发交接](docs/HANDOFF.md) | 中断后继续工作的准确入口 |
-| [GitHub创建与发布](docs/GITHUB.md) | 仓库名称、简介、MIT许可及上传范围 |
-| [参与开发](CONTRIBUTING.md) | 持续维护、需求变更与验证约定 |
+| 浏览器加入 | 中文界面、深浅主题，频道、聊天和成员同屏显示 |
+| 一个账号，多个身份 | 邮箱注册与找回，导入、创建、命名、切换和导出身份 |
+| 原有权限继续使用 | 以真实TS身份连接，权限由目标服务器决定 |
+| 清晰的语音控制 | Opus、按键发言、语音激活、设备选择、静音、耳语 |
+| 自己掌握数据 | 单进程Rust网关、SQLite、本地密钥，便于部署与备份 |
 
-## 开发约定
+## 加密，讲清楚边界
 
-- 所有项目工作、下载、工具和缓存限定在本目录；不访问或修改其他项目。
-- 最少依赖、单进程网关，改动须对应已确认需求；新功能先进入需求清单与路线图。
-- 每轮开发结束、阶段完成或中断时更新工作进度、项目状态、交接及实际验收记录。
-- 完成声明以真实测试为依据。界面演示、自动负载和原生客户端互通分别验收。
-- 不提交真实邮箱凭据、身份私钥、部署密钥或数据库。身份文件持有者可以使用对应 TS 权限。
+身份私钥采用 **AES-256-GCM** 加密托管。网站运营者持有解密能力，账号密码重置不会改变TS身份。
 
-## 预定结构
+浏览器至网关使用 HTTPS/WSS 与 WebRTC DTLS-SRTP；目标设计优先 AES-256-GCM，兼容下限 AES-128-GCM。网关至TeamSpeak使用原生协议加密，当前固定协议库为 **AES-128-EAX**。必须开启服务器全局语音加密，不能确认时拒绝语音。
 
-`server/` 为 Rust 服务；`web/` 为 React 网页；`vendor/tsclientlib` 为固定协议子模块；`patches/` 为必要兼容补丁；`scripts/` 为项目内工具和验证脚本。
+这属于两段传输加密：网关能够接触语音内容。不会把它标成端到端加密或全链路AES-256。[了解安全边界 →](docs/SECURITY.md)
 
-本地工具与协议探针使用方法见[构建与部署](docs/DEPLOYMENT.md)。正式发布包尚未提供。
+## 本地开发
+
+```sh
+git clone --recurse-submodules https://github.com/PTPHAP/WebTS.git
+cd WebTS
+sh scripts/prepare-vendor.sh
+cargo test --workspace --locked
+```
+
+Windows开发、配置和协议探针见[部署指南](docs/DEPLOYMENT.md)。不要把身份文件、密钥、数据库或真实配置提交到仓库。
+
+## 项目与许可
+
+React · TypeScript · Rust · Tokio · Axum · SQLite · Opus · WebRTC
+
+MIT许可，见[LICENSE](LICENSE)。第三方许可保留各自声明，见[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。WebTS是独立第三方客户端，与TeamSpeak官方无隶属关系。

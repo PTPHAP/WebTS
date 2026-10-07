@@ -4,11 +4,11 @@
 
 ## 开发顺序
 
-1. 阅读 PROJECT_STATE.md、REQUIREMENTS.md、ROADMAP.md 和 docs/HANDOFF.md。
+1. 阅读README、docs/ARCHITECTURE.md和docs/SECURITY.md。
 2. 使用独立测试环境与测试身份；真实服务器只在指定测试频道小规模联调。
 3. 改动对应需求编号，运行相关构建和安全测试；真实互通需要另行记录证据。
-4. 更新 PROGRESS.md、PROJECT_STATE.md、docs/ACCEPTANCE.md 和 docs/HANDOFF.md。
-5. 新要求先更新 REQUIREMENTS.md 与 ROADMAP.md，记录对现有接口、安全和验收的影响。已验收行为发生变化时重新验证对应项。
+4. 更新部署、身份和安全说明。内部进度、任务交接与开发计划仅在本地维护，不提交仓库。
+5. 新需求说明目标、范围及验收方式。已验收行为发生变化时重新验证对应项。
 
 ## 提交与问题反馈
 

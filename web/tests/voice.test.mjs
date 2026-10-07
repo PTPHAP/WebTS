@@ -8,12 +8,12 @@ const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKi
 const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 
 function browser(microphoneError) {
-  const sent = [], tracks = [], timers = [];
+  const sent = [], tracks = [], timers = [], captured=[],constraints=[],contexts=[],sockets=[];
   let requests = 0, focused = true;
-  const track = () => ({enabled:true, stopped:false, stop(){this.stopped=true;}, clone:track});
+  const track = () => ({enabled:true, stopped:false, stop(){this.stopped=true;}, clone:track,getSettings:()=>({noiseSuppression:true}),applyConstraints:async()=>{}});
   globalThis.fetch = async () => ({ok:true, json:async()=>({})});
-  Object.defineProperty(globalThis, 'navigator', {configurable:true, value:{mediaDevices:{getUserMedia:async()=>{
-    requests++; if(microphoneError)throw microphoneError;return new MediaStream([track()]);
+  Object.defineProperty(globalThis, 'navigator', {configurable:true, value:{mediaDevices:{getUserMedia:async options=>{
+    constraints.push(options);requests++;if(microphoneError)throw microphoneError;const input=track();captured.push(input);return new MediaStream([input]);
   }}}});
   globalThis.location = {protocol:'https:', host:'fixture.example'};
   globalThis.document = {hasFocus:()=>focused};
@@ -22,18 +22,21 @@ function browser(microphoneError) {
   globalThis.MediaStream = class {constructor(tracks){this.tracks=tracks;}getAudioTracks(){return this.tracks;}getTracks(){return this.tracks;}};
   globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);}close(){}};
   globalThis.AudioContext = class {
+    constructor(options){this.options=options;contexts.push(this);}
     createMediaStreamSource(){return {connect(){}};}
+    createGain(){this.gain={gain:{value:1},connect(){}};return this.gain;}
+    createMediaStreamDestination(){const output=track();captured.push(output);return {stream:new MediaStream([output])};}
     createAnalyser(){return {fftSize:512,getFloatTimeDomainData:data=>data.fill(0)};}
-    close(){} resume(){}
+    close(){this.closed=true;} resume(){}
   };
   globalThis.WebSocket = class {
     static OPEN=1;
     readyState=1;
-    constructor(){queueMicrotask(()=>this.onopen?.());}
+    constructor(){sockets.push(this);queueMicrotask(()=>this.onopen?.());}
     send(message){sent.push(JSON.parse(message));}
     close(){this.readyState=3;}
   };
-  return {sent, tracks, tick:()=>timers.forEach(callback=>callback()), focus:value=>{focused=value;}, requests:()=>requests};
+  return {sent,tracks,captured,constraints,contexts,sockets,tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
 }
 
 test('microphone denial explains browser permission and listen-only recovery', async()=>{
@@ -41,6 +44,18 @@ test('microphone denial explains browser permission and listen-only recovery', a
   const voice=new Voice(()=>{});
   await assert.rejects(voice.connect({identity:'fixture'},'',false), /麦克风权限.*仅收听/);
   voice.close();
+});
+
+test('gain processing preserves continuous mic and releases raw and processed tracks',async()=>{
+  const env=browser(),voice=new Voice(()=>{});voice.configure({noise:'off',echo:false,autoGain:false,gain:1.4,volume:0.6});
+  await voice.connect({identity:'fixture'},'test-device',false);assert.equal(env.constraints[0].audio.echoCancellation,false);assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.constraints[0].audio.autoGainControl,false);assert.equal(env.contexts[0].options.sampleRate,48000);assert.equal(env.contexts[0].gain.gain.value,1.4);assert.equal(env.tracks[0].enabled,true);
+  voice.close();assert.ok(env.captured.every(t=>t.stopped));assert.ok(env.contexts.every(c=>c.closed));
+});
+test('cancelled config fetch never opens microphone or creates another socket',async()=>{
+  const env=browser(),voice=new Voice(()=>{});let resolve;globalThis.fetch=()=>new Promise(r=>resolve=r);const old=voice.connect({identity:'old'},'',false);voice.close();globalThis.fetch=async()=>({ok:true,json:async()=>({})});await voice.connect({identity:'new'},'',true);resolve({ok:true,json:async()=>({})});await old;assert.equal(env.requests(),0);assert.equal(env.sockets.length,1);assert.equal(env.sockets[0].readyState,1);voice.close();
+});
+test('cancelled microphone failure cannot close replacement connection',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));let reject;let started;const captureStarted=new Promise(r=>started=r);navigator.mediaDevices.getUserMedia=()=>{started();return new Promise((_,r)=>reject=r);};const old=voice.connect({identity:'old'},'',false);await captureStarted;await voice.connect({identity:'new'},'',true);reject(new DOMException('Permission denied','NotAllowedError'));await old;assert.equal(env.sockets.at(-1).readyState,1);assert.ok(!events.some(e=>e.type==='error'));voice.close();
 });
 
 test('missing or busy microphone offers device selection or listen-only', async()=>{

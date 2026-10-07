@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-8b5cf6.svg)](LICENSE)
 [![Rust checks](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml/badge.svg)](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)
 
-[部署指南](docs/DEPLOYMENT.md) · [身份互用](docs/IDENTITIES.md) · [安全说明](docs/SECURITY.md) · [参与贡献](CONTRIBUTING.md)
+[部署指南](docs/DEPLOYMENT.md) · [身份互用](docs/IDENTITIES.md) · [语音与头像](docs/CLIENT.md) · [安全说明](docs/SECURITY.md) · [参与贡献](CONTRIBUTING.md)
 
 </div>
 
@@ -29,7 +29,9 @@ WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管
 | 一个账号，多个身份 | 邮箱注册与找回，导入、创建、命名、切换和导出身份 |
 | 原有权限继续使用 | 以真实TS身份连接，权限由目标服务器决定 |
 | 站点管理 | 管理员配置邮箱与默认服务器、控制自定义连接，保存后立即生效 |
-| 清晰的语音控制 | Opus、自由发言、按键发言、设备选择、静音、耳语 |
+| 清晰的语音控制 | Opus、持续开麦、按键发言、降噪/AEC/AGC、可选RNNoise、设备与音量、耳语 |
+| 服务器头像互通 | 设置本人TS服务器头像，显示可见成员头像，失败可重试 |
+| 频道资料 | 常驻介绍、有限安全BBCode，单击查看、双击加入 |
 | 自己掌握数据 | 单进程Rust网关、SQLite、本地密钥，便于部署与备份 |
 
 ## 加密，讲清楚边界
@@ -69,7 +71,7 @@ Windows开发、配置和协议探针见[部署指南](docs/DEPLOYMENT.md)。不
 
 验证与找回邮件提供按钮及备用链接；网页显示确认结果。验证链接过期后，可重新发送邮件，无需重新设置注册密码。
 
-聊天和管理使用当前 TS 身份权限，网站账号不会额外授予管理员权限。文件传输、屏幕共享、组权限编辑和旧语音编码尚未提供。
+聊天和管理使用当前 TS 身份权限，网站账号不会额外授予管理员权限。通用文件传输、屏幕共享、组权限编辑和旧语音编码尚未提供；头像使用专用服务器文件传输。
 
 ## 项目与许可
 

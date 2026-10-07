@@ -36,6 +36,8 @@ tsproto-types = { path = "../vendor/tsclientlib/utils/tsproto-types" }
 webrtc = "=0.21.0"
 zeroize = "1"
 url = "2"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
+md-5 = "=0.10.6"
 
 [dev-dependencies]
 tempfile = "3"

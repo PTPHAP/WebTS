@@ -1,4 +1,5 @@
 pub mod app;
+pub mod avatar;
 pub mod config;
 pub mod db;
 pub mod email;

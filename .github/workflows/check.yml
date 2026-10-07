@@ -24,6 +24,8 @@ jobs:
         run: cargo check --workspace --locked
       - name: Safety tests
         run: cargo test --workspace --locked
+      - name: Protocol file transfer boundary tests
+        run: rustc --test vendor/tsclientlib/tsclientlib/src/filetransfer_security.rs -o /tmp/webts-ft-tests && /tmp/webts-ft-tests
       - name: Lint project code
         run: cargo clippy --package web-ts --no-deps --locked -- -D warnings
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

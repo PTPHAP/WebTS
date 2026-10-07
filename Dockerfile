@@ -14,6 +14,7 @@ COPY vendor/ vendor/
 COPY patches/ patches/
 COPY config.example.toml ./
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses/ licenses/
 COPY scripts/collect-licenses.sh scripts/collect-licenses.sh
 RUN git -C vendor/tsclientlib apply --reverse --check ../../patches/raw-audio.patch 2>/dev/null || git -C vendor/tsclientlib apply ../../patches/raw-audio.patch
 RUN cargo build --release --package web-ts --locked

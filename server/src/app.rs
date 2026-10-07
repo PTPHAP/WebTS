@@ -299,7 +299,7 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
     );
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"));
+    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"));
     if api {
         h.insert("cache-control", HeaderValue::from_static("no-store"));
     }

@@ -11,6 +11,7 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -432,7 +433,7 @@ fn enforce(conn: &Connection) -> Result<()> {
 fn snapshot(conn: &Connection) -> Result<Value> {
     let state = conn.get_state()?;
     Ok(
-        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
+        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
     )
 }
 // These borrows belong to a single connection actor; keeping ownership together
@@ -464,12 +465,17 @@ async fn connected(
     let mut cipher = None;
     let mut speaking = HashMap::<u16, Instant>::new();
     let mut negotiated = Instant::now();
+    let mut avatars = crate::avatar::Avatars::default();
+    let mut described_channel = None;
     loop {
         tokio::select! {
             _=cancel.cancelled()=>break,
             _=done.cancelled()=>break,
             _=timer.tick()=>{
                 enforce(conn)?;
+                let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
+                if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
+                for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 if changed{let s=conn.get_state()?;let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){bail!("浏览器语音协商超时");}
@@ -480,16 +486,23 @@ async fn connected(
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>changed=true,
                 StreamItem::DisconnectedTemporarily(_)=>bail!("TeamSpeak连接中断，请重新连接"),
+                StreamItem::FileDownload(handle,result)=>avatars.downloaded(handle.0,result,app.clone()),
+                StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
+                StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
                 StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if speaking.get(from).is_none_or(|t|t.elapsed()>Duration::from_millis(300)){emit(tx,json!({"type":"speaking","client":from}))?;speaking.insert(*from,Instant::now());}},_=>{}}},
-                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){emit(tx,json!({"type":"result","id":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string())}))?;},
+                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,json!({"type":"result","id":id,"ok":result.is_ok(),"message":result.err().map(|e|format!("TS拒绝操作：{}（错误代码{}）",e,e.error as u16))}))?;},
                 _=>{}
             }},
+            completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
             message=input.next()=>{let Some(message)=message else{break;};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){break;}continue;};
                 if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
                 let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
                 match value["type"].as_str().unwrap_or(""){
+                    "avatar_get"=>{let client=value["client"].as_u64().filter(|id|*id<=u16::MAX as u64).context("头像成员无效")? as u16;if let Err(error)=avatars.download(conn,client){emit(tx,json!({"type":"avatar","client":client,"uid":conn.get_state()?.clients.get(&tsproto_types::ClientId(client)).and_then(|c|c.uid.as_ref()).map(|u|u.to_string()),"hash":value["hash"].as_str().filter(|s|s.len()==32&&s.bytes().all(|b|b.is_ascii_hexdigit())).unwrap_or(""),"data":null,"error":error.to_string()}))?;}},
+                    "avatar_upload"=>{let id=value["id"].as_str().filter(|id|id.starts_with("avatar:")&&id.len()<=64).context("头像操作ID无效")?.to_owned();let result=avatars.prepare_upload(app.clone(),id.clone(),value["data"].as_str().unwrap_or(""));if let Err(error)=result{emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?;}},
+                    "channel_info"=>{let id=value["channel"].as_u64().context("频道无效")?;if conn.get_state()?.channels.contains_key(&tsproto_types::ChannelId(id)){command("channelgetdescription",&[("cid",id.to_string())]).send(conn)?;}},
                     "answer"=>media.answer(serde_json::from_value(value["description"].clone())?).await?,
-                    "ice"=>media.peer.add_ice_candidate(serde_json::from_value(value["candidate"].clone())?).await?,
+                    "ice"=>media.ice(value["candidate"].clone()).await?,
                     "transmit"=>transmit=value["enabled"].as_bool().unwrap_or(false),
                     "whisper"=>{let clients=targets(&value["clients"],u16::MAX as u64)?;let channels=targets(&value["channels"],u64::MAX)?;let s=conn.get_state()?;if clients.iter().any(|id|!s.clients.keys().any(|c|u64::from(c.0)==*id))||channels.iter().any(|id|!s.channels.keys().any(|c|c.0==*id)){bail!("耳语目标不存在");}whisper_clients=clients.into_iter().map(|c|c as u16).collect();whisper_channels=channels;emit(tx,json!({"type":"whisper","active":!whisper_clients.is_empty()||!whisper_channels.is_empty()}))?;},
                     "mute"=>{muted=value["muted"].as_bool().unwrap_or(false);deafened=value["deafened"].as_bool().unwrap_or(false);command("clientupdate",&[("client_input_muted",u8::from(muted).to_string()),("client_output_muted",u8::from(deafened).to_string())]).send_with_result(conn)?;},
@@ -499,6 +512,73 @@ async fn connected(
                 }
             }
         }
+    }
+    Ok(())
+}
+fn avatar_completed(
+    conn: &mut Connection,
+    avatars: &mut crate::avatar::Avatars,
+    pending: &mut HashMap<u16, (String, Instant)>,
+    completed: crate::avatar::Completed,
+    tx: &mpsc::Sender<Value>,
+) -> Result<()> {
+    use crate::avatar::Completed;
+    match completed {
+        Completed::Download(target, result) => {
+            let state = conn.get_state()?;
+            if state
+                .clients
+                .get(&tsproto_types::ClientId(target.client))
+                .is_some_and(|c| {
+                    c.uid.as_ref().is_some_and(|u| u.to_string() == target.uid)
+                        && c.avatar_hash == target.hash
+                })
+            {
+                let (data, error) = match result {
+                    Ok(bytes) => (
+                        Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes))),
+                        None,
+                    ),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                emit(
+                    tx,
+                    json!({"type":"avatar","client":target.client,"uid":target.uid,"hash":target.hash,"data":data,"error":error}),
+                )?;
+            } else {
+                emit(
+                    tx,
+                    json!({"type":"avatar","client":target.client,"uid":target.uid,"hash":target.hash,"data":null,"error":"头像版本已变化"}),
+                )?;
+            }
+        }
+        Completed::UploadReady(id, result) => {
+            let result = result.and_then(|bytes| avatars.upload(conn, id.clone(), bytes));
+            if let Err(error) = result {
+                emit(
+                    tx,
+                    json!({"type":"result","id":id,"ok":false,"message":error.to_string()}),
+                )?;
+            }
+        }
+        Completed::Uploaded(id, result) => match result {
+            Ok(hash) => {
+                if pending.len() >= 32 {
+                    emit(
+                        tx,
+                        json!({"type":"result","id":id,"ok":false,"message":"待处理操作过多，请重试"}),
+                    )?;
+                } else {
+                    let handle = command("clientupdate", &[("client_flag_avatar", hash)])
+                        .send_with_result(conn)?;
+                    pending.insert(handle.0, (id, Instant::now()));
+                }
+            }
+            Err(error) => emit(
+                tx,
+                json!({"type":"result","id":id,"ok":false,"message":error.to_string()}),
+            )?,
+        },
     }
     Ok(())
 }

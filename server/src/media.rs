@@ -41,6 +41,31 @@ use webrtc::{
     runtime::TokioRuntime,
 };
 
+// Internet deployment must not probe LAN/metadata endpoints supplied by users.
+fn public_candidate(candidate: &str) -> bool {
+    let fields: Vec<_> = candidate.split_ascii_whitespace().collect();
+    fields.len() >= 8
+        && fields[2].eq_ignore_ascii_case("udp")
+        && fields[5].parse::<u16>().is_ok_and(|port| port != 0)
+        && fields[4]
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| tsclientlib::resolver::is_public_addr(&ip))
+}
+fn public_sdp(sdp: &str) -> String {
+    sdp.lines()
+        .filter(|line| {
+            line.trim()
+                .strip_prefix("a=")
+                .map(str::trim)
+                .is_none_or(|attribute| {
+                    !attribute.starts_with("candidate:") || public_candidate(attribute)
+                })
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        + "\r\n"
+}
+
 pub fn ice_servers(app: &App, owner: i64) -> Result<Vec<RTCIceServer>> {
     if let (Some(url), Some(path)) = (&app.config.rtc.turn_url, &app.config.rtc.turn_secret_file) {
         let secret = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
@@ -129,6 +154,7 @@ pub struct Media {
     speakers: HashMap<u16, Speaker>,
     pub negotiating: bool,
     pub dirty: bool,
+    local_ice: bool,
 }
 impl Media {
     pub async fn new(
@@ -196,6 +222,8 @@ impl Media {
             speakers: HashMap::new(),
             negotiating: false,
             dirty: true,
+            local_ice: app.config.allow_insecure_localhost
+                && app.config.public_url.starts_with("http://localhost:"),
         })
     }
     pub async fn sync_speakers(
@@ -276,9 +304,23 @@ impl Media {
         self.dirty = false;
         Ok(())
     }
-    pub async fn answer(&mut self, answer: RTCSessionDescription) -> Result<()> {
+    pub async fn answer(&mut self, mut answer: RTCSessionDescription) -> Result<()> {
+        if !self.local_ice {
+            answer.sdp = public_sdp(&answer.sdp);
+        }
         self.peer.set_remote_description(answer).await?;
         self.negotiating = false;
+        Ok(())
+    }
+    pub async fn ice(&self, value: Value) -> Result<()> {
+        let candidate: rtc::peer_connection::transport::RTCIceCandidateInit =
+            serde_json::from_value(value)?;
+        if self.local_ice
+            || candidate.candidate.is_empty()
+            || public_candidate(&candidate.candidate)
+        {
+            self.peer.add_ice_candidate(candidate).await?;
+        }
         Ok(())
     }
     pub async fn check_cipher(&self) -> Result<Option<Value>> {
@@ -383,6 +425,30 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ice_and_embedded_sdp_do_not_probe_private_or_named_targets() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fd00::1",
+            "router.local",
+        ] {
+            let candidate = format!("candidate:1 1 udp 123 {address} 9000 typ host");
+            assert!(!public_candidate(&candidate));
+            for space in ["", " ", "\t", "\u{a0}"] {
+                let sdp = format!("v=0\na={space}{candidate}\na=sendrecv\n");
+                let filtered = public_sdp(&sdp);
+                assert!(!filtered.contains(address));
+                assert!(filtered.contains("a=sendrecv"));
+            }
+        }
+        let candidate = "candidate:1 1 udp 123 8.8.8.8 9000 typ srflx raddr 10.0.0.2 rport 4000";
+        assert!(public_candidate(candidate));
+        assert!(public_sdp(&format!("a={candidate}\r\n")).contains(candidate));
+    }
     #[test]
     fn opus_duration_checks_bound_forwarded_frames() {
         assert_eq!(opus_samples(&[0xf8]).unwrap(), 960);

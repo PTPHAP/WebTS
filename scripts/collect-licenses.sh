@@ -15,3 +15,5 @@ for package in react react-dom scheduler; do
     cp "web/node_modules/$package/LICENSE" "$destination/npm-$package/"
 done
 cp LICENSE THIRD_PARTY_NOTICES.md "$destination/"
+
+cp -R licenses/audio "$destination/"

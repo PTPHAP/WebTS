@@ -42,3 +42,12 @@
 - [OWASP账号找回](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html)
 - [OWASP加密存储](https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html)
 - [TeamSpeak身份说明](https://support.teamspeak.com/hc/en-us/articles/360002711518-How-does-the-TeamSpeak-3-user-Authentication-work)
+
+
+## 音频处理与头像边界
+
+增强降噪使用同源固定WASM，CSP仅增加wasm-unsafe-eval（不增加通用unsafe-eval）和同源worker。下载/初始化超时、处理器错误会提示并回退；浏览器设备能力影响原生处理是否生效。
+
+公网部署过滤trickle ICE及SDP内嵌候选的私网/回环/元数据/命名目标，避免网关被用作内网UDP探针；仅明确允许的localhost HTTP开发保留本机ICE测试。TURN中继须使用公网地址。
+
+头像绑定当前已验证TS连接，仅用可见成员真实UID生成固定文件路径；TCP目标固定为已验证语音对端IP。请求单次/过期检查、并发2、网络超时、下载128KiB、上传64KiB、图片解码8MiB/512边长，重编码为PNG。MD5只用作原生头像版本比对，不提供身份认证或内容安全保证。经典TS3头像TCP没有语音加密；只上传可公开图片。网页云头像暂不接入。

@@ -3,6 +3,7 @@
 target/
 web/node_modules/
 web/dist/
+web/public/audio/
 data/
 secrets/
 config.local.toml

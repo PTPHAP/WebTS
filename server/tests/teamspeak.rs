@@ -178,6 +178,21 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
 }
 
 async fn run() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use md5::{Digest, Md5};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(96, 96, image::Rgba([40, 80, 130, 255]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let avatar = png.into_inner();
+    let native_hash = format!("{:x}", Md5::digest(&avatar));
+    let mut avatar_uploaded = false;
+    let mut avatar_to_native = false;
+    let mut avatar_to_web = false;
+    let mut native_download_requested = false;
+    let mut web_download_requested = false;
+
     let target =
         std::env::var("WEBTS_TEST_TARGET").expect("set WEBTS_TEST_TARGET to an isolated TS3");
     let dir = tempfile::tempdir().unwrap();
@@ -298,13 +313,27 @@ async fn run() {
                     && events.iter().any(|e|matches!(e,tsclientlib::events::Event::Message{message,..} if message=="WebTS live channel chat")) {
                     chat_received=true;
                 }
-                if let StreamItem::Audio(packet)=event{
+                match event {
+                    StreamItem::FileUpload(_,result)=>{
+                        let mut stream=result.stream;stream.write_all(&avatar).await.unwrap();stream.shutdown().await.unwrap();
+                        let mut command=tsproto_packets::packets::OutCommand::new(tsproto_packets::packets::Direction::C2S,Flags::empty(),tsproto_packets::packets::PacketType::Command,"clientupdate");command.write_arg("client_flag_avatar",&native_hash);command.send(&mut native).unwrap();
+                    },
+                    StreamItem::FileDownload(_,result)=>{
+                        assert!(result.size<=65536);let mut bytes=vec![0;result.size as usize];let mut stream=result.stream;tokio::time::timeout(Duration::from_secs(5),stream.read_exact(&mut bytes)).await.unwrap().unwrap();
+                        let decoded=image::load_from_memory(&bytes).unwrap();assert_eq!(decoded.width(),96);assert_eq!(decoded.height(),96);avatar_to_native=true;
+                        native.upload_file(tsproto_types::ChannelId(0),"/avatar",None,avatar.len() as u64,true,false).unwrap();
+                    },
+                    StreamItem::FiletransferFailed(_,error)=>panic!("native avatar transfer failed: {error}"),
+                    StreamItem::Audio(packet)=>{
+
                     assert!(!packet.data().packet().header().flags().contains(Flags::UNENCRYPTED));
                     match packet.data().data(){
                         AudioData::S2C{data,..}=>{assert_eq!(*data,payload);ts_voice=true;},
                         AudioData::S2CWhisper{data,..}=>{assert_eq!(*data,payload);ts_whisper=true;},
                         _=>{}
                     }
+                    },
+                    _=>{}
                 }
             },
             event=socket.next()=>{
@@ -325,9 +354,21 @@ async fn run() {
                     },
                     "state"=>{if own_id==0 {
                         own_id=value["own"].as_u64().unwrap() as u16;
+                        socket.send(Message::Text(json!({"type":"avatar_upload","id":"avatar:live","data":STANDARD.encode(&avatar)}).to_string().into())).await.unwrap();
                         native.get_state().unwrap().send_message(MessageTarget::Channel,"WebTS peer reply").send_with_result(&mut native).unwrap();
                         native.get_state().unwrap().send_message(MessageTarget::Poke(tsproto_types::ClientId(own_id)),"WebTS poke").send_with_result(&mut native).unwrap();
-                    }},
+                    }
+                    for member in value["members"].as_array().unwrap(){
+                        if member["id"]==own_id&&member["avatarHash"].as_str().is_some_and(|h|h.len()==32)&&avatar_uploaded&&!native_download_requested{
+                            let uid=tsproto_types::UidBuf(STANDARD.decode(identity.key().to_pub().get_uid()).unwrap());let path=format!("/avatar_{}",uid.as_avatar());native.download_file(tsproto_types::ChannelId(0),&path,None,None).unwrap();native_download_requested=true;
+                        }
+                        if member["id"]==native_id&&member["avatarHash"]==native_hash&&!web_download_requested{
+                            socket.send(Message::Text(json!({"type":"avatar_get","client":native_id,"hash":native_hash}).to_string().into())).await.unwrap();web_download_requested=true;
+                        }
+                    }
+                    },
+                    "avatar" if value["client"]==native_id=>{assert!(value["error"].is_null(),"avatar response: {}",value["error"]);let data=value["data"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();let bytes=STANDARD.decode(data).unwrap();let decoded=image::load_from_memory(&bytes).unwrap();assert_eq!(decoded.width(),96);assert_eq!(decoded.height(),96);avatar_to_web=true;},
+                    "result" if value["id"]=="avatar:live"=>{assert_eq!(value["ok"],true,"avatar upload: {}",value["message"]);avatar_uploaded=true;},
                     "chat" if value["text"]=="WebTS peer reply"=>browser_chat=true,
                     "poke" if value["text"]=="WebTS poke"=>browser_poke=true,
                     "result" if value["id"]=="denied"=>{assert_eq!(value["ok"],false);assert!(value["message"].as_str().unwrap().to_lowercase().contains("permission"));denied=true;},
@@ -355,6 +396,8 @@ async fn run() {
             && browser_chat
             && browser_poke
             && denied
+            && avatar_to_native
+            && avatar_to_web
             && !revoked
         {
             app.db.revoke(owner, None).unwrap();
@@ -370,12 +413,14 @@ async fn run() {
             && ts_whisper
             && chat_received
             && denied
+            && avatar_to_native
+            && avatar_to_web
             && revoked
     );
     peer.close().await;
     server.abort();
     println!(
-        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, channel chat, permission refusal, session revocation"
+        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, channel chat, bidirectional server avatars, permission refusal, session revocation"
     );
     if std::env::var("WEBTS_TEST_KEEP_FIXTURE").as_deref() == Ok("1") {
         println!(

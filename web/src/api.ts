@@ -4,6 +4,6 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
   return response.json();
 }
 export type Identity = {id:string; name:string; uid:string; is_default:boolean};
-export type Member = {id:number; channel:number; name:string; uid?:string; muted:boolean; deafened:boolean; description:string; talkPower:number; serverGroups:number[]; channelGroup:number};
+export type Member = {id:number; channel:number; name:string; uid?:string; avatarHash:string; muted:boolean; deafened:boolean; description:string; talkPower:number; serverGroups:number[]; channelGroup:number};
 export type Channel = {id:number; parent:number; order:number; name:string; topic?:string; description?:string; password:boolean};
 export type State = {server:string; own:number; canSpeak:boolean; channels:Channel[]; members:Member[]};

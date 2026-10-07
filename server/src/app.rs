@@ -109,22 +109,16 @@ impl App {
             let (tx, mut rx) = mpsc::channel::<Mail>(32);
             tokio::spawn(async move {
                 while let Some(job) = rx.recv().await {
-                    let subject = if job.purpose == "verify" {
-                        "验证你的 WebTS 邮箱"
-                    } else {
-                        "重置你的 WebTS 密码"
-                    };
-                    let body = format!(
-                        "{subject}\n\n请在15分钟内打开以下链接，链接只能使用一次：\n{origin}/#{}={}\n\n如果不是你发起的操作，请忽略此邮件。不要转发链接。",
-                        job.purpose,
-                        job.token.as_str()
-                    );
+                    let (subject, plain, html) =
+                        crate::email::content(job.purpose, &origin, &job.token);
                     let message = job.email.parse().ok().and_then(|to| {
                         Message::builder()
                             .from(from.clone())
                             .to(to)
                             .subject(subject)
-                            .body(body)
+                            .multipart(lettre::message::MultiPart::alternative_plain_html(
+                                plain, html,
+                            ))
                             .ok()
                     });
                     let success = match message {
@@ -244,6 +238,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/health", get(health))
         .route("/me", get(me))
         .route("/auth/register", post(register))
+        .route("/auth/resend", post(resend))
         .route("/auth/login", post(login))
         .route("/auth/verify", post(verify))
         .route("/auth/forgot", post(forgot))
@@ -460,6 +455,20 @@ async fn verify(State(app): State<Arc<App>>, Json(body): Json<TokenBody>) -> Api
         Ok(Json(json!({"message":"邮箱已验证，现在可以登录。"})))
     })
     .await
+}
+async fn resend(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api<Json<Value>> {
+    if app.mail.is_none() {
+        return Err(Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "站点尚未配置邮箱服务，请联系站长",
+        ));
+    }
+    let email = email(&body.email)?;
+    app.work(move |a| {
+        let permit = a.mail.as_ref().unwrap().try_reserve().map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "邮件服务繁忙，请稍后再试"))?;
+        if let Some(token) = a.db.resend_verification(&email)? { permit.send(Mail {email, purpose:"verify", token:Zeroizing::new(token)}); }
+        Ok(Json(json!({"message":"如果账号需要验证，我们会发送一封新邮件。请检查收件箱与垃圾邮件，重复请求请间隔至少60秒。"})))
+    }).await
 }
 async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api<Json<Value>> {
     if app.mail.is_none() {

@@ -142,6 +142,35 @@ impl Db {
         tx.commit()?;
         Ok(value)
     }
+    pub fn resend_verification(&self, email: &str) -> Result<Option<String>> {
+        let mut c = self.connection.lock().unwrap();
+        let tx = c.transaction()?;
+        let owner: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM users WHERE email=? AND verified=0",
+                [email],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(owner) = owner else {
+            return Ok(None);
+        };
+        let recent: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM email_tokens WHERE user_id=? AND purpose='verify' AND expires>?)", params![owner, now()+840], |r| r.get(0))?;
+        if recent {
+            return Ok(None);
+        }
+        let value = token()?;
+        tx.execute(
+            "DELETE FROM email_tokens WHERE user_id=? AND purpose='verify'",
+            [owner],
+        )?;
+        tx.execute(
+            "INSERT INTO email_tokens VALUES(?,?,?,?)",
+            params![digest(&value), owner, "verify", now() + 900],
+        )?;
+        tx.commit()?;
+        Ok(Some(value))
+    }
     pub fn consume_email_token(
         &self,
         value: &str,
@@ -425,5 +454,27 @@ mod tests {
         assert_eq!(db.password_by_id(id).unwrap(), "owner_hash");
         assert!(db.create_session(id, false, "attacker_hash").is_err());
         assert!(db.create_session(id, false, "owner_hash").is_ok());
+    }
+    #[test]
+    fn resend_preserves_password_and_limits_mail_without_reviving_old_links() {
+        let db = Db::open(":memory:").unwrap();
+        let (owner, _, old) = db.register("one@example.com", "original_hash").unwrap();
+        assert!(
+            db.resend_verification("missing@example.com")
+                .unwrap()
+                .is_none()
+        );
+        assert!(db.resend_verification("one@example.com").unwrap().is_none());
+        db.connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE email_tokens SET expires=?", [now() + 800])
+            .unwrap();
+        let new = db.resend_verification("one@example.com").unwrap().unwrap();
+        assert_eq!(db.password_by_id(owner).unwrap(), "original_hash");
+        assert!(db.consume_email_token(&old, "verify", None).is_err());
+        assert!(db.resend_verification("one@example.com").unwrap().is_none());
+        db.consume_email_token(&new, "verify", None).unwrap();
+        assert!(db.resend_verification("one@example.com").unwrap().is_none());
     }
 }

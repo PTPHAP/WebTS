@@ -1,6 +1,7 @@
 pub mod app;
 pub mod config;
 pub mod db;
+pub mod email;
 pub mod gateway;
 pub mod identity;
 pub mod media;

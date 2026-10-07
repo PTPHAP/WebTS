@@ -99,3 +99,40 @@ index 900f2a9..6837ffe 100644
  						StreamItem::Audio(i) => SyncStreamItem::Audio(i),
  						StreamItem::IdentityLevelIncreasing(i) => {
  							SyncStreamItem::IdentityLevelIncreasing(i)
+diff --git a/utils/tsproto-types/src/crypto.rs b/utils/tsproto-types/src/crypto.rs
+index cc507a8..402a6c1 100644
+--- a/utils/tsproto-types/src/crypto.rs
++++ b/utils/tsproto-types/src/crypto.rs
+@@ -396,12 +396,12 @@ impl EccKeyPrivP256 {
+ 				}
+ 				if *len == 1 {
+ 					if let Some(ASN1Block::Integer(_, i)) = blocks.get(4) {
+-						Self::from_short(&i.to_bytes_be().1)
++						Self::from_tomcrypt_scalar(i)
+ 					} else {
+ 						Err(Error::NoPrivateKey)
+ 					}
+ 				} else if let Some(ASN1Block::Integer(_, i)) = blocks.get(2) {
+-					Self::from_short(&i.to_bytes_be().1)
++					Self::from_tomcrypt_scalar(i)
+ 				} else {
+ 					Err(Error::NoPrivateKey)
+ 				}
+@@ -413,6 +413,17 @@ impl EccKeyPrivP256 {
+ 		}
+ 	}
+ 
++	fn from_tomcrypt_scalar(value: &BigInt) -> Result<Self> {
++		let (sign, bytes) = value.to_bytes_be();
++		if sign != Sign::Plus || bytes.len() > 32 {
++			return Err(Error::NoShortKey);
++		}
++		// ASN.1 integers omit leading zeros; P-256 scalars require all 32 bytes.
++		let mut scalar = [0u8; 32];
++		scalar[32 - bytes.len()..].copy_from_slice(&bytes);
++		Self::from_short(&scalar)
++	}
++
+ 	/// Convert to base64 encoded private tomcrypt key.
+ 	pub fn to_ts(&self) -> String { BASE64_STANDARD.encode(self.to_tomcrypt()) }
+ 

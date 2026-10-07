@@ -78,4 +78,17 @@ mod tests {
         assert!(parse("[Identity]\nidentity=a\nidentity=b").is_err());
         assert!(parse(&"x".repeat(16_385)).is_err());
     }
+    #[test]
+    fn identities_with_leading_zero_private_scalars_preserve_uid() {
+        for first_nonzero in [1usize, 16, 31] {
+            let mut scalar = [0u8; 32];
+            scalar[first_nonzero] = 1;
+            let key = tsproto_types::crypto::EccKeyPrivP256::from_short(&scalar).unwrap();
+            let original = Identity::new(key, 0);
+            assert_eq!(
+                uid(&original),
+                uid(&parse(&export(&original, "test")).unwrap())
+            );
+        }
+    }
 }

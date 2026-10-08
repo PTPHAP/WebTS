@@ -19,7 +19,7 @@ function browser(microphoneError) {
   }}}});
   globalThis.location = {protocol:'https:', host:'fixture.example'};
   globalThis.document = {hasFocus:()=>focused};
-  globalThis.window = {setInterval:callback=>{timers.push(callback);return timers.length;}};
+  const delays=new Map();let clock=0;globalThis.window = {setInterval:callback=>{timers.push(callback);return timers.length;},setTimeout:(callback,ms)=>{const id=++clock;delays.set(id,{callback,ms});return id;},clearTimeout:id=>delays.delete(id)};
   globalThis.clearInterval = ()=>{};
   globalThis.MediaStream = class {constructor(tracks){this.tracks=tracks;}getAudioTracks(){return this.tracks;}getTracks(){return this.tracks;}};
   globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);}close(){}};
@@ -39,7 +39,7 @@ function browser(microphoneError) {
     send(message){sent.push(JSON.parse(message));}
     close(){this.readyState=3;}
   };
-  return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
+  return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
 }
 
 test('microphone denial explains browser permission and listen-only recovery', async()=>{
@@ -71,7 +71,7 @@ test('missing or busy microphone offers device selection or listen-only', async(
 });
 
 test('open microphone sends through silence; mute and focused PTT still control transmission', async()=>{
-  const env=browser(), voice=new Voice(()=>{});
+  const env=browser(), voice=new Voice(()=>{});voice.configure({noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
   await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.tracks[0].enabled,true,'default microphone must be open');
   assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,true,'initial state reaches gateway');
@@ -121,4 +121,47 @@ test('human voice initialization failure permits receiving but never falls back 
 test('explicit continuous denoise keeps the prior raw fallback on model failure',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));voice.configure({noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
   await voice.connect({identity:'fixture'},'',false);assert.equal(env.processors[0].voiceOnly,false);env.processors[0].onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'off');assert.equal(env.tracks[0].enabled,true);assert.equal(env.contexts[0].gain.gain.value,1);voice.close();
+});
+
+
+test('voice-only model activity controls TS transmit while the capture track stays alive',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false,'silence must not open TS voice');
+  assert.equal(env.tracks[0].enabled,true,'keep processing so speech attack is not clipped');
+  const old=env.processors[0];old.onspeech(true);assert.equal(env.sent.at(-1).enabled,true);
+  old.onspeech(false);await env.wait();assert.equal(env.sent.at(-1).enabled,false);
+  voice.setMute(true,false);old.onspeech(true);assert.equal(env.tracks[0].enabled,false);voice.setMute(false,false);assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,true);
+  voice.close();await voice.connect({identity:'other'},'',false);old.onspeech(true);assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false);voice.close();
+});
+
+test('unexpected disconnect retries indefinitely with capped backoff and restores actual last channel',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture',password:'memory-only'},'',true);
+  await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:7,name:'last'}]});
+  env.sockets.at(-1).onclose();assert.equal(env.delays.size,1);
+  for(let n=0;n<9;n++){assert.ok([...env.delays.values()][0].ms<=30000);await env.wait();env.sockets.at(-1).onclose();}
+  await env.wait();await env.message({type:'state',own:2,members:[{id:2,channel:1}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});
+  assert.equal(events.find(e=>e.type==='restore_channel').channel,7);
+  assert.ok(env.sent.some(e=>e.identity==='fixture'&&e.password==='memory-only'));
+  voice.close();assert.equal(env.delays.size,0);assert.ok(env.captured.every(t=>t.stopped));
+});
+
+test('explicit nonretryable server closure and deliberate disconnect cancel reconnect',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
+  await env.message({type:'disconnected',retryable:false});assert.equal(env.delays.size,0);
+  await voice.connect({identity:'fixture'},'',true);env.sockets.at(-1).onclose();assert.equal(env.delays.size,1);voice.close();assert.equal(env.delays.size,0);
+});
+
+
+test('HTTP auth expiry stops retries; an offline gateway stays retryable; no stale close survives replacement',async()=>{
+  const env=browser(),voice=new Voice(()=>{});globalThis.fetch=async()=>{throw Error('offline');};await voice.connect({identity:'fixture'},'',true);assert.equal(env.delays.size,1);
+  globalThis.fetch=async()=>({ok:false,status:401});await env.wait();assert.equal(env.delays.size,0);
+  globalThis.fetch=async()=>({ok:true,json:async()=>({})});await voice.connect({identity:'new'},'',true);const old=env.sockets.at(-1).onclose;await voice.connect({identity:'newer'},'',true);old();assert.equal(env.delays.size,0);voice.close();
+});
+
+test('channel restore survives another drop and deleted channels fall back with notice',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+  await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:7,name:'last'}]});
+  for(let i=0;i<2;i++){env.sockets.at(-1).onclose();await env.wait();await env.message({type:'state',own:2,members:[{id:2,channel:1}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});}
+  assert.equal(events.filter(e=>e.type==='restore_channel').length,2);
+  env.sockets.at(-1).onclose();await env.wait();await env.message({type:'state',own:3,members:[{id:3,channel:1}],channels:[{id:1,name:'default'}]});assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('已不存在')));voice.close();
 });

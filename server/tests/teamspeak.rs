@@ -163,6 +163,10 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
                 Some(Ok(Message::Text(text))) => {
                     let message: Value = serde_json::from_str(&text).unwrap();
                     if message["type"] == "disconnected" {
+                        assert_eq!(
+                            message["retryable"], false,
+                            "administrator revocation must stop reconnect"
+                        );
                         break;
                     }
                 }
@@ -277,6 +281,7 @@ async fn run() {
     let mut dtx_probes = 0;
     let mut end_requested = false;
     let mut ts_end = false;
+    let mut stopped_at: Option<std::time::Instant> = None;
     let mut native_end_requested = false;
     let mut own_end_received = false;
     let mut native_end_received = false;
@@ -340,7 +345,7 @@ async fn run() {
 
                     assert!(!packet.data().packet().header().flags().contains(Flags::UNENCRYPTED));
                     match packet.data().data(){
-                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;}else{assert_eq!(*data,payload);ts_voice=true;}},
+                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;stopped_at.get_or_insert_with(std::time::Instant::now);}else{assert!(!ts_end||whisper_requested,"valid browser RTP silence/refresh must not reopen ended TS voice");assert_eq!(*data,payload);ts_voice=true;}},
                         AudioData::S2CWhisper{data,..} if !data.is_empty()=>{assert_eq!(*data,payload);ts_whisper=true;},
                         _=>{}
                     }
@@ -386,13 +391,20 @@ async fn run() {
                     "poke" if value["text"]=="WebTS poke"=>browser_poke=true,
                     "result" if value["id"]=="denied"=>{assert_eq!(value["ok"],false);assert!(value["message"].as_str().unwrap().to_lowercase().contains("permission"));denied=true;},
                     "error" if !revoked=>panic!("gateway rejected live test: {}",value["message"]),
-                    "disconnected"=>{assert!(revoked);break;},
+                    "disconnected"=>{assert!(revoked);assert_eq!(value["retryable"],false);break;},
                     _=>{}
                 }
             }
         }
         if ts_voice && browser_voice && !end_requested {
-            peer.audio(7, sequence, &[0x78]).await.unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"type":"transmit","enabled":false})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
             sequence = sequence.wrapping_add(1);
             end_requested = true;
         }
@@ -409,7 +421,19 @@ async fn run() {
             sequence = sequence.wrapping_add(1);
             native_end_requested = true;
         }
-        if ts_end && ts_voice && browser_voice && !ts_whisper && !whisper_requested {
+        if ts_end
+            && ts_voice
+            && browser_voice
+            && !ts_whisper
+            && !whisper_requested
+            && stopped_at.is_some_and(|start| start.elapsed() >= Duration::from_millis(700))
+        {
+            socket
+                .send(Message::Text(
+                    json!({"type":"transmit","enabled":true}).to_string().into(),
+                ))
+                .await
+                .unwrap();
             socket
                 .send(Message::Text(
                     json!({"type":"whisper","clients":[native_id],"channels":[]})

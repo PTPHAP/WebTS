@@ -1,5 +1,5 @@
 type Worklet=AudioWorkletNode & {destroy():void};
-export type NoiseProcessor={input:AudioNode;output:AudioNode;mode:'rnnoise'|'keyboard';warning?:string;onchange?:(message:string)=>void;onerror?:()=>void;destroy():void};
+export type NoiseProcessor={input:AudioNode;output:AudioNode;mode:'rnnoise'|'keyboard';warning?:string;onchange?:(message:string)=>void;onerror?:()=>void;speaking?:boolean;onspeech?:(enabled:boolean)=>void;destroy():void};
 
 async function ready(node:Worklet) {
   try {
@@ -14,7 +14,7 @@ async function ready(node:Worklet) {
 }
 async function module(context:AudioContext,model:string) {
   let timer:number|undefined;
-  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-${model==='rnnoise'?'voice1':'ready1'}.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
+  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-${model==='rnnoise'?'voice2':'ready1'}.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
   finally {window.clearTimeout(timer);}
 }
 export async function createNoise(context:AudioContext,keyboard=false,voiceOnly=false):Promise<NoiseProcessor> {
@@ -37,7 +37,8 @@ export async function createNoise(context:AudioContext,keyboard=false,voiceOnly=
     if(context.state==='closed'||failed)throw new Error('语音连接已关闭或降噪处理器停止');
     const input=context.createGain();
     input.connect(gtcrn??rnnoise);gtcrn?.connect(rnnoise);
-    const processor:NoiseProcessor={input,output:rnnoise,mode:gtcrn?'keyboard':'rnnoise',warning,destroy(){input.disconnect();for(const node of [gtcrn,rnnoise])if(node){node.onprocessorerror=null;node.destroy();node.disconnect();}gtcrn=undefined;}};
+    const processor:NoiseProcessor={input,output:rnnoise,mode:gtcrn?'keyboard':'rnnoise',warning,speaking:false,destroy(){input.disconnect();for(const node of [gtcrn,rnnoise])if(node){node.onprocessorerror=null;node.port.onmessage=null;node.destroy();node.disconnect();}gtcrn=undefined;}};
+    rnnoise.port.onmessage=e=>{if(e.data.type==='speech'&&typeof e.data.enabled==='boolean'){processor.speaking=e.data.enabled;processor.onspeech?.(e.data.enabled);}};
     rnnoise.onprocessorerror=()=>processor.onerror?.();
     if(gtcrn)gtcrn.onprocessorerror=()=>{input.disconnect();gtcrn?.destroy();gtcrn?.disconnect();gtcrn=undefined;input.connect(rnnoise);processor.mode='rnnoise';processor.onchange?.('键盘声增强已停止，继续使用本地 RNNoise 降噪。');};
     return processor;

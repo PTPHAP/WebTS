@@ -29,3 +29,10 @@ test('non-48k context is refused; a closed connection cleans both initialized pr
   let context=environment();context.sampleRate=44100;await assert.rejects(createNoise(context,true),/48 kHz/);assert.equal(nodes.length,0);
   context=environment();duringKeyboard=()=>context.state='closed';await assert.rejects(createNoise(context,true),/连接已关闭/);assert.ok(nodes.every(n=>n.destroyed));
 });
+
+
+test('model speech transitions reach the consumer and cleanup detaches port messages',async()=>{
+  const processor=await createNoise(environment(),true,true),states=[];processor.onspeech=enabled=>states.push(enabled);
+  nodes[0].port.onmessage({data:{type:'speech',enabled:true}});nodes[0].port.onmessage({data:{type:'speech',enabled:false}});
+  assert.deepEqual(states,[true,false]);assert.equal(processor.speaking,false);processor.destroy();assert.equal(nodes[0].port.onmessage,null);
+});

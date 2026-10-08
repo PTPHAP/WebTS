@@ -77,17 +77,17 @@ impl Connections {
     fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
         let mut entries = self.entries.lock().unwrap();
         if entries.len() >= self.max {
-            bail!("网关连接已满");
+            return Err(retryable("网关连接已满"));
         }
         if entries.values().any(|e| {
             (e.uid == entry.uid && e.target == entry.target)
                 || (e.owner == entry.owner && e.page == entry.page)
         }) {
-            bail!("该身份已连接此服务器，或当前页面仍有连接");
+            return Err(retryable("该身份已连接此服务器，或当前页面仍有连接"));
         }
         let port = (min..=max)
             .find(|p| !entries.values().any(|e| e.port == *p))
-            .context("语音端口已用尽")?;
+            .ok_or_else(|| retryable("语音端口已用尽"))?;
         entry.port = port;
         let cancel = entry.cancel.clone();
         let id = crate::vault::token()?;
@@ -160,6 +160,17 @@ pub async fn upgrade(
 fn emit(tx: &mpsc::Sender<Value>, value: Value) -> Result<()> {
     tx.try_send(value).context("网页接收过慢，连接已停止")
 }
+#[derive(Debug)]
+struct Retryable(String);
+impl std::fmt::Display for Retryable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Retryable {}
+fn retryable(message: &str) -> anyhow::Error {
+    anyhow::Error::new(Retryable(message.into()))
+}
 async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
     let (mut sink, mut input) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Value>(64);
@@ -182,10 +193,14 @@ async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
         let _ = sink.close().await;
     });
     let result = bridge(&app, &headers, &mut input, &tx, &done).await;
+    let retry = result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.is::<Retryable>());
     if let Err(error) = result {
         let _ = emit(&tx, json!({"type":"error","message":error.to_string()}));
     }
-    let _ = emit(&tx, json!({"type":"disconnected"}));
+    let _ = emit(&tx, json!({"type":"disconnected","retryable":retry}));
     drop(tx);
     if tokio::time::timeout(Duration::from_secs(3), &mut writer)
         .await
@@ -244,8 +259,8 @@ async fn bridge(
     futures::pin_mut!(addresses);
     let target = tokio::time::timeout(Duration::from_secs(10), addresses.next())
         .await
-        .context("地址解析超时")?
-        .context("地址无法解析")?
+        .map_err(|_| retryable("地址解析超时"))?
+        .ok_or_else(|| retryable("地址无法解析"))?
         .map_err(|_| anyhow::anyhow!("地址无法解析或目标不被允许"))?;
     if !tsclientlib::resolver::is_public_addr(&target.ip()) {
         bail!("不能连接内网或回环地址");
@@ -313,7 +328,7 @@ async fn bridge(
         .connect()
         .map_err(report_connection_error)?;
     let cancel = lease.cancel.clone();
-    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.context("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁")??;
+    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
@@ -348,9 +363,33 @@ fn valid_nickname(name: &str) -> bool {
 fn report_connection_error(error: tsclientlib::Error) -> anyhow::Error {
     let message = connection_error(&error);
     tracing::warn!(reason = %message, "TeamSpeak连接失败");
-    anyhow::anyhow!(message)
+    if retry_connection_error(&error) {
+        retryable(&message)
+    } else {
+        anyhow::anyhow!(message)
+    }
 }
 
+fn retry_connection_error(error: &tsclientlib::Error) -> bool {
+    use tsclientlib::Error;
+    use tsproto_types::errors::Error as TsError;
+    match error {
+        Error::ConnectFailed { errors, .. } => errors.last().is_none_or(retry_connection_error),
+        Error::ConnectTs(
+            TsError::ServerMaxclientsReached | TsError::ClientIsFlooding | TsError::BanFlooding,
+        ) => true,
+        Error::Connect(protocol)
+        | Error::ConnectionFailed(protocol)
+        | Error::InitserverWait(protocol)
+        | Error::SendClientinit(protocol) => matches!(
+            protocol,
+            tsproto::client::Error::TsProto(
+                tsproto::Error::Timeout(_) | tsproto::Error::Network(_)
+            )
+        ),
+        _ => false,
+    }
+}
 fn connection_error(error: &tsclientlib::Error) -> String {
     use tsclientlib::Error;
     use tsproto_types::errors::Error as TsError;
@@ -479,16 +518,16 @@ async fn connected(
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 if changed{let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
-                if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}network_check=Instant::now();}
+                if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
-                if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){bail!("浏览器语音协商超时");}
+                if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
                 if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();pending.retain(|_,(id,start)|{if start.elapsed()>Duration::from_secs(15){let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});}
             },
-            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}},
-            event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak网络或协议错误"))?;enforce(conn)?;match event{
+            packet=audio.recv()=>{let Some(packet)=packet else{return Err(retryable("语音通道已关闭"));};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}},
+            event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(report_connection_error)?;if matches!(event,StreamItem::DisconnectedTemporarily(_)){return Err(retryable("TeamSpeak连接中断，正在自动重连"));}enforce(conn)?;match event{
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>changed=true,
-                StreamItem::DisconnectedTemporarily(_)=>bail!("TeamSpeak连接中断，请重新连接"),
+                StreamItem::DisconnectedTemporarily(_)=>unreachable!(),
                 StreamItem::FileDownload(handle,result)=>avatars.downloaded(handle.0,result,app.clone()),
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
                 StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
@@ -825,6 +864,25 @@ mod tests {
     use tsclientlib::Error;
     use tsproto_types::errors::Error as TsError;
 
+    #[test]
+    fn reconnect_retries_capacity_but_never_credentials_bans_or_permissions() {
+        for reason in [TsError::ServerMaxclientsReached, TsError::ClientIsFlooding] {
+            assert!(super::retry_connection_error(&Error::ConnectTs(reason)));
+            assert!(
+                super::report_connection_error(Error::ConnectTs(reason)).is::<super::Retryable>()
+            );
+        }
+        for reason in [
+            TsError::ConnectFailedBanned,
+            TsError::ServerInvalidPassword,
+            TsError::PermissionsClientInsufficient,
+        ] {
+            assert!(!super::retry_connection_error(&Error::ConnectTs(reason)));
+            assert!(
+                !super::report_connection_error(Error::ConnectTs(reason)).is::<super::Retryable>()
+            );
+        }
+    }
     #[test]
     fn periodic_dtx_refresh_does_not_look_like_continuous_speech() {
         let mut states = HashMap::new();

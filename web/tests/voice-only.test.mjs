@@ -27,6 +27,6 @@ test('real keyboard plus voice-only chain preserves quiet voiced input then sett
   let seed=31,phase=0;
   const input=Float32Array.from({length:48000*5},(_,i)=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;const time=i/48000;let value=(seed/4294967296*2-1)*.002;if(time>=1&&time<3){phase+=2*Math.PI*(150+30*Math.sin(time*12))/48000;for(let harmonic=1;harmonic<16;harmonic++)value+=Math.sin(phase*harmonic)/harmonic*.015*(.3+.7*Math.sin(time*9)**2);}return value;});
   const gt=await worklet('gtcrn'),plain=await worklet('rnnoise'),voice=await worklet('rnnoise',{voiceOnly:true});
-  try{const enhanced=gt.process(input),reference=plain.process(enhanced),output=voice.process(enhanced);const energy=a=>a.reduce((sum,v)=>sum+v*v,0);assert.ok(energy(output.slice(48000,48000*3.3))>energy(reference.slice(48000,48000*3.3))*.8,'quiet voiced energy must remain audible');assert.ok(output.slice(48000*4).every(v=>v===0),'pause settles to digital silence');}
+  try{const enhanced=gt.process(input),reference=plain.process(enhanced),output=voice.process(enhanced);const energy=a=>a.reduce((sum,v)=>sum+v*v,0);assert.ok(energy(output.slice(48000,48000*3.3))>energy(reference.slice(48000,48000*3.3))*.8,'quiet voiced energy must remain audible');assert.deepEqual(voice.events.map(e=>e.enabled),[true,false],'real model posts only speech boundaries, never per-frame telemetry');assert.ok(output.slice(48000*4).every(v=>v===0),'pause settles to digital silence');}
   finally{gt.destroy();plain.destroy();voice.destroy();}
 });

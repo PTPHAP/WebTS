@@ -27,3 +27,5 @@ its original permissive license and author list are included (not relabeled MIT)
 GTCRN internally processes 16 kHz speech and resamples its 48 kHz interface.
 It does not perform acoustic echo cancellation. Neither model uses a WebTS
 amplitude threshold or keyboard-event mute rule to stop transmission.
+
+WebTS另在既有人声门控状态改变时发送Worklet消息，用于网关语音开始/结束控制；不更改模型权重、概率参数或音频样本计算。

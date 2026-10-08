@@ -1,5 +1,5 @@
 import {readFile,writeFile,copyFile,mkdir,unlink} from 'node:fs/promises';
-import {createVoiceGate} from './voice-gate.mjs';
+import {createVoiceGate,createVoiceActivity} from './voice-gate.mjs';
 const packageRoot=new URL('../node_modules/@sapphi-red/web-noise-suppressor/dist/',import.meta.url);
 const target=new URL('../public/audio/',import.meta.url);
 await mkdir(target,{recursive:true});
@@ -8,8 +8,8 @@ for(const model of ['rnnoise','gtcrn']) {
   // Pin every patch seam; do not silently patch a different upstream release.
   if(model==='rnnoise'){
     const edits=[
-      ['const u=e=>',`const webtsVoiceGate=${createVoiceGate.toString()};const u=e=>`],
-      ['f=e=>{let t=e.createDenoiseState(),n=e=>{u(e),t.processFrame(e),d(e)}','f=(e,voiceOnly,onSpeech,preserveInput,strength,control)=>{let t=e.createDenoiseState(),original=preserveInput?new Float32Array(480):null,raw=new Float32Array(480),previousRaw=new Float32Array(480),typingGain=1,gate=voiceOnly?webtsVoiceGate(onSpeech):null,n=e=>{raw.set(e);original?.set(e);u(e);const probability=t.processFrame(e);d(e);if(original)e.set(original);else if(strength<1)for(let i=0;i<480;i++)e[i]=e[i]*strength+previousRaw[i]*(1-strength);previousRaw.set(raw);const typing=control.typing>0&&probability<.6;control.typing=Math.max(0,control.typing-1);for(let i=0;i<480;i++){typingGain=typing?Math.max(.1,typingGain-1/240):Math.min(1,typingGain+1/480);e[i]*=typingGain;}gate?.(e,probability)}'],
+      ['const u=e=>',`const webtsVoiceGate=${createVoiceGate.toString()};const webtsVoiceActivity=${createVoiceActivity.toString()};const u=e=>`],
+      ['f=e=>{let t=e.createDenoiseState(),n=e=>{u(e),t.processFrame(e),d(e)}','f=(e,voiceOnly,onSpeech,preserveInput,strength,control)=>{let t=e.createDenoiseState(),original=preserveInput?new Float32Array(480):null,raw=new Float32Array(480),previousRaw=new Float32Array(480),typingGain=1,gate=voiceOnly?webtsVoiceGate():null,activity=webtsVoiceActivity(onSpeech),n=e=>{raw.set(e);original?.set(e);u(e);const probability=t.processFrame(e);const speaking=activity(probability);d(e);if(original)e.set(original);else if(strength<1)for(let i=0;i<480;i++)e[i]=e[i]*strength+previousRaw[i]*(1-strength);previousRaw.set(raw);const typing=control.typing>0&&!speaking;control.typing=Math.max(0,control.typing-1);for(let i=0;i<480;i++){typingGain=typing?Math.max(.03,typingGain-1/240):Math.min(1,typingGain+1/480);e[i]*=typingGain;}gate?.(e,probability)}'],
       ['p=(e,{bufferSize:t,maxChannels:n})=>','p=(e,{bufferSize:t,maxChannels:n,voiceOnly,onSpeech,preserveInput,strength,control})=>'],
       ['()=>f(e)','()=>f(e,voiceOnly,onSpeech,preserveInput,strength,control)'],
       ['destroy:()=>{t.destroy()}}},p=', 'setPreserve:value=>{original=value?new Float32Array(480):null},destroy:()=>{t.destroy()}}},p='],
@@ -36,7 +36,7 @@ for(const model of ['rnnoise','gtcrn']) {
   if(source.split(end).length!==2)throw new Error(`${model} initialization source changed`);
   source=source.replace(end,"})().catch(()=>this.port.postMessage({type:'error'}))}process");
   source=source.replace(/\/\/# sourceMappingURL=.*$/m,'');
-  await writeFile(new URL(`${model}-0.4.1-${model==='rnnoise'?'voice3':'strength1'}.js`,target),source);
+  await writeFile(new URL(`${model}-0.4.1-${model==='rnnoise'?'voice4':'strength1'}.js`,target),source);
 }
-for(const obsolete of ['rnnoise-0.4.1-ready1.js','rnnoise-0.4.1-voice1.js','rnnoise-0.4.1-voice2.js','gtcrn-0.4.1-ready1.js'])await unlink(new URL(obsolete,target)).catch(error=>{if(error.code!=='ENOENT')throw error;});
+for(const obsolete of ['rnnoise-0.4.1-ready1.js','rnnoise-0.4.1-voice1.js','rnnoise-0.4.1-voice2.js','rnnoise-0.4.1-voice3.js','gtcrn-0.4.1-ready1.js'])await unlink(new URL(obsolete,target)).catch(error=>{if(error.code!=='ENOENT')throw error;});
 for(const file of ['rnnoise.wasm','rnnoise_simd.wasm','gtcrn.wasm'])await copyFile(new URL(file,packageRoot),new URL(`0.4.1-${file}`,target));

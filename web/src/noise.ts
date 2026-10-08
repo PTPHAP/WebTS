@@ -14,7 +14,7 @@ async function ready(node:Worklet) {
 }
 async function module(context:AudioContext,model:string) {
   let timer:number|undefined;
-  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-${model==='rnnoise'?'voice3':'strength1'}.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
+  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-${model==='rnnoise'?'voice4':'strength1'}.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
   finally {window.clearTimeout(timer);}
 }
 export async function createNoise(context:AudioContext,keyboard=false,voiceOnly=false,strength=1):Promise<NoiseProcessor> {

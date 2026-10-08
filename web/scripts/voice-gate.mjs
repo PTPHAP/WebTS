@@ -17,3 +17,18 @@ export function createVoiceGate(onchange) {
     }
   };
 }
+
+// Transmission detection is deliberately more permissive than voice-only filtering.
+// Keep complete syllables/pauses intact; this detector never changes PCM samples.
+export function createVoiceActivity(onchange) {
+  let hold=0,attack=0,speaking=false;
+  return probability=>{
+    if(!Number.isFinite(probability)||probability<0||probability>1)throw new Error('Invalid speech probability');
+    attack=probability>=.2?attack+1:0;
+    if(probability>=.6||attack>=2||(speaking&&probability>=.1))hold=40;
+    const active=hold>0;
+    if(active!==speaking){speaking=active;onchange?.(active);}
+    hold=Math.max(0,hold-1);
+    return active;
+  };
+}

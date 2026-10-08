@@ -37,6 +37,8 @@ systemd部署：创建专用webts用户，将包放入/opt/webts，给该用户d
 
 采用host网络保留UDP候选地址，不适用于Docker Desktop常规Windows网络。已有80/443服务时复用现有HTTPS代理，为新网站单独增加域名规则，避免抢占端口。
 
+也可从 [Releases](https://github.com/PTPHAP/WebTS/releases) 下载完整 `webts-…-source.zip`，按 `SHA256SUMS_SOURCE` 校验后解压，在包根目录执行下方配置与 Docker 命令，省略 `git clone` / `cd WebTS`。这个包包含固定协议库及其声明子模块，Docker 构建会应用随包补丁；没有预设账号、数据库、部署密钥或真实邮箱配置。不要将 GitHub 自动生成的 “Source code” 归档当成完整包，它不包含子模块。
+
 ```sh
 git clone --recurse-submodules https://github.com/PTPHAP/WebTS.git
 cd WebTS

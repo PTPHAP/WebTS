@@ -12,3 +12,10 @@ test('quiet synthetic voiced sound remains finite and audible; no RMS gate is ap
   let phase=0;const input=Float32Array.from({length:48000*3},(_,i)=>{const time=i/48000;phase+=2*Math.PI*(150+30*Math.sin(time*12))/48000;let value=0;for(let harmonic=1;harmonic<16;harmonic++)value+=Math.sin(phase*harmonic)/harmonic;return value*0.015*(0.3+0.7*Math.sin(time*9)**2);});
   const output=await denoise(input,true);assert.ok(output.every(Number.isFinite));assert.ok(energy(output)>energy(input)*0.2,'quiet voiced fixture must not be gated to silence');
 });
+
+test('default enhanced detection stops transmitting repeated key/mouse impulses after model settling',async()=>{
+  let seed=17;const input=Float32Array.from({length:48000*4},(_,i)=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;const phase=i%4800;return phase<900?(seed/4294967296*2-1)*.12*Math.exp(-phase/180):0;});
+  const gt=await worklet('gtcrn'),activity=await worklet('rnnoise',{preserveInput:true,voiceOnly:false});
+  try{const clean=gt.process(input);activity.process(clean);assert.ok(!activity.timeline.some(e=>e.enabled&&e.samples>48000),'settled keyboard/mouse-only noise must not reopen TS transmission');assert.ok(!activity.events.length||activity.events.at(-1).enabled===false,'any initial detector settling must end instead of keeping the TS blue bar on');}
+  finally{gt.destroy();activity.destroy();}
+});

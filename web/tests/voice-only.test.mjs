@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {worklet} from './audio-worklet.mjs';
-import {createVoiceGate} from '../scripts/voice-gate.mjs';
+import {createVoiceGate,createVoiceActivity} from '../scripts/voice-gate.mjs';
+
+test('permissive transmission detection rejects isolated weak clicks and holds quiet syllables without changing PCM',()=>{
+  const states=[],activity=createVoiceActivity(value=>states.push(value));
+  assert.equal(activity(.25),false);assert.equal(activity(.01),false);
+  assert.equal(activity(.25),false);assert.equal(activity(.25),true);
+  for(let i=0;i<80;i++)assert.equal(activity(.12),true,'quiet syllables sustain the full stream');
+  for(let i=0;i<39;i++)assert.equal(activity(.01),true,'brief phonemes and pauses remain in the stream');
+  assert.equal(activity(.01),false);assert.deepEqual(states,[true,false]);assert.throws(()=>activity(NaN),/probability/);
+});
 
 test('model probability, lookback, hysteresis and smooth tail preserve quiet speech without a level gate',()=>{
   const gate=createVoiceGate(),frame=probability=>{const samples=new Float32Array(480).fill(.00001);gate(samples,probability);return samples;};
@@ -34,6 +43,6 @@ test('real keyboard plus voice-only chain preserves quiet voiced input then sett
   let seed=31,phase=0;
   const input=Float32Array.from({length:48000*5},(_,i)=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;const time=i/48000;let value=(seed/4294967296*2-1)*.002;if(time>=1&&time<3){phase+=2*Math.PI*(150+30*Math.sin(time*12))/48000;for(let harmonic=1;harmonic<16;harmonic++)value+=Math.sin(phase*harmonic)/harmonic*.015*(.3+.7*Math.sin(time*9)**2);}return value;});
   const gt=await worklet('gtcrn'),plain=await worklet('rnnoise',{preserveInput:true}),voice=await worklet('rnnoise',{voiceOnly:true,preserveInput:true});
-  try{const enhanced=gt.process(input),reference=plain.process(enhanced),output=voice.process(enhanced);const energy=a=>a.reduce((sum,v)=>sum+v*v,0);assert.ok(energy(output.slice(48000,48000*3.3))>energy(reference.slice(48000,48000*3.3))*.8,'quiet voiced energy must remain audible');assert.deepEqual(voice.events.map(e=>e.enabled),[true,false],'real model posts only speech boundaries, never per-frame telemetry');assert.ok(output.slice(48000*4).every(v=>v===0),'pause settles to digital silence');}
+  try{const enhanced=gt.process(input),reference=plain.process(enhanced),output=voice.process(enhanced);const energy=a=>a.reduce((sum,v)=>sum+v*v,0);assert.ok(energy(output.slice(48000,48000*3.3))>energy(reference.slice(48000,48000*3.3))*.8,'quiet voiced energy must remain audible');assert.deepEqual(voice.events.map(e=>e.enabled),plain.events.map(e=>e.enabled),'transmission detection must not depend on the strict PCM filter');assert.deepEqual(voice.events.slice(-2).map(e=>e.enabled),[true,false],'real model ends speech after the final pause');assert.ok(output.slice(48000*4).every(v=>v===0),'pause settles to digital silence');}
   finally{gt.destroy();plain.destroy();voice.destroy();}
 });

@@ -8,12 +8,14 @@ const {tsText}=await load('ts-text.ts');
 const {imageDimensions,avatarImage}=await load('avatar.ts');
 test('malformed persisted audio options revert safely; values are bounded',()=>{
   for(const value of ['{bad','null']){globalThis.localStorage={getItem:()=>value};assert.equal(readAudioSettings().noise,'rnnoise');assert.equal(readAudioSettings().keyboard,true);}
-  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false,strength:99,receiveAutoGain:'yes',ducking:-9,typing:0})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,voiceOnly:true,echo:true,autoGain:false,gain:2,volume:0,strength:1,receiveAutoGain:true,ducking:0,typing:true});
+  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false,strength:99,receiveAutoGain:'yes',ducking:-9,typing:0})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:false,gain:2,volume:0,strength:1,receiveAutoGain:true,ducking:0,typing:true});
 });
 test('legacy native preference migrates to local processing; explicit disable is retained',()=>{
   globalThis.localStorage={getItem:()=>JSON.stringify({noise:'browser'})};assert.equal(readAudioSettings().noise,'rnnoise');
   globalThis.localStorage={getItem:()=>JSON.stringify({noise:'off',keyboard:false,echo:false})};const settings=readAudioSettings();assert.equal(settings.noise,'off');assert.equal(settings.keyboard,false);assert.equal(settings.echo,false);
   globalThis.localStorage={getItem:()=>JSON.stringify({voiceOnly:false})};assert.equal(readAudioSettings().voiceOnly,false);
+  globalThis.localStorage={getItem:()=>JSON.stringify({voiceOnly:true,volume:.7})};assert.equal(readAudioSettings().voiceOnly,false);assert.equal(readAudioSettings().volume,.7,'migration must preserve unrelated choices');
+  globalThis.localStorage={getItem:()=>JSON.stringify({voiceOnly:true,voiceOnlyRevision:1})};assert.equal(readAudioSettings().voiceOnly,true,'only a new explicit opt-in enables strict filtering');
 });
 test('processing status distinguishes enabled, unavailable and unreported echo cancellation',()=>{
   assert.match(processingLabel('keyboard',{echoCancellation:false,autoGainControl:true}),/GTCRN.*回声消除.*未启用.*自动增益.*已启用/);

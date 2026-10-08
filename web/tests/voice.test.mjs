@@ -107,6 +107,13 @@ test('typing suppression sends only a local timing marker and stops after discon
  voice.configure({...voice.settings,typing:false});for(const handler of handlers)handler({code:'KeyB'});assert.equal(marks,1);voice.close();assert.equal(handlers.size,0);
 });
 
+test('mouse clicks use a local suppression timing hint, preserve PTT and detach on close',async()=>{
+ const env=browser(),handlers=new Set();window.addEventListener=(type,handler)=>{if(type==='pointerdown')handlers.add(handler);};window.removeEventListener=(_,handler)=>handlers.delete(handler);
+ const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);let marks=0;env.processors[0].typing=()=>marks++;
+ for(const handler of handlers)handler();assert.equal(marks,1);assert.ok(!env.sent.some(e=>e.type==='typing'||e.type==='pointerdown'));
+ voice.setMode('ptt');voice.press(true);for(const handler of handlers)handler();assert.equal(marks,1);voice.close();assert.equal(handlers.size,0);
+});
+
 test('gain processing preserves continuous mic and releases raw and processed tracks',async()=>{
   const env=browser(),voice=new Voice(()=>{});voice.configure({noise:'off',echo:false,autoGain:false,gain:1.4,volume:0.6});
   await voice.connect({identity:'fixture'},'test-device',false);assert.equal(env.constraints[0].audio.echoCancellation,false);assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.constraints[0].audio.autoGainControl,false);assert.equal(env.contexts[0].options.sampleRate,48000);assert.equal(env.contexts[0].gain.gain.value,1.4);assert.equal(env.tracks[0].enabled,true);
@@ -128,11 +135,14 @@ test('missing or busy microphone offers device selection or listen-only', async(
   }
 });
 
-test('open microphone sends through silence; mute and focused PTT still control transmission', async()=>{
+test('turning off strict voice-only processing still ends TS speech in pauses; focused PTT bypasses detection', async()=>{
   const env=browser(), voice=new Voice(()=>{});voice.configure({noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
   await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.tracks[0].enabled,true,'default microphone must be open');
-  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,true,'initial state reaches gateway');
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'continuous capture must not mean continuous TS speech');
+  await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});
+  env.processors[0].onspeech(true);assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,true);
+  env.processors[0].onspeech(false);await env.wait();assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'native TS must receive an end marker during a pause');
   env.tick();
   assert.equal(env.tracks[0].enabled,true,'zero input level must not gate speech');
   voice.setMute(true,false);assert.equal(env.tracks[0].enabled,false);
@@ -160,8 +170,8 @@ test('quality polling does not overlap or report stale results after disconnect'
   voice.close();resolve(new Map([['pair',{type:'candidate-pair',state:'succeeded',nominated:true,currentRoundTripTime:.02}]]));await Promise.resolve();await Promise.resolve();
   assert.ok(!events.some(e=>e.type==='quality'),'late stats cannot populate a closed or replacement connection');
 });
-test('default human voice chain feeds the send track; recognition failure safely blocks sending',async()=>{
-  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+test('explicit strict human voice chain feeds the send track; recognition failure safely blocks sending',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));voice.configure({...voice.settings,voiceOnly:true});await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.constraints[0].audio.echoCancellation,true);
   assert.ok(env.connections.includes(env.processors[0].input));assert.equal(events.find(e=>e.type==='audio_processing').noise,'keyboard');
   assert.equal(env.processors[0].voiceOnly,true);assert.equal(events.find(e=>e.type==='audio_processing').voice_only,true);
@@ -176,9 +186,9 @@ test('human voice initialization failure permits receiving but never falls back 
   await voice.connect({identity:'fixture'},'',false);assert.equal(events.find(e=>e.type==='audio_processing').noise,'blocked');assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('暂停麦克风')));assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.tracks[0].enabled,false);assert.equal(env.contexts[0].gain.gain.value,0);assert.ok(!env.sent.some(e=>e.type==='transmit'&&e.enabled));voice.close();
 });
 
-test('explicit continuous denoise keeps the prior raw fallback on model failure',async()=>{
+test('disabled strict filtering still fails safely rather than transmitting raw mic after a model failure',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));voice.configure({noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
-  await voice.connect({identity:'fixture'},'',false);assert.equal(env.processors[0].voiceOnly,false);env.processors[0].onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'off');assert.equal(env.tracks[0].enabled,true);assert.equal(env.contexts[0].gain.gain.value,1);voice.close();
+  await voice.connect({identity:'fixture'},'',false);assert.equal(env.processors[0].voiceOnly,false);env.processors[0].onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'blocked');assert.equal(env.tracks[0].enabled,false);assert.equal(env.contexts[0].gain.gain.value,0);voice.close();
 });
 
 

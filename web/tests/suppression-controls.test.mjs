@@ -11,6 +11,13 @@ test('zero suppression strength preserves aligned dry samples for both fixed mod
 });
 test('local key event suppresses nonvoice noise even when continuous denoising is selected',async()=>{
  const baseline=await worklet('rnnoise',{preserveInput:true}),typing=await worklet('rnnoise',{preserveInput:true});
- try{const warm=noise(48000);baseline.process(warm);typing.process(warm);typing.message({type:'typing'});const input=noise(9600),plain=baseline.process(input),quiet=typing.process(input);assert.ok(energy(quiet)<energy(plain)*.3);}
+ try{const warm=noise(48000*2);baseline.process(warm);typing.process(warm);typing.message({type:'typing'});const input=noise(9600),plain=baseline.process(input),quiet=typing.process(input);assert.ok(energy(quiet)<energy(plain)*.3);}
  finally{baseline.destroy();typing.destroy();}
+});
+
+test('typing/click suppression leaves an active quiet voice stream intact',async()=>{
+ let phase=0;const voice=Float32Array.from({length:48000*2},(_,i)=>{const t=i/48000;phase+=2*Math.PI*(150+30*Math.sin(t*12))/48000;let value=0;for(let h=1;h<16;h++)value+=Math.sin(phase*h)/h;return value*.015*(.3+.7*Math.sin(t*9)**2);});
+ const reference=await worklet('rnnoise',{preserveInput:true}),keyed=await worklet('rnnoise',{preserveInput:true});
+ try{reference.process(voice);keyed.process(voice);assert.equal(keyed.events.at(-1).enabled,true);keyed.message({type:'typing'});const tail=voice.slice(0,9600);assert.deepEqual(keyed.process(tail),reference.process(tail),'a keyboard/mouse timing hint must not attenuate the ongoing voice');}
+ finally{reference.destroy();keyed.destroy();}
 });

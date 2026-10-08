@@ -64,3 +64,16 @@ jobs:
           WEBTS_DOMAIN=voice.example.com docker compose config --quiet
           docker build -t webts:ci .
           docker run --rm webts:ci init-key /tmp/master.key
+      - name: Verify complete source archive deployment
+        run: |
+          python3 scripts/package-source.py
+          unzip -q .cache/source-release/webts-0.1.0-preview.1-source.zip -d /tmp/webts-source-check
+          cd /tmp/webts-source-check/webts-0.1.0-preview.1-source
+          docker build -t webts:source-ci .
+          docker run --rm webts:source-ci init-key /tmp/master.key
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: webts-source
+          path: |
+            .cache/source-release/webts-0.1.0-preview.1-source.zip
+            .cache/source-release/SHA256SUMS_SOURCE

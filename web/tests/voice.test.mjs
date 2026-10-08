@@ -31,7 +31,7 @@ function browser(microphoneError) {
     createAnalyser(){return {fftSize:512,getFloatTimeDomainData:data=>data.fill(0)};}
     close(){this.closed=true;} resume(){}
   };
-  globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',destroy(){this.destroyed=true;}};processors.push(node);return node;}});
+  globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard,voiceOnly)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',voiceOnly,destroy(){this.destroyed=true;}};processors.push(node);return node;}});
   globalThis.WebSocket = class {
     static OPEN=1;
     readyState=1;
@@ -102,15 +102,23 @@ test('quality polling does not overlap or report stale results after disconnect'
   voice.close();resolve(new Map([['pair',{type:'candidate-pair',state:'succeeded',nominated:true,currentRoundTripTime:.02}]]));await Promise.resolve();await Promise.resolve();
   assert.ok(!events.some(e=>e.type==='quality'),'late stats cannot populate a closed or replacement connection');
 });
-test('default local keyboard chain feeds the send track; native NS stays off and failures do not gate speech',async()=>{
+test('default human voice chain feeds the send track; recognition failure safely blocks sending',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.constraints[0].audio.echoCancellation,true);
   assert.ok(env.connections.includes(env.processors[0].input));assert.equal(events.find(e=>e.type==='audio_processing').noise,'keyboard');
+  assert.equal(env.processors[0].voiceOnly,true);assert.equal(events.find(e=>e.type==='audio_processing').voice_only,true);
   const node=env.processors[0];node.mode='rnnoise';node.onchange('fixture keyboard failure');assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'rnnoise');assert.equal(env.tracks[0].enabled,true);
-  node.onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'off');assert.ok(node.destroyed);env.tick();assert.equal(env.tracks[0].enabled,true);
+  const oldError=node.onerror;node.onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'blocked');assert.ok(node.destroyed);env.tick();assert.equal(env.tracks[0].enabled,false);assert.equal(env.contexts[0].gain.gain.value,0);assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false);
+  voice.setMute(true,false);voice.setMute(false,false);voice.setMode('ptt');voice.press(true);assert.equal(env.tracks[0].enabled,false,'mute/PTT cannot bypass a failed recognizer');
+  await voice.connect({identity:'fixture'},'',false);voice.setMode('open');assert.equal(env.tracks.at(-1).enabled,true);oldError();assert.equal(env.tracks.at(-1).enabled,true,'stale processor failure cannot block a replacement connection');
   voice.close();assert.ok(env.captured.every(t=>t.stopped));
 });
-test('local initialization failure is visible and microphone remains open without silently enabling native NS',async()=>{
+test('human voice initialization failure permits receiving but never falls back to raw microphone',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));globalThis.loadFixtureNoise=async()=>({createNoise:async()=>{throw Error('model unavailable');}});
-  await voice.connect({identity:'fixture'},'',false);assert.equal(events.find(e=>e.type==='audio_processing').noise,'off');assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('关闭降噪')));assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.tracks[0].enabled,true);voice.close();
+  await voice.connect({identity:'fixture'},'',false);assert.equal(events.find(e=>e.type==='audio_processing').noise,'blocked');assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('暂停麦克风')));assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.tracks[0].enabled,false);assert.equal(env.contexts[0].gain.gain.value,0);assert.ok(!env.sent.some(e=>e.type==='transmit'&&e.enabled));voice.close();
+});
+
+test('explicit continuous denoise keeps the prior raw fallback on model failure',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));voice.configure({noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
+  await voice.connect({identity:'fixture'},'',false);assert.equal(env.processors[0].voiceOnly,false);env.processors[0].onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'off');assert.equal(env.tracks[0].enabled,true);assert.equal(env.contexts[0].gain.gain.value,1);voice.close();
 });

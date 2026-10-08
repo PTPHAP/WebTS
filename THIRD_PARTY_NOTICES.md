@@ -16,7 +16,7 @@
 
 ## 浏览器降噪
 
-固定 @sapphi-red/web-noise-suppressor 0.4.1（MIT），底层 @shiguredo/rnnoise-wasm 2022.2.0（Apache-2.0）、RNNoise 2022.1.0（BSD-3-Clause），SIMD检测 wasm-feature-detect 1.9.0（Apache-2.0）。完整原文与作者归属保存在 [licenses/audio](licenses/audio/ATTRIBUTION.md)，发布包和Docker均包含。WebTS仅补充Worklet初始化成功/错误消息，不改DSP。
+固定 @sapphi-red/web-noise-suppressor 0.4.1（MIT），底层 @shiguredo/rnnoise-wasm 2022.2.0（Apache-2.0）、RNNoise 2022.1.0（BSD-3-Clause），SIMD检测 wasm-feature-detect 1.9.0（Apache-2.0）。完整原文与作者归属保存在 [licenses/audio](licenses/audio/ATTRIBUTION.md)，发布包和Docker均包含。WebTS补充Worklet初始化成功/错误消息；可选人声模式使用现有模型人声概率，在降噪后应用10ms回看、句尾保留和渐变，未修改底层WASM模型。
 
 键盘增强复用相同固定包的 GTCRN：@sapphi-red/gtcrn-wasm 0.0.3 与 GTCRN 模型（MIT），PFFFT/FFTPACK（UCAR许可）；生成器 onnx2c 的原文许可与作者表也随包保存。来源提交及完整许可见上述音频归属目录。GTCRN 内部16kHz语音处理、48kHz接口重新采样；不将其描述为回声消除算法。
 

@@ -8,16 +8,18 @@ const {tsText}=await load('ts-text.ts');
 const {imageDimensions,avatarImage}=await load('avatar.ts');
 test('malformed persisted audio options revert safely; values are bounded',()=>{
   for(const value of ['{bad','null']){globalThis.localStorage={getItem:()=>value};assert.equal(readAudioSettings().noise,'rnnoise');assert.equal(readAudioSettings().keyboard,true);}
-  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,echo:true,autoGain:false,gain:2,volume:0});
+  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,voiceOnly:true,echo:true,autoGain:false,gain:2,volume:0});
 });
 test('legacy native preference migrates to local processing; explicit disable is retained',()=>{
   globalThis.localStorage={getItem:()=>JSON.stringify({noise:'browser'})};assert.equal(readAudioSettings().noise,'rnnoise');
   globalThis.localStorage={getItem:()=>JSON.stringify({noise:'off',keyboard:false,echo:false})};const settings=readAudioSettings();assert.equal(settings.noise,'off');assert.equal(settings.keyboard,false);assert.equal(settings.echo,false);
+  globalThis.localStorage={getItem:()=>JSON.stringify({voiceOnly:false})};assert.equal(readAudioSettings().voiceOnly,false);
 });
 test('processing status distinguishes enabled, unavailable and unreported echo cancellation',()=>{
   assert.match(processingLabel('keyboard',{echoCancellation:false,autoGainControl:true}),/键盘.*回声消除.*未启用.*自动增益.*已启用/);
   assert.match(processingLabel('rnnoise',{}),/回声消除.*未报告/);
   assert.equal(processingLabel('listen',{}),'仅收听');
+  assert.match(processingLabel('keyboard',{},true),/仅保留人声/);assert.match(processingLabel('blocked',{}),/暂停/);assert.doesNotMatch(processingLabel('off',{},true),/仅保留人声/);
 });
 test('TS description text never creates active or external image content',()=>{
   const parts=tsText('<script>test</script>[url=javascript:alert(1)]click[/url][url=https://example.com]safe[/url][img]https://example.com/tracker[/img]');

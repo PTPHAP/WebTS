@@ -14,15 +14,16 @@ async function ready(node:Worklet) {
 }
 async function module(context:AudioContext,model:string) {
   let timer:number|undefined;
-  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-ready1.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
+  try {await Promise.race([context.audioWorklet.addModule(`/audio/${model}-0.4.1-${model==='rnnoise'?'voice1':'ready1'}.js`),new Promise((_,reject)=>{timer=window.setTimeout(()=>reject(new Error('降噪组件加载超时')),5000);})]);}
   finally {window.clearTimeout(timer);}
 }
-export async function createNoise(context:AudioContext,keyboard=false):Promise<NoiseProcessor> {
+export async function createNoise(context:AudioContext,keyboard=false,voiceOnly=false):Promise<NoiseProcessor> {
   if(context.sampleRate!==48000)throw new Error('本地降噪需要 48 kHz 音频');
-  const {RnnoiseWorkletNode,GtcrnWorkletNode,loadRnnoise}=await import('@sapphi-red/web-noise-suppressor');
+  const {GtcrnWorkletNode,loadRnnoise}=await import('@sapphi-red/web-noise-suppressor');
   const wasmBinary=await loadRnnoise({url:'/audio/0.4.1-rnnoise.wasm',simdUrl:'/audio/0.4.1-rnnoise_simd.wasm'},{signal:AbortSignal.timeout(5000)});
   await module(context,'rnnoise');
-  const rnnoise=await ready(new RnnoiseWorkletNode(context,{maxChannels:1,wasmBinary}));
+  const rnnode=new AudioWorkletNode(context,'@sapphi-red/web-noise-suppressor/rnnoise',{processorOptions:{maxChannels:1,wasmBinary,voiceOnly}});
+  const rnnoise=await ready(Object.assign(rnnode,{destroy:()=>rnnode.port.postMessage('destroy')}));
   let failed=false;rnnoise.onprocessorerror=()=>{failed=true;};
   let gtcrn:Worklet|undefined,warning:string|undefined;
   try {

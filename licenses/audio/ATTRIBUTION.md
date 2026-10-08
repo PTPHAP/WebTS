@@ -1,7 +1,10 @@
 # Audio component attribution
 
 @sapphi-red/web-noise-suppressor 0.4.1, Copyright (c) 2022 翠 / green (MIT).
-WebTS adds initialization ready/error messages to its pinned RNNoise and GTCRN worklets; their DSP is unchanged.
+WebTS adds initialization ready/error messages to its pinned RNNoise and GTCRN worklets.
+The optional voice-only mode uses the existing RNNoise speech probability to apply
+a local 10ms lookback, speech hangover and smooth gain envelope after denoising.
+The underlying WASM models and their noise reduction algorithms are unchanged.
 
 The distributed WASM binaries use @shiguredo/rnnoise-wasm 2022.2.0 (Apache-2.0):
 Copyright 2021-2021, Takeru Ohta (Original Author).

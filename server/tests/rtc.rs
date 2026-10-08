@@ -56,8 +56,12 @@ async fn encrypted_opus_packet_round_trip() {
         .expect("TS end-of-speech marker must not fail the RTC bridge");
     // Repeated/stale end markers must neither disconnect nor double-compress RTP.
     a.audio(7, seq, &[]).await.unwrap();
+    a.audio(7, seq.wrapping_add(1), &[0xff])
+        .await
+        .expect("native TS single-byte end markers must not be parsed as Opus");
+    a.audio(7, seq.wrapping_add(2), &[0x03]).await.unwrap();
     let resumed = [0xf8, 0xff, 0xfe, 0x00];
-    a.audio(7, seq.wrapping_add(1), &resumed).await.unwrap();
+    a.audio(7, seq.wrapping_add(3), &resumed).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let packet = b_audio.recv().await.unwrap();

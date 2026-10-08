@@ -341,7 +341,7 @@ async fn run() {
             _=timer.tick()=>{
                 if peer.check_cipher().await.unwrap().is_some() && secure {
                     if dtx_probes < 50 {
-                        peer.audio(7,sequence,&[0x78]).await.unwrap();
+                        peer.audio(7,sequence,&[0x7b,0x01]).await.unwrap();
                         sequence=sequence.wrapping_add(1);
                         dtx_probes+=1;
                         continue;
@@ -452,7 +452,7 @@ async fn run() {
                     codec: CodecType::OpusVoice,
                     clients: vec![own_id],
                     channels: vec![],
-                    data: &[],
+                    data: &[0xff],
                 }))
                 .unwrap();
             sequence = sequence.wrapping_add(1);

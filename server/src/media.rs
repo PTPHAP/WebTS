@@ -359,7 +359,9 @@ impl Media {
         if !self.secure.load(Ordering::Acquire) {
             return Ok(());
         }
-        let samples = if data.is_empty() {
+        // TS uses both empty and single-byte packets to end a speech stream.
+        // This boundary is TS-specific; browser RTP Opus keeps its own validation.
+        let samples = if data.len() <= 1 {
             None
         } else {
             Some(opus_samples(data)?)
@@ -528,6 +530,7 @@ mod tests {
         assert_eq!(opus_samples(&[0xfc]).unwrap(), 960);
         assert_eq!(opus_samples(&[0xfb, 3]).unwrap(), 2880);
         assert!(opus_samples(&[]).is_err());
+        assert!(opus_samples(&[0xff]).is_err());
         assert!(opus_samples(&[0xfb, 0]).is_err());
         assert!(opus_samples(&[0xfb, 7]).is_err());
     }

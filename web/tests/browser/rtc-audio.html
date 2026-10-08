@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><div id="root" hidden></div><h1>双向真实 WebRTC 音频回归</h1><p>只使用本地合成音频，不采集麦克风，不播放声音。测试实际双向 RTP 及接收处理。</p><button id="run">运行</button><pre id="result">尚未运行</pre><script type="module">
+import {Voice} from '/src/voice.ts';import {defaultAudioSettings} from '/src/audio-settings.ts';
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+run.onclick=async()=>{run.disabled=true;result.textContent='运行中';let voice,remote,context,source,remotePlayback;const events=[];
+try{
+context=new AudioContext({sampleRate:48000});const buffer=context.createBuffer(1,192000,48000),data=buffer.getChannelData(0);let phase=0;for(let i=0;i<data.length;i++){const time=i/48000;phase+=2*Math.PI*(150+30*Math.sin(time*12))/48000;for(let h=1;h<16;h++)data[i]+=Math.sin(phase*h)/h*.015*(.3+.7*Math.sin(time*9)**2);}
+source=context.createBufferSource();source.buffer=buffer;source.loop=true;const destination=context.createMediaStreamDestination();source.connect(destination);source.start();await context.resume();
+Object.defineProperty(navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>destination.stream.clone()});
+remote=new RTCPeerConnection();remote.addTrack(destination.stream.getAudioTracks()[0],destination.stream);let socket,remoteMeter;remote.ontrack=e=>{const node=context.createMediaStreamSource(new MediaStream([e.track])),analyser=context.createAnalyser();node.connect(analyser);remoteMeter=analyser;remotePlayback=new Audio();remotePlayback.srcObject=new MediaStream([e.track]);remotePlayback.volume=0;remotePlayback.play();};
+const original=window.fetch;window.fetch=(u,o)=>u==='/api/rtc'?Promise.resolve(new Response('{}')):original(u,o);
+window.WebSocket=class{static OPEN=1;readyState=1;constructor(){socket=this;queueMicrotask(()=>this.onopen?.());}send(raw){const m=JSON.parse(raw);if(m.identity){this.onmessage?.({data:JSON.stringify({type:'state',own:1,members:[{id:1,channel:1}],channels:[]})});remote.createOffer().then(async offer=>{await remote.setLocalDescription(offer);this.onmessage?.({data:JSON.stringify({type:'offer',description:offer})});});}if(m.type==='answer')remote.setRemoteDescription(m.description);if(m.type==='ice')remote.addIceCandidate(m.candidate).catch(()=>{});}close(){this.readyState=3;}};
+remote.onicecandidate=e=>{if(e.candidate)socket?.onmessage?.({data:JSON.stringify({type:'ice',candidate:e.candidate.toJSON()})});};
+voice=new Voice(e=>events.push(e));voice.configure({...defaultAudioSettings,volume:0});await voice.connect({identity:'fixture'},'',false);await pause(5000);
+const read=analyser=>{const a=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(a);return Math.sqrt(a.reduce((s,v)=>s+v*v,0)/a.length);};
+const output=voice.receivers.values().next().value;if(!output)throw Error('未收到远端轨道');const meter=voice.context.createAnalyser();voice.context.createMediaStreamSource(output.stream).connect(meter);
+let sentPeak=0,receivedPeak=0;for(let i=0;i<40;i++){sentPeak=Math.max(sentPeak,remoteMeter?read(remoteMeter):0);receivedPeak=Math.max(receivedPeak,read(meter));await pause(50);}
+const stats=await voice.peer.getStats();const rtp=Array.from(stats.values()).filter(r=>r.type==='inbound-rtp'||r.type==='outbound-rtp').map(r=>({type:r.type,packetsReceived:r.packetsReceived,packetsSent:r.packetsSent,totalAudioEnergy:r.totalAudioEnergy}));
+result.textContent=JSON.stringify({verdict:sentPeak>.001&&receivedPeak>.001?'PASS':'FAIL',sentPeak,receivedPeak,state:voice.peer.connectionState,context:voice.context.state,transmit:events.filter(e=>e.type==='transmit').at(-1),processing:events.find(e=>e.type==='audio_processing'),rtp,noMic:true,noSpeaker:true},null,2);
+}catch(e){result.textContent='FAIL: '+e.message;}finally{voice?.close();remotePlayback?.pause();if(remotePlayback)remotePlayback.srcObject=null;remote?.close();source?.stop();await context?.close();run.disabled=false;}
+};</script>

@@ -104,13 +104,13 @@ export class Voice {
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
     const qualityPeer=this.peer;let reading=false;
     this.qualityTimer=window.setInterval(async()=>{if(reading||!qualityPeer.getStats)return;reading=true;try{const report=await qualityPeer.getStats();if(generation===this.generation)this.event({type:'quality',...connectionQuality(report)});}catch{if(generation===this.generation)this.event({type:'quality'});}finally{reading=false;}},2000);
-    this.peer.onconnectionstatechange=()=>{if(generation===this.generation&&qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');};
+    this.event({type:'audio_transport',state:'new'});this.peer.onconnectionstatechange=()=>{if(generation!==this.generation)return;this.event({type:'audio_transport',state:qualityPeer.connectionState});if(qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');};
     this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');},5000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
-    this.peer.ontrack=e=>{if(generation!==this.generation)return; const receiver=createReceiver(this.context!,e.track),audio = new Audio();this.receivers.set(e.track.id,receiver);audio.autoplay=true;audio.srcObject=receiver.stream;this.elements.set(e.track.id,audio);this.applyAudio();audio.play().catch(()=>this.event({type:'notice',message:'浏览器暂停了音频，请点击“恢复音频”。'}));e.track.onended=()=>{if(generation!==this.generation||this.receivers.get(e.track.id)!==receiver)return;audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);receiver.destroy();this.receivers.delete(e.track.id);};};
+    this.peer.ontrack=e=>{if(generation!==this.generation)return; const receiver=createReceiver(this.context!,e.track),audio = new Audio();this.receivers.set(e.track.id,receiver);audio.autoplay=true;audio.srcObject=receiver.stream;this.elements.set(e.track.id,audio);this.applyAudio();Promise.all([receiver.play(),audio.play()]).catch(()=>{if(generation===this.generation)this.event({type:'notice',message:'浏览器暂停了音频，请点击“恢复音频”。'});});e.track.onended=()=>{if(generation!==this.generation||this.receivers.get(e.track.id)!==receiver)return;audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);receiver.destroy();this.receivers.delete(e.track.id);};};
     this.receiveTimer=window.setInterval(()=>{for(const receiver of this.receivers.values())receiver.tick(this.settings.receiveAutoGain);},50);
     if(sendStream){this.sendTrack=sendStream.getAudioTracks()[0].clone();this.sendTrack.enabled=false;this.peer.addTrack(this.sendTrack,new MediaStream([this.sendTrack]));this.update();}
-    if (stream&&sendStream) {this.watchCapture(stream,generation);this.detect(stream,sendStream);}
+    this.watchCapture(stream,generation);if (stream&&sendStream) this.detect(stream,sendStream);
     const socket = new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/connect`); this.socket=socket;
     socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}};
     socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
@@ -135,12 +135,12 @@ export class Voice {
     socket.onerror=()=>{if(generation===this.generation)this.event({type:'error',message:'无法连接网关，请检查网络。'});};
     } catch(error){if(generation!==this.generation)return;this.dispose();if(error instanceof Retryable){this.schedule();return;}this.close();throw error;}
   }
-  private watchCapture(stream:MediaStream,generation:number) {
-    const context=this.context!,track=stream.getAudioTracks()[0];
-    const check=()=>{if(generation!==this.generation)return;const status=track.readyState==='ended'?'ended':track.muted?'muted':context.state==='running'?'running':'paused';this.captureBlocked=status!=='running';this.update();if(status!==this.captureStatus){this.captureStatus=status;this.event({type:'audio_capture',status,message:status==='running'?'麦克风正常采集':status==='muted'?'设备暂时没有提供声音，请检查系统麦克风或设备连接':status==='ended'?'麦克风已断开，正在重新打开':'浏览器暂停了音频，请点击“恢复音频”'});}if(status==='ended')this.lost(true,'麦克风设备停止采集，正在重新连接并恢复原频道。');};
+  private watchCapture(stream:MediaStream|undefined,generation:number) {
+    const context=this.context!,track=stream?.getAudioTracks()[0];
+    const check=()=>{if(generation!==this.generation)return;const status=track?.readyState==='ended'?'ended':track?.muted?'muted':context.state==='running'?'running':'paused';this.captureBlocked=status!=='running';this.update();if(status!==this.captureStatus){this.captureStatus=status;this.event({type:'audio_capture',status,message:status==='running'?(track?'麦克风正常采集':'收听音频正常运行'):status==='muted'?'设备暂时没有提供声音，请检查系统麦克风或设备连接':status==='ended'?'麦克风已断开，正在重新打开':'浏览器暂停了音频，请点击“恢复音频”'});}if(status==='ended')this.lost(true,'麦克风设备停止采集，正在重新连接并恢复原频道。');};
     this.wake=()=>{if(generation!==this.generation||context.state==='closed')return;context.resume().then(check).catch(check);};
     context.onstatechange=()=>{check();if(generation===this.generation&&context.state!=='running')this.wake?.();};
-    track.onmute=check;track.onunmute=check;track.onended=check;
+    if(track){track.onmute=check;track.onunmute=check;track.onended=check;}
     window.addEventListener?.('pointerdown',this.wake);window.addEventListener?.('keydown',this.wake);document.addEventListener?.('visibilitychange',this.wake);
     check();this.wake();
   }
@@ -158,7 +158,7 @@ export class Voice {
   volume(client:number,value:number){this.volumes.set(client,value);this.applyAudio();}
   async output(id:string){this.sink=id;for(const element of this.elements.values()){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(audio.setSinkId)await audio.setSinkId(id);}}
   private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume*(this.active?1-this.settings.ducking:1);const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
-  resume(){if(this.wake)this.wake();else this.context?.resume().catch(()=>{});for(const audio of this.elements.values())audio.play().catch(()=>this.event({type:'notice',message:'浏览器仍未允许播放，请检查网站声音权限。'}));}
+  resume(){if(this.wake)this.wake();else this.context?.resume().catch(()=>{});for(const receiver of this.receivers.values())receiver.play().catch(()=>this.event({type:'notice',message:'浏览器仍未允许接收音频，请检查网站声音权限。'}));for(const audio of this.elements.values())audio.play().catch(()=>this.event({type:'notice',message:'浏览器仍未允许播放，请检查网站声音权限。'}));}
   restoreFailed(){if(this.restoring){this.restoreChannel=undefined;this.restoring=false;this.lastChannel=this.currentChannel;}}
   private lost(retry:boolean,message=retry?'服务器连接中断，正在自动重连。':'服务器连接已停止，请检查提示后重新连接。'){this.dispose();this.event({type:'disconnected',message});if(retry)this.schedule();else{this.intent=undefined;this.lastChannel=undefined;this.event({type:'reconnecting',active:false});}}
   private schedule(){

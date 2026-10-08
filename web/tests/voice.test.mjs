@@ -66,6 +66,11 @@ test('a paused audio graph disables sending and resumes when the browser interru
   env.contexts[0].state='running';env.contexts[0].onstatechange?.();assert.equal(env.tracks[0].enabled,true);voice.close();
 });
 
+test('listen-only audio also recovers a suspended context and removes wake listeners on close',async()=>{
+ const env=browser(),events=[],handlers=new Set();window.addEventListener=(_,f)=>handlers.add(f);window.removeEventListener=(_,f)=>handlers.delete(f);
+ const voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);const context=env.contexts[0];context.state='suspended';context.onstatechange();await Promise.resolve();assert.equal(context.state,'running');assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='paused'));assert.ok(handlers.size>0);voice.close();assert.equal(handlers.size,0);assert.equal(context.onstatechange,null);
+});
+
 test('microphone mute explains zero input and an ended device reconnects instead of silently staying connected',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
   const input=env.captured[0];input.muted=true;input.onmute?.();assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='muted'));assert.equal(env.tracks[0].enabled,false);

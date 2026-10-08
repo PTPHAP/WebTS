@@ -91,7 +91,7 @@ export class Voice {
           if(node.warning)this.event({type:'notice',message:node.warning});
           node.onchange=message=>{if(generation!==this.generation)return;this.event({type:'audio_processing',noise:node.mode,voice_only:voiceOnly,actual:stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message});};
           node.onerror=()=>{if(generation!==this.generation)return;noiseFailed();};
-          this.typingKey=e=>{if(generation===this.generation&&this.settings.typing&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing)this.noiseNode?.typing();};window.addEventListener?.('keydown',this.typingKey);
+          this.typingKey=e=>{if(generation===this.generation&&this.mode==='open'&&this.settings.typing&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing)this.noiseNode?.typing();};window.addEventListener?.('keydown',this.typingKey);
         } catch {
           if(generation!==this.generation)return;
           processing=noiseFailed();

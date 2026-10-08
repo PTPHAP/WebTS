@@ -98,6 +98,7 @@ test('typing suppression sends only a local timing marker and stops after discon
  const env=browser(),handlers=new Set();window.addEventListener=(type,handler)=>{if(type==='keydown')handlers.add(handler);};window.removeEventListener=(type,handler)=>handlers.delete(handler);
  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);let marks=0;env.processors[0].typing=()=>marks++;
  for(const handler of handlers)handler({code:'KeyA'});assert.equal(marks,1);assert.ok(!env.sent.some(e=>e.type==='typing'||e.code));
+ voice.setMode('ptt');voice.press(true);for(const handler of handlers)handler({code:'KeyV'});assert.equal(marks,1,'PTT activation must never suppress the first syllable as typing');voice.setMode('open');
  voice.configure({...voice.settings,typing:false});for(const handler of handlers)handler({code:'KeyB'});assert.equal(marks,1);voice.close();assert.equal(handlers.size,0);
 });
 

@@ -48,6 +48,15 @@ test('private message remains visible after success without a sender echo',()=>{
   c.receive({type:'chat',scope:'client',from:2,target:1,name:'Peer',text:'reply'});
   assert.equal(c.messages().length,2);
 });
+for(const echoFirst of [true,false])test(`private sender echo displays once with ${echoFirst?'echo':'result'} first`,()=>{
+  const c=client('private');c.submit();
+  const echo={type:'chat',scope:'client',from:1,target:2,name:'Sender',text:'same message'};
+  const result={type:'result',id:c.sent[0].id,ok:true};
+  for(const value of echoFirst?[echo,result]:[result,echo])c.receive(value);
+  assert.equal(c.messages().length,1);
+  c.receive({type:'chat',scope:'client',from:2,target:1,name:'Peer',text:'same message'});
+  assert.equal(c.messages().length,2);
+});
 test('two intentional identical sends and messages from another member are preserved',()=>{
   const c=client();
   for(let i=0;i<2;i++){c.submit();c.receive({type:'result',id:c.sent[i].id,ok:true});c.receive({type:'chat',scope:'channel',from:1,name:'Sender',text:'same message'});}

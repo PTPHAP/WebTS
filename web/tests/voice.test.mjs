@@ -6,7 +6,11 @@ import ts from 'typescript';
 const source = await readFile(new URL('../src/voice.ts', import.meta.url), 'utf8');
 const qualityCode=ts.transpileModule(await readFile(new URL('../src/connection-quality.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
 const qualityURL='data:text/javascript;base64,'+Buffer.from(qualityCode).toString('base64');
-const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace('./connection-quality',qualityURL).replace("import('./noise')",'globalThis.loadFixtureNoise()');
+const settingsCode=ts.transpileModule(await readFile(new URL('../src/audio-settings.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const settingsURL='data:text/javascript;base64,'+Buffer.from(settingsCode).toString('base64');
+const receiveCode=ts.transpileModule(await readFile(new URL('../src/receive-audio.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const receiveURL='data:text/javascript;base64,'+Buffer.from(receiveCode).toString('base64');
+const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace('./audio-settings',settingsURL).replace('./receive-audio',receiveURL).replace('./connection-quality',qualityURL).replace("import('./noise')",'globalThis.loadFixtureNoise()');
 const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 
 function browser(microphoneError) {
@@ -24,12 +28,12 @@ function browser(microphoneError) {
   globalThis.MediaStream = class {constructor(tracks){this.tracks=tracks;}getAudioTracks(){return this.tracks;}getTracks(){return this.tracks;}};
   globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);}close(){}};
   globalThis.AudioContext = class {
-    constructor(options){this.options=options;contexts.push(this);}
-    createMediaStreamSource(){return {connect(target){connections.push(target);},disconnect(){}};}
+    constructor(options){this.options=options;this.state='suspended';this.resumes=0;contexts.push(this);}
+    createMediaStreamSource(stream){return {connect(target){target.input=stream;connections.push(target);},disconnect(){}};}
     createGain(){this.gain={gain:{value:1},connect(){}};return this.gain;}
     createMediaStreamDestination(){const output=track();captured.push(output);return {stream:new MediaStream([output])};}
-    createAnalyser(){return {fftSize:512,getFloatTimeDomainData:data=>data.fill(0)};}
-    close(){this.closed=true;} resume(){}
+    createAnalyser(){return {fftSize:512,getFloatTimeDomainData(data){data.fill(this.input?.getAudioTracks()[0]?.sample??0);}};}
+    close(){this.closed=true;this.state='closed';} resume(){this.resumes++;this.state='running';return Promise.resolve();}
   };
   globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard,voiceOnly)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',voiceOnly,destroy(){this.destroyed=true;}};processors.push(node);return node;}});
   globalThis.WebSocket = class {
@@ -47,6 +51,54 @@ test('microphone denial explains browser permission and listen-only recovery', a
   const voice=new Voice(()=>{});
   await assert.rejects(voice.connect({identity:'fixture'},'',false), /麦克风权限.*仅收听/);
   voice.close();
+});
+
+test('unprocessed microphone meter resumes its context instead of remaining silent',async()=>{
+  const env=browser(),voice=new Voice(()=>{});voice.configure({noise:'off',keyboard:false,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1});
+  await voice.connect({identity:'fixture'},'',false);
+  assert.equal(env.contexts[0].state,'running');assert.ok(env.contexts[0].resumes>0);voice.close();
+});
+
+test('a paused audio graph disables sending and resumes when the browser interrupts capture',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  env.contexts[0].state='suspended';env.contexts[0].resume=()=>Promise.resolve();env.contexts[0].onstatechange?.();
+  assert.equal(env.tracks[0].enabled,false);assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='paused'));
+  env.contexts[0].state='running';env.contexts[0].onstatechange?.();assert.equal(env.tracks[0].enabled,true);voice.close();
+});
+
+test('microphone mute explains zero input and an ended device reconnects instead of silently staying connected',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  const input=env.captured[0];input.muted=true;input.onmute?.();assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='muted'));assert.equal(env.tracks[0].enabled,false);
+  input.muted=false;input.onunmute?.();assert.equal(env.tracks[0].enabled,true);
+  input.readyState='ended';input.onended?.();assert.ok(events.some(e=>e.type==='disconnected'&&/麦克风/.test(e.message)));assert.equal(env.delays.size,1);voice.close();
+});
+
+test('input meter still moves when voice recognition intentionally produces silence',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  env.captured[0].sample=.05;env.tick();const level=events.filter(e=>e.type==='level').at(-1);
+  assert.ok(level.input_level>.1);assert.equal(level.level,0);assert.equal(env.tracks[0].enabled,true);voice.close();
+});
+
+test('autoplay resume waiting for a gesture cannot stall TS connect; stale device callbacks cannot reconnect',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));AudioContext.prototype.resume=()=>new Promise(()=>{});
+  await voice.connect({identity:'fixture'},'',false);assert.equal(env.sockets.length,1);assert.equal(env.tracks[0].enabled,false);
+  assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='paused'));
+  const old=env.captured[0],ended=old.onended;await voice.connect({identity:'replacement'},'',true);old.readyState='ended';ended();assert.equal(env.delays.size,0);assert.equal(old.onended,null);voice.close();
+});
+
+test('speaking ducks remote audio without undoing per-member volume, mute or live settings',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+ const audio={volume:0,muted:false,pause(){}};voice.elements.set('remote',audio);voice.tracks.set('remote',2);voice.volume(2,.6);voice.outputVolume(.8);
+ assert.equal(audio.volume,.48);env.processors[0].onspeech(true);assert.ok(Math.abs(audio.volume-.48*.65)<1e-9);
+ voice.setMute(true,false);assert.equal(audio.volume,.48);voice.setMute(false,true);assert.equal(audio.muted,true);
+ voice.configure({...voice.settings,ducking:0});assert.equal(audio.volume,.48);voice.close();
+});
+
+test('typing suppression sends only a local timing marker and stops after disconnect',async()=>{
+ const env=browser(),handlers=new Set();window.addEventListener=(type,handler)=>{if(type==='keydown')handlers.add(handler);};window.removeEventListener=(type,handler)=>handlers.delete(handler);
+ const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);let marks=0;env.processors[0].typing=()=>marks++;
+ for(const handler of handlers)handler({code:'KeyA'});assert.equal(marks,1);assert.ok(!env.sent.some(e=>e.type==='typing'||e.code));
+ voice.configure({...voice.settings,typing:false});for(const handler of handlers)handler({code:'KeyB'});assert.equal(marks,1);voice.close();assert.equal(handlers.size,0);
 });
 
 test('gain processing preserves continuous mic and releases raw and processed tracks',async()=>{

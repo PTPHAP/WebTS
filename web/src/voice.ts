@@ -1,5 +1,6 @@
 type Event = Record<string, unknown>;
-import type {AudioSettings} from './audio-settings';
+import {defaultAudioSettings,type AudioSettings} from './audio-settings';
+import {createReceiver} from './receive-audio';
 import type {NoiseProcessor} from './noise';
 import {connectionQuality} from './connection-quality';
 class Retryable extends Error {}
@@ -13,7 +14,10 @@ export class Voice {
   private timer?: number;
   private qualityTimer?: number;
   private noiseNode?: NoiseProcessor;
-  private settings:AudioSettings={noise:'rnnoise',keyboard:true,voiceOnly:true,echo:true,autoGain:true,gain:1,volume:1};
+  private settings:AudioSettings={...defaultAudioSettings};
+  private receivers=new Map<string,ReturnType<typeof createReceiver>>();
+  private receiveTimer?:number;
+  private typingKey?: (event:KeyboardEvent)=>void;
   private elements = new Map<string,HTMLAudioElement>();
   private tracks = new Map<string,number>();
   private volumes = new Map<number,number>();
@@ -21,6 +25,9 @@ export class Voice {
   private active = false;
   private ready = false;
   private processingBlocked = false;
+  private captureBlocked = false;
+  private captureStatus = '';
+  private wake?:()=>void;
   private muted = false;
   private deafened = false;
   private pressed = false;
@@ -51,6 +58,7 @@ export class Voice {
     const intent=this.intent;if(!intent)return;const {request,device,listenOnly}=intent;
     this.dispose();this.failure=undefined; const generation = this.generation;this.restoreChannel=this.lastChannel;this.restoring=false;
     try {
+    this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context.resume().catch(()=>{});
     let response:Response;try{response=await fetch('/api/rtc',{signal:AbortSignal.timeout(10000)});}catch{throw new Retryable('无法连接网关');}if(!response.ok){if(response.status===401||response.status===403)throw new Error('登录已过期，请重新登录');throw new Retryable('网关暂不可用');}
     const config = await response.json();if(generation!==this.generation)return;
     let stream: MediaStream | undefined;
@@ -70,25 +78,26 @@ export class Voice {
     let sendStream=stream;
     let processing:string=this.settings.noise;
     if(stream&&(this.settings.noise==='rnnoise'||this.settings.gain!==1)) {
-      const context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context=context;
+      const context=this.context!;
       const source=context.createMediaStreamSource(stream),gain=context.createGain(),destination=context.createMediaStreamDestination();
       this.processed=destination.stream;gain.gain.value=this.settings.gain;gain.connect(destination);
       const voiceOnly=this.settings.voiceOnly===true;
       const noiseFailed=()=>{source.disconnect();this.noiseNode?.destroy();this.noiseNode=undefined;this.processingBlocked=voiceOnly;if(voiceOnly){gain.gain.value=0;this.update();}else source.connect(gain);const mode=voiceOnly?'blocked':'off';this.event({type:'audio_processing',noise:mode,actual:stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message:voiceOnly?'本地人声识别不可用，已暂停麦克风发送以免传出原始杂音；仍可收听。请重新连接重试，或断开后关闭“仅保留人声”。':'本地降噪暂不可用，已关闭降噪并恢复直接音频传输。请重新连接以重试。'});return mode;};
       if(this.settings.noise==='rnnoise') {
         try {
-          const {createNoise}=await import('./noise');const node=await createNoise(context,this.settings.keyboard,voiceOnly);
+          const {createNoise}=await import('./noise');const node=await createNoise(context,this.settings.keyboard,voiceOnly,this.settings.strength);
           if(generation!==this.generation){node.destroy();return;}
           this.noiseNode=node;this.gated=voiceOnly;this.speech=node.speaking===true;node.onspeech=enabled=>{if(generation!==this.generation)return;window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(enabled){this.speech=true;this.update();}else this.speechTimer=window.setTimeout(()=>{if(generation!==this.generation)return;this.speech=false;this.update();},60);};source.connect(node.input);node.output.connect(gain);processing=node.mode;
           if(node.warning)this.event({type:'notice',message:node.warning});
           node.onchange=message=>{if(generation!==this.generation)return;this.event({type:'audio_processing',noise:node.mode,voice_only:voiceOnly,actual:stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message});};
           node.onerror=()=>{if(generation!==this.generation)return;noiseFailed();};
+          this.typingKey=e=>{if(generation===this.generation&&this.settings.typing&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing)this.noiseNode?.typing();};window.addEventListener?.('keydown',this.typingKey);
         } catch {
           if(generation!==this.generation)return;
           processing=noiseFailed();
         }
       } else source.connect(gain);
-      await context.resume();sendStream=destination.stream;
+      context.resume().catch(()=>{});sendStream=destination.stream;
     }
     if(generation!==this.generation){sendStream?.getTracks().forEach(t=>t.stop());return;}
     this.event({type:'audio_processing',noise:listenOnly?'listen':processing,voice_only:this.settings.noise==='rnnoise'&&this.settings.voiceOnly&&!this.processingBlocked,actual:stream?.getAudioTracks()[0].getSettings?.()});
@@ -98,9 +107,10 @@ export class Voice {
     this.peer.onconnectionstatechange=()=>{if(generation===this.generation&&qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');};
     this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');},5000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
-    this.peer.ontrack=e=>{if(generation!==this.generation)return; const audio = new Audio(); audio.autoplay=true; audio.srcObject=new MediaStream([e.track]); this.elements.set(e.track.id,audio); this.applyAudio(); audio.play().catch(()=>this.event({type:'notice',message:'浏览器暂停了音频，请点击“启用收听”。'})); e.track.onended=()=>{audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);}; };
+    this.peer.ontrack=e=>{if(generation!==this.generation)return; const receiver=createReceiver(this.context!,e.track),audio = new Audio();this.receivers.set(e.track.id,receiver);audio.autoplay=true;audio.srcObject=receiver.stream;this.elements.set(e.track.id,audio);this.applyAudio();audio.play().catch(()=>this.event({type:'notice',message:'浏览器暂停了音频，请点击“恢复音频”。'}));e.track.onended=()=>{if(generation!==this.generation||this.receivers.get(e.track.id)!==receiver)return;audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);receiver.destroy();this.receivers.delete(e.track.id);};};
+    this.receiveTimer=window.setInterval(()=>{for(const receiver of this.receivers.values())receiver.tick(this.settings.receiveAutoGain);},50);
     if(sendStream){this.sendTrack=sendStream.getAudioTracks()[0].clone();this.sendTrack.enabled=false;this.peer.addTrack(this.sendTrack,new MediaStream([this.sendTrack]));this.update();}
-    if (sendStream) this.detect(sendStream);
+    if (stream&&sendStream) {this.watchCapture(stream,generation);this.detect(stream,sendStream);}
     const socket = new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/connect`); this.socket=socket;
     socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}};
     socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
@@ -125,20 +135,30 @@ export class Voice {
     socket.onerror=()=>{if(generation===this.generation)this.event({type:'error',message:'无法连接网关，请检查网络。'});};
     } catch(error){if(generation!==this.generation)return;this.dispose();if(error instanceof Retryable){this.schedule();return;}this.close();throw error;}
   }
-  private detect(stream: MediaStream) {
-    this.context??=new AudioContext({latencyHint:'interactive'});const source=this.context.createMediaStreamSource(stream);const analyser=this.context.createAnalyser();analyser.fftSize=512;source.connect(analyser);const data=new Float32Array(analyser.fftSize);
-    this.timer=window.setInterval(()=>{analyser.getFloatTimeDomainData(data); const rms=Math.sqrt(data.reduce((sum,n)=>sum+n*n,0)/data.length);this.event({type:'level',level:Math.min(1,rms*8)});},30);
+  private watchCapture(stream:MediaStream,generation:number) {
+    const context=this.context!,track=stream.getAudioTracks()[0];
+    const check=()=>{if(generation!==this.generation)return;const status=track.readyState==='ended'?'ended':track.muted?'muted':context.state==='running'?'running':'paused';this.captureBlocked=status!=='running';this.update();if(status!==this.captureStatus){this.captureStatus=status;this.event({type:'audio_capture',status,message:status==='running'?'麦克风正常采集':status==='muted'?'设备暂时没有提供声音，请检查系统麦克风或设备连接':status==='ended'?'麦克风已断开，正在重新打开':'浏览器暂停了音频，请点击“恢复音频”'});}if(status==='ended')this.lost(true,'麦克风设备停止采集，正在重新连接并恢复原频道。');};
+    this.wake=()=>{if(generation!==this.generation||context.state==='closed')return;context.resume().then(check).catch(check);};
+    context.onstatechange=()=>{check();if(generation===this.generation&&context.state!=='running')this.wake?.();};
+    track.onmute=check;track.onunmute=check;track.onended=check;
+    window.addEventListener?.('pointerdown',this.wake);window.addEventListener?.('keydown',this.wake);document.addEventListener?.('visibilitychange',this.wake);
+    check();this.wake();
   }
-  private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.muted&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.send({type:'transmit',enabled:active});this.event({type:'transmit',enabled:active});}}
+  private detect(input: MediaStream,output:MediaStream) {
+    const monitor=(stream:MediaStream)=>{const source=this.context!.createMediaStreamSource(stream),analyser=this.context!.createAnalyser();analyser.fftSize=512;source.connect(analyser);const data=new Float32Array(analyser.fftSize);return()=>{analyser.getFloatTimeDomainData(data);return Math.min(1,Math.sqrt(data.reduce((sum,n)=>sum+n*n,0)/data.length)*8);};};
+    const raw=monitor(input),processed=monitor(output);
+    this.timer=window.setInterval(()=>this.event({type:'level',level:processed(),input_level:raw()}),30);
+  }
+  private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.send({type:'transmit',enabled:active});this.event({type:'transmit',enabled:active});this.applyAudio();}}
   press(value:boolean){this.pressed=value;this.update();}
   setMode(mode:'ptt'|'open'){this.mode=mode;this.pressed=false;this.update();}
-  configure(settings:AudioSettings){this.settings={...settings};this.applyAudio();}
+  configure(settings:AudioSettings){this.settings={...defaultAudioSettings,...settings};this.applyAudio();}
   outputVolume(value:number){this.settings.volume=Math.max(0,Math.min(1,value));this.applyAudio();}
   setMute(muted:boolean,deafened:boolean){this.muted=muted;this.deafened=deafened;this.update();this.applyAudio();this.send({type:'mute',muted,deafened});}
   volume(client:number,value:number){this.volumes.set(client,value);this.applyAudio();}
   async output(id:string){this.sink=id;for(const element of this.elements.values()){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(audio.setSinkId)await audio.setSinkId(id);}}
-  private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume;const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
-  resume(){this.context?.resume();for(const audio of this.elements.values())audio.play().catch(()=>{});}
+  private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume*(this.active?1-this.settings.ducking:1);const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
+  resume(){if(this.wake)this.wake();else this.context?.resume().catch(()=>{});for(const audio of this.elements.values())audio.play().catch(()=>this.event({type:'notice',message:'浏览器仍未允许播放，请检查网站声音权限。'}));}
   restoreFailed(){if(this.restoring){this.restoreChannel=undefined;this.restoring=false;this.lastChannel=this.currentChannel;}}
   private lost(retry:boolean,message=retry?'服务器连接中断，正在自动重连。':'服务器连接已停止，请检查提示后重新连接。'){this.dispose();this.event({type:'disconnected',message});if(retry)this.schedule();else{this.intent=undefined;this.lastChannel=undefined;this.event({type:'reconnecting',active:false});}}
   private schedule(){
@@ -148,5 +168,5 @@ export class Voice {
     this.retryTimer=window.setTimeout(async()=>{this.retryTimer=undefined;try{await this.open();}catch(error){this.event({type:'error',message:error instanceof Error?error.message:'重连失败'});this.event({type:'reconnecting',active:false});}},delay);
   }
   close(){window.clearTimeout(this.retryTimer);this.retryTimer=undefined;this.intent=undefined;this.retryCount=0;this.lastChannel=undefined;this.currentChannel=undefined;this.restoreChannel=undefined;this.dispose();}
-  private dispose(){window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  private dispose(){if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

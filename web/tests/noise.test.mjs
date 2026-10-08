@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
 test('real RNNoise WASM acknowledges ready, processes finite samples and destroys', async()=>{
-  const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-voice2.js',import.meta.url),'utf8');
+  const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-voice3.js',import.meta.url),'utf8');
   const wasm=await readFile(new URL('../public/audio/0.4.1-rnnoise.wasm',import.meta.url));
   let Processor,receive;
   let resolveReady,rejectReady;
@@ -27,7 +27,7 @@ test('real RNNoise WASM acknowledges ready, processes finite samples and destroy
 });
 
 test('invalid RNNoise WASM acknowledges failure instead of silently staying active',async()=>{
-  const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-voice2.js',import.meta.url),'utf8');
+  const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-voice3.js',import.meta.url),'utf8');
   let Processor,signal;
   const failed=new Promise(resolve=>{signal=resolve;});
   vm.runInNewContext(source.replaceAll('import.meta.url',"'https://fixture.example/audio/rnnoise.js'"),{WebAssembly,TextEncoder,TextDecoder,console:{warn(){},error(){}},

@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 let nodes=[],failedModel='',duringKeyboard;
 globalThis.AudioWorkletNode=class {
-  port={onmessage:null,postMessage:()=>{this.destroyed=true;}};
+  messages=[];port={onmessage:null,postMessage:value=>{this.messages.push(value);if(value==='destroy')this.destroyed=true;}};
   constructor(_,id,options){this.id=id;this.options=options;nodes.push(this);queueMicrotask(()=>{if(id.endsWith('/gtcrn'))duringKeyboard?.();this.port.onmessage?.({data:{type:id.endsWith('/'+failedModel)?'error':'ready'}});});}
   connect(target){this.target=target;}disconnect(){this.disconnected=true;}
 };
@@ -16,6 +16,7 @@ function environment(){nodes=[];failedModel='';duringKeyboard=undefined;globalTh
 test('keyboard graph connects GTCRN before RNNoise and runtime GTCRN failure preserves RNNoise',async()=>{
   const context=environment(),processor=await createNoise(context,true,true);assert.equal(processor.mode,'keyboard');assert.equal(nodes[0].options.processorOptions.voiceOnly,true);assert.equal(context.input.target,nodes[1]);assert.equal(nodes[1].target,nodes[0]);assert.equal(processor.output,nodes[0]);
   let notices=0;processor.onchange=()=>notices++;nodes[1].onprocessorerror();assert.equal(processor.mode,'rnnoise');assert.equal(context.input.target,nodes[0]);assert.ok(nodes[1].destroyed);assert.equal(notices,1);
+  assert.deepEqual(nodes[0].messages,[{type:'preserve',enabled:true},{type:'preserve',enabled:false}],'GTCRN output is never denoised twice; fallback restores RNNoise filtering');
   let errors=0;processor.onerror=()=>errors++;nodes[0].onprocessorerror();assert.equal(errors,1);processor.destroy();assert.ok(nodes.every(n=>n.destroyed&&n.disconnected));
 });
 test('unavailable SIMD keyboard processor retains local RNNoise; primary initialization failure rejects',async()=>{

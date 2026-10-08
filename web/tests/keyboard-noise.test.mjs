@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {worklet} from './audio-worklet.mjs';
 const energy=a=>a.reduce((sum,v)=>sum+v*v,0);
-async function denoise(input,keyboard){const rn=await worklet('rnnoise'),gt=keyboard?await worklet('gtcrn'):undefined;try{return rn.process(gt?gt.process(input):input);}finally{assert.equal(rn.destroy(),false);if(gt)assert.equal(gt.destroy(),false);}}
+async function denoise(input,keyboard){const rn=await worklet('rnnoise',{preserveInput:keyboard}),gt=keyboard?await worklet('gtcrn'):undefined;try{return rn.process(gt?gt.process(input):input);}finally{assert.equal(rn.destroy(),false);if(gt)assert.equal(gt.destroy(),false);}}
 test('real local keyboard chain suppresses deterministic broadband clicks more than RNNoise alone',async()=>{
   let seed=17;const input=Float32Array.from({length:48000*3},(_,i)=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;const phase=i%4800;return phase<900?((seed/4294967296)*2-1)*0.12*Math.exp(-phase/180):0;});
   const plain=await denoise(input,false),enhanced=await denoise(input,true);

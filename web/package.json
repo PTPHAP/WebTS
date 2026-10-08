@@ -6,6 +6,7 @@
   "scripts": {
     "predev": "node scripts/audio-assets.mjs",
     "dev": "vite --host 127.0.0.1",
+    "pretest": "node scripts/audio-assets.mjs",
     "test": "node --test tests/*.test.mjs",
     "prebuild": "node scripts/audio-assets.mjs",
     "build": "tsc -b && vite build",

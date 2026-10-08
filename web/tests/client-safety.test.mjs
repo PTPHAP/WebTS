@@ -3,12 +3,21 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 async function load(file){const text=await readFile(new URL(`../src/${file}`,import.meta.url),'utf8');const compiled=ts.transpileModule(text,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;return import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);}
-const {readAudioSettings}=await load('audio-settings.ts');
+const {readAudioSettings,processingLabel}=await load('audio-settings.ts');
 const {tsText}=await load('ts-text.ts');
 const {imageDimensions,avatarImage}=await load('avatar.ts');
 test('malformed persisted audio options revert safely; values are bounded',()=>{
-  for(const value of ['{bad','null']){globalThis.localStorage={getItem:()=>value};assert.equal(readAudioSettings().noise,'browser');}
-  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false})};assert.deepEqual(readAudioSettings(),{noise:'browser',echo:true,autoGain:false,gain:2,volume:0});
+  for(const value of ['{bad','null']){globalThis.localStorage={getItem:()=>value};assert.equal(readAudioSettings().noise,'rnnoise');assert.equal(readAudioSettings().keyboard,true);}
+  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,echo:true,autoGain:false,gain:2,volume:0});
+});
+test('legacy native preference migrates to local processing; explicit disable is retained',()=>{
+  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'browser'})};assert.equal(readAudioSettings().noise,'rnnoise');
+  globalThis.localStorage={getItem:()=>JSON.stringify({noise:'off',keyboard:false,echo:false})};const settings=readAudioSettings();assert.equal(settings.noise,'off');assert.equal(settings.keyboard,false);assert.equal(settings.echo,false);
+});
+test('processing status distinguishes enabled, unavailable and unreported echo cancellation',()=>{
+  assert.match(processingLabel('keyboard',{echoCancellation:false,autoGainControl:true}),/键盘.*回声消除.*未启用.*自动增益.*已启用/);
+  assert.match(processingLabel('rnnoise',{}),/回声消除.*未报告/);
+  assert.equal(processingLabel('listen',{}),'仅收听');
 });
 test('TS description text never creates active or external image content',()=>{
   const parts=tsText('<script>test</script>[url=javascript:alert(1)]click[/url][url=https://example.com]safe[/url][img]https://example.com/tracker[/img]');

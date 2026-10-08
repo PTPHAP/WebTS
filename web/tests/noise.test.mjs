@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import '../scripts/audio-assets.mjs';
 
 test('real RNNoise WASM acknowledges ready, processes finite samples and destroys', async()=>{
   const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-ready1.js',import.meta.url),'utf8');

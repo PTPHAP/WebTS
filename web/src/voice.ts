@@ -1,5 +1,6 @@
 type Event = Record<string, unknown>;
 import type {AudioSettings} from './audio-settings';
+import type {NoiseProcessor} from './noise';
 export class Voice {
   private socket?: WebSocket;
   private peer?: RTCPeerConnection;
@@ -8,8 +9,8 @@ export class Voice {
   private processed?: MediaStream;
   private context?: AudioContext;
   private timer?: number;
-  private noiseNode?: AudioNode & {destroy():void};
-  private settings:AudioSettings={noise:'browser',echo:true,autoGain:true,gain:1,volume:1};
+  private noiseNode?: NoiseProcessor;
+  private settings:AudioSettings={noise:'rnnoise',keyboard:true,echo:true,autoGain:true,gain:1,volume:1};
   private elements = new Map<string,HTMLAudioElement>();
   private tracks = new Map<string,number>();
   private volumes = new Map<number,number>();
@@ -32,7 +33,7 @@ export class Voice {
     let stream: MediaStream | undefined;
     if (!listenOnly) {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前环境不能打开麦克风，请使用 HTTPS 和支持语音的浏览器，或勾选“仅收听”。');
-      try { stream = await navigator.mediaDevices.getUserMedia({audio:{deviceId:device?{exact:device}:undefined,echoCancellation:this.settings.echo,noiseSuppression:this.settings.noise==='browser',autoGainControl:this.settings.autoGain,channelCount:1}}); }
+      try { stream = await navigator.mediaDevices.getUserMedia({audio:{deviceId:device?{exact:device}:undefined,echoCancellation:this.settings.echo,noiseSuppression:false,autoGainControl:this.settings.autoGain,channelCount:1}}); }
       catch (error) {
         const name = error instanceof DOMException ? error.name : '';
         if (name === 'NotAllowedError' || name === 'SecurityError') throw new Error('麦克风权限被拒绝：请在浏览器地址栏的网站权限及系统设置中允许麦克风，再重新连接；也可勾选“仅收听”。');
@@ -44,20 +45,22 @@ export class Voice {
     if (generation !== this.generation) { stream?.getTracks().forEach(t=>t.stop()); return; }
     this.stream=stream;
     let sendStream=stream;
-    let processing=this.settings.noise;
+    let processing:string=this.settings.noise;
     if(stream&&(this.settings.noise==='rnnoise'||this.settings.gain!==1)) {
       const context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context=context;
       const source=context.createMediaStreamSource(stream),gain=context.createGain(),destination=context.createMediaStreamDestination();
       this.processed=destination.stream;gain.gain.value=this.settings.gain;gain.connect(destination);
       if(this.settings.noise==='rnnoise') {
         try {
-          const {createNoise}=await import('./noise');const node=await createNoise(context);
-          if(generation!==this.generation){node.destroy();node.disconnect();return;}
-          this.noiseNode=node;source.connect(node);node.connect(gain);
-          node.onprocessorerror=()=>{if(generation!==this.generation)return;source.disconnect();node.disconnect();node.destroy();this.noiseNode=undefined;source.connect(gain);stream?.getAudioTracks()[0].applyConstraints({noiseSuppression:true}).then(()=>{if(generation===this.generation)this.event({type:'audio_processing',noise:'browser',actual:stream?.getAudioTracks()[0].getSettings?.()});}).catch(()=>{if(generation===this.generation)this.event({type:'audio_processing',noise:'off'});});this.event({type:'notice',message:'增强降噪处理器已停止，已恢复直接音频传输；浏览器降噪状态以设备支持为准。'});};
+          const {createNoise}=await import('./noise');const node=await createNoise(context,this.settings.keyboard);
+          if(generation!==this.generation){node.destroy();return;}
+          this.noiseNode=node;source.connect(node.input);node.output.connect(gain);processing=node.mode;
+          if(node.warning)this.event({type:'notice',message:node.warning});
+          node.onchange=message=>{if(generation!==this.generation)return;this.event({type:'audio_processing',noise:node.mode,actual:stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message});};
+          node.onerror=()=>{if(generation!==this.generation)return;source.disconnect();node.destroy();this.noiseNode=undefined;source.connect(gain);this.event({type:'audio_processing',noise:'off',actual:stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message:'本地降噪处理器已停止，已关闭降噪并恢复直接音频传输。请重新连接以重试。'});};
         } catch {
           if(generation!==this.generation)return;
-          source.connect(gain);processing='off';try{await stream.getAudioTracks()[0].applyConstraints({noiseSuppression:true});processing='browser';}catch{}this.event({type:'notice',message:'增强降噪暂不可用，已恢复直接音频传输；浏览器降噪状态以设备支持为准。'});
+          source.connect(gain);processing='off';this.event({type:'notice',message:'本地降噪暂不可用，已关闭降噪并恢复直接音频传输。请重新连接以重试。'});
         }
       } else source.connect(gain);
       await context.resume();sendStream=destination.stream;
@@ -97,5 +100,5 @@ export class Voice {
   async output(id:string){this.sink=id;for(const element of this.elements.values()){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(audio.setSinkId)await audio.setSinkId(id);}}
   private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume;const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
   resume(){this.context?.resume();for(const audio of this.elements.values())audio.play().catch(()=>{});}
-  close(){this.generation++;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode?.disconnect();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  close(){this.generation++;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

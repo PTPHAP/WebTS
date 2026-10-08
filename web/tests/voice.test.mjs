@@ -4,11 +4,11 @@ import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 
 const source = await readFile(new URL('../src/voice.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText;
+const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace("import('./noise')",'globalThis.loadFixtureNoise()');
 const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 
 function browser(microphoneError) {
-  const sent = [], tracks = [], timers = [], captured=[],constraints=[],contexts=[],sockets=[];
+  const sent = [], tracks = [], timers = [], captured=[],constraints=[],contexts=[],sockets=[],processors=[],connections=[];
   let requests = 0, focused = true;
   const track = () => ({enabled:true, stopped:false, stop(){this.stopped=true;}, clone:track,getSettings:()=>({noiseSuppression:true}),applyConstraints:async()=>{}});
   globalThis.fetch = async () => ({ok:true, json:async()=>({})});
@@ -23,12 +23,13 @@ function browser(microphoneError) {
   globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);}close(){}};
   globalThis.AudioContext = class {
     constructor(options){this.options=options;contexts.push(this);}
-    createMediaStreamSource(){return {connect(){}};}
+    createMediaStreamSource(){return {connect(target){connections.push(target);},disconnect(){}};}
     createGain(){this.gain={gain:{value:1},connect(){}};return this.gain;}
     createMediaStreamDestination(){const output=track();captured.push(output);return {stream:new MediaStream([output])};}
     createAnalyser(){return {fftSize:512,getFloatTimeDomainData:data=>data.fill(0)};}
     close(){this.closed=true;} resume(){}
   };
+  globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',destroy(){this.destroyed=true;}};processors.push(node);return node;}});
   globalThis.WebSocket = class {
     static OPEN=1;
     readyState=1;
@@ -36,7 +37,7 @@ function browser(microphoneError) {
     send(message){sent.push(JSON.parse(message));}
     close(){this.readyState=3;}
   };
-  return {sent,tracks,captured,constraints,contexts,sockets,tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
+  return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
 }
 
 test('microphone denial explains browser permission and listen-only recovery', async()=>{
@@ -91,4 +92,16 @@ test('listen-only never requests microphone or announces transmission', async()=
   assert.ok(env.sent.some(event=>event.identity==='fixture'));
   assert.ok(!env.sent.some(event=>event.type==='transmit'&&event.enabled));
   voice.close();
+});
+test('default local keyboard chain feeds the send track; native NS stays off and failures do not gate speech',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.constraints[0].audio.echoCancellation,true);
+  assert.ok(env.connections.includes(env.processors[0].input));assert.equal(events.find(e=>e.type==='audio_processing').noise,'keyboard');
+  const node=env.processors[0];node.mode='rnnoise';node.onchange('fixture keyboard failure');assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'rnnoise');assert.equal(env.tracks[0].enabled,true);
+  node.onerror();assert.equal(events.filter(e=>e.type==='audio_processing').at(-1).noise,'off');assert.ok(node.destroyed);env.tick();assert.equal(env.tracks[0].enabled,true);
+  voice.close();assert.ok(env.captured.every(t=>t.stopped));
+});
+test('local initialization failure is visible and microphone remains open without silently enabling native NS',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));globalThis.loadFixtureNoise=async()=>({createNoise:async()=>{throw Error('model unavailable');}});
+  await voice.connect({identity:'fixture'},'',false);assert.equal(events.find(e=>e.type==='audio_processing').noise,'off');assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('关闭降噪')));assert.equal(env.constraints[0].audio.noiseSuppression,false);assert.equal(env.tracks[0].enabled,true);voice.close();
 });

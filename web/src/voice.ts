@@ -40,6 +40,7 @@ export class Voice {
   private gated=false;
   private heartbeat?:number;
   private lastMessage=0;
+  private failure?:string;
   constructor(private event: (event: Event) => void) {}
   send(event: Event) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event)); }
   async connect(request: Event, device: string, listenOnly: boolean) {
@@ -48,7 +49,7 @@ export class Voice {
   }
   private async open() {
     const intent=this.intent;if(!intent)return;const {request,device,listenOnly}=intent;
-    this.dispose(); const generation = this.generation;this.restoreChannel=this.lastChannel;this.restoring=false;
+    this.dispose();this.failure=undefined; const generation = this.generation;this.restoreChannel=this.lastChannel;this.restoring=false;
     try {
     let response:Response;try{response=await fetch('/api/rtc',{signal:AbortSignal.timeout(10000)});}catch{throw new Retryable('无法连接网关');}if(!response.ok){if(response.status===401||response.status===403)throw new Error('登录已过期，请重新登录');throw new Retryable('网关暂不可用');}
     const config = await response.json();if(generation!==this.generation)return;
@@ -94,15 +95,15 @@ export class Voice {
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
     const qualityPeer=this.peer;let reading=false;
     this.qualityTimer=window.setInterval(async()=>{if(reading||!qualityPeer.getStats)return;reading=true;try{const report=await qualityPeer.getStats();if(generation===this.generation)this.event({type:'quality',...connectionQuality(report)});}catch{if(generation===this.generation)this.event({type:'quality'});}finally{reading=false;}},2000);
-    this.peer.onconnectionstatechange=()=>{if(generation===this.generation&&qualityPeer.connectionState==='failed')this.lost(true);};
-    this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true);},5000);
+    this.peer.onconnectionstatechange=()=>{if(generation===this.generation&&qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');};
+    this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');},5000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
     this.peer.ontrack=e=>{if(generation!==this.generation)return; const audio = new Audio(); audio.autoplay=true; audio.srcObject=new MediaStream([e.track]); this.elements.set(e.track.id,audio); this.applyAudio(); audio.play().catch(()=>this.event({type:'notice',message:'浏览器暂停了音频，请点击“启用收听”。'})); e.track.onended=()=>{audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);}; };
     if(sendStream){this.sendTrack=sendStream.getAudioTracks()[0].clone();this.sendTrack.enabled=false;this.peer.addTrack(this.sendTrack,new MediaStream([this.sendTrack]));this.update();}
     if (sendStream) this.detect(sendStream);
     const socket = new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/connect`); this.socket=socket;
     socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}};
-    socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.event({type:'error',message:'网关消息无效，连接已停止。'});this.lost(false);return;}if(message.type==='disconnected'){this.lost(message.retryable===true);return;}if(message.type==='error'){this.event(message);return;}this.handling=this.handling.then(async()=>{
+    socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
       if(generation!==this.generation)return;
       if(message.type==='state'){
         if(!this.ready){this.ready=true;this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}
@@ -119,8 +120,8 @@ export class Voice {
       else if(message.type==='ice'){if(peer.remoteDescription)await peer.addIceCandidate(message.candidate);else this.candidates.push(message.candidate);}
       else if(message.type==='track'){this.tracks.set(message.track,message.client);this.applyAudio();}
       if(generation===this.generation)this.event(message);
-    }).catch(()=>{if(generation!==this.generation)return;this.event({type:'error',message:'语音协商失败，请检查浏览器及网络设置。'});this.lost(true);});};
-    socket.onclose=()=>{if(generation===this.generation)this.lost(true);};
+    }).catch(()=>{if(generation!==this.generation)return;this.lost(true,'语音协商失败，正在自动重连；请检查浏览器及网络设置。');});};
+    socket.onclose=()=>{if(generation===this.generation)this.lost(true,'网页与网关的连接中断，正在自动重连。');};
     socket.onerror=()=>{if(generation===this.generation)this.event({type:'error',message:'无法连接网关，请检查网络。'});};
     } catch(error){if(generation!==this.generation)return;this.dispose();if(error instanceof Retryable){this.schedule();return;}this.close();throw error;}
   }
@@ -139,7 +140,7 @@ export class Voice {
   private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume;const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
   resume(){this.context?.resume();for(const audio of this.elements.values())audio.play().catch(()=>{});}
   restoreFailed(){if(this.restoring){this.restoreChannel=undefined;this.restoring=false;this.lastChannel=this.currentChannel;}}
-  private lost(retry:boolean){this.dispose();this.event({type:'disconnected'});if(retry)this.schedule();else{this.intent=undefined;this.lastChannel=undefined;this.event({type:'reconnecting',active:false});}}
+  private lost(retry:boolean,message=retry?'服务器连接中断，正在自动重连。':'服务器连接已停止，请检查提示后重新连接。'){this.dispose();this.event({type:'disconnected',message});if(retry)this.schedule();else{this.intent=undefined;this.lastChannel=undefined;this.event({type:'reconnecting',active:false});}}
   private schedule(){
     if(!this.intent||this.retryTimer!==undefined)return;
     const delay=Math.min(30000,1000*2**Math.min(this.retryCount++,5));

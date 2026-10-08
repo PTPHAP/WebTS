@@ -206,10 +206,22 @@ async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
         .as_ref()
         .err()
         .is_some_and(|error| error.is::<Retryable>());
-    if let Err(error) = result {
-        let _ = emit(&tx, json!({"type":"error","message":error.to_string()}));
-    }
-    let _ = emit(&tx, json!({"type":"disconnected","retryable":retry}));
+    let message = match result {
+        Err(error) => {
+            let message = error.to_string();
+            tracing::warn!(reason = %message, retryable = retry, "网关连接已结束");
+            let _ = emit(&tx, json!({"type":"error","message":message}));
+            message
+        }
+        Ok(()) => {
+            tracing::info!("网页主动关闭服务器连接");
+            "网页已断开服务器连接".to_owned()
+        }
+    };
+    let _ = emit(
+        &tx,
+        json!({"type":"disconnected","retryable":retry,"message":message}),
+    );
     drop(tx);
     if tokio::time::timeout(Duration::from_secs(3), &mut writer)
         .await
@@ -341,8 +353,16 @@ async fn bridge(
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
-    let mut media =
-        Media::new(app, owner, lease.port, tx.clone(), audio_tx, cancel.clone()).await?;
+    let media_cancel = CancellationToken::new();
+    let mut media = Media::new(
+        app,
+        owner,
+        lease.port,
+        tx.clone(),
+        audio_tx,
+        media_cancel.clone(),
+    )
+    .await?;
     let result = connected(
         app,
         headers,
@@ -351,6 +371,7 @@ async fn bridge(
         input,
         tx,
         &cancel,
+        &media_cancel,
         done,
         &mut audio_rx,
     )
@@ -495,6 +516,7 @@ async fn connected(
     input: &mut futures::stream::SplitStream<WebSocket>,
     tx: &mpsc::Sender<Value>,
     cancel: &CancellationToken,
+    media_cancel: &CancellationToken,
     done: &CancellationToken,
     audio: &mut mpsc::Receiver<rtc::rtp::Packet>,
 ) -> Result<()> {
@@ -519,8 +541,9 @@ async fn connected(
     let mut described_channel = None;
     loop {
         tokio::select! {
-            _=cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}break;},
-            _=done.cancelled()=>break,
+            _=cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销，请检查登录状态、身份或管理员的服务器设置");},
+            _=media_cancel.cancelled()=>return Err(retryable("浏览器语音连接中断，正在自动重连")),
+            _=done.cancelled()=>return Err(retryable("网页接收连接已中断")),
             _=timer.tick()=>{
                 enforce(conn)?;
                 let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
@@ -545,7 +568,7 @@ async fn connected(
                 _=>{}
             }},
             completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
-            message=input.next()=>{let Some(message)=message else{break;};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){break;}continue;};
+            message=input.next()=>{let Some(message)=message else{return Err(retryable("网页发送连接已中断"));};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){return Err(retryable("网页连接已关闭"));}continue;};
                 if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
                 let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
                 match value["type"].as_str().unwrap_or(""){

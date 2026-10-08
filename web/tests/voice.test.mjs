@@ -152,6 +152,29 @@ test('explicit nonretryable server closure and deliberate disconnect cancel reco
   await voice.connect({identity:'fixture'},'',true);env.sockets.at(-1).onclose();assert.equal(env.delays.size,1);voice.close();assert.equal(env.delays.size,0);
 });
 
+test('unexpected closures always explain why and retain the retry verdict',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+  await env.message({type:'disconnected',retryable:false});
+  assert.match(events.find(e=>e.type==='disconnected').message,/连接.*停止/);assert.equal(env.delays.size,0);
+  events.length=0;await voice.connect({identity:'fixture'},'',true);env.sockets.at(-1).onclose();
+  assert.match(events.find(e=>e.type==='disconnected').message,/网页.*连接.*中断/);assert.equal(env.delays.size,1);voice.close();
+});
+
+test('gateway terminal reason and preceding error are shown without reconnecting revoked connections',async()=>{
+  for(const direct of [true,false]){
+    const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+    if(!direct)await env.message({type:'error',message:'连接已撤销，请检查账号或管理员配置'});
+    await env.message({type:'disconnected',retryable:false,...(direct?{message:'连接已撤销，请检查账号或管理员配置'}:{})});
+    assert.match(events.find(e=>e.type==='disconnected').message,/连接已撤销/);assert.equal(env.delays.size,0);voice.close();
+  }
+});
+
+test('failed media transport reports a reason and reconnects',async()=>{
+  browser();const events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+  voice.peer.connectionState='failed';voice.peer.onconnectionstatechange();
+  assert.match(events.find(e=>e.type==='disconnected').message,/语音.*连接.*中断/);assert.ok(events.some(e=>e.type==='reconnecting'&&e.active));voice.close();
+});
+
 
 test('HTTP auth expiry stops retries; an offline gateway stays retryable; no stale close survives replacement',async()=>{
   const env=browser(),voice=new Voice(()=>{});globalThis.fetch=async()=>{throw Error('offline');};await voice.connect({identity:'fixture'},'',true);assert.equal(env.delays.size,1);

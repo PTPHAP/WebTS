@@ -113,6 +113,11 @@ impl PeerConnectionEventHandler for Handler {
                 | RTCPeerConnectionState::Disconnected
         ) {
             self.secure.store(false, Ordering::Release);
+        }
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+        ) {
             self.cancel.cancel();
         }
     }
@@ -450,6 +455,39 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn transient_ice_disconnect_does_not_cancel_the_connection() {
+        let (signals, mut events) = mpsc::channel(8);
+        let (audio, _) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let handler = Handler {
+            signals,
+            audio,
+            secure: Arc::new(AtomicBool::new(true)),
+            cancel: cancel.clone(),
+        };
+        handler
+            .on_connection_state_change(RTCPeerConnectionState::Disconnected)
+            .await;
+        assert!(
+            !cancel.is_cancelled(),
+            "temporary ICE loss must not behave like account revocation"
+        );
+        assert!(!handler.secure.load(Ordering::Acquire));
+        assert_eq!(events.recv().await.unwrap()["type"], "rtc_state");
+        handler
+            .on_connection_state_change(RTCPeerConnectionState::Connected)
+            .await;
+        assert!(!cancel.is_cancelled());
+        assert!(
+            !handler.secure.load(Ordering::Acquire),
+            "cipher must be verified again before voice resumes"
+        );
+        handler
+            .on_connection_state_change(RTCPeerConnectionState::Failed)
+            .await;
+        assert!(cancel.is_cancelled(), "failed ICE needs a new transport");
+    }
     #[test]
     fn dtx_headers_do_not_light_speech_but_short_audio_is_preserved() {
         for packet in [&[0xf8][..], &[0xf9], &[0xfa, 0], &[0xfb, 1], &[0xfb, 3]] {

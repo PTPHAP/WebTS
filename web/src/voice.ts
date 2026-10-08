@@ -1,6 +1,7 @@
 type Event = Record<string, unknown>;
 import type {AudioSettings} from './audio-settings';
 import type {NoiseProcessor} from './noise';
+import {connectionQuality} from './connection-quality';
 export class Voice {
   private socket?: WebSocket;
   private peer?: RTCPeerConnection;
@@ -9,6 +10,7 @@ export class Voice {
   private processed?: MediaStream;
   private context?: AudioContext;
   private timer?: number;
+  private qualityTimer?: number;
   private noiseNode?: NoiseProcessor;
   private settings:AudioSettings={noise:'rnnoise',keyboard:true,echo:true,autoGain:true,gain:1,volume:1};
   private elements = new Map<string,HTMLAudioElement>();
@@ -68,6 +70,8 @@ export class Voice {
     if(generation!==this.generation){sendStream?.getTracks().forEach(t=>t.stop());return;}
     this.event({type:'audio_processing',noise:listenOnly?'listen':processing,actual:stream?.getAudioTracks()[0].getSettings?.()});
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
+    const qualityPeer=this.peer;let reading=false;
+    this.qualityTimer=window.setInterval(async()=>{if(reading||!qualityPeer.getStats)return;reading=true;try{const report=await qualityPeer.getStats();if(generation===this.generation)this.event({type:'quality',...connectionQuality(report)});}catch{if(generation===this.generation)this.event({type:'quality'});}finally{reading=false;}},2000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
     this.peer.ontrack=e=>{if(generation!==this.generation)return; const audio = new Audio(); audio.autoplay=true; audio.srcObject=new MediaStream([e.track]); this.elements.set(e.track.id,audio); this.applyAudio(); audio.play().catch(()=>this.event({type:'notice',message:'浏览器暂停了音频，请点击“启用收听”。'})); e.track.onended=()=>{audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);}; };
     if(sendStream){this.sendTrack=sendStream.getAudioTracks()[0].clone();this.sendTrack.enabled=false;this.peer.addTrack(this.sendTrack,new MediaStream([this.sendTrack]));this.update();}
@@ -100,5 +104,5 @@ export class Voice {
   async output(id:string){this.sink=id;for(const element of this.elements.values()){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(audio.setSinkId)await audio.setSinkId(id);}}
   private applyAudio(){for(const[id,audio]of this.elements){audio.muted=this.deafened;audio.volume=(this.volumes.get(this.tracks.get(id)??0)??1)*this.settings.volume;const element=audio as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(this.sink&&element.setSinkId)element.setSinkId(this.sink).catch(()=>{});}}
   resume(){this.context?.resume();for(const audio of this.elements.values())audio.play().catch(()=>{});}
-  close(){this.generation++;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  close(){this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

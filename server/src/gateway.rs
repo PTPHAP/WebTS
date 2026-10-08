@@ -462,8 +462,9 @@ async fn connected(
     let mut pending = HashMap::<u16, (String, Instant)>::new();
     let mut rate = (Instant::now(), 0u32);
     let mut check = Instant::now() - Duration::from_secs(2);
+    let mut network_check = Instant::now();
     let mut cipher = None;
-    let mut speaking = HashMap::<u16, Instant>::new();
+    let mut speaking = HashMap::<u16, (Instant, Option<Instant>)>::new();
     let mut negotiated = Instant::now();
     let mut avatars = crate::avatar::Avatars::default();
     let mut described_channel = None;
@@ -476,12 +477,13 @@ async fn connected(
                 let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
-                if changed{let s=conn.get_state()?;let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
+                if changed{let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
+                if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){bail!("浏览器语音协商超时");}
                 if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();pending.retain(|_,(id,start)|{if start.elapsed()>Duration::from_secs(15){let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});}
             },
-            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){enforce(conn)?;let codec=if conn.get_state()?.clients.get(&conn.get_state()?.own_client).and_then(|c|conn.get_state().ok()?.channels.get(&c.channel)).is_some_and(|c|c.codec==Codec::OpusMusic){CodecType::OpusMusic}else{CodecType::OpusVoice};let data=if whisper_clients.is_empty()&&whisper_channels.is_empty(){AudioData::C2S{id:sequence,codec,data:&packet.payload}}else{AudioData::C2SWhisper{id:sequence,codec,clients:whisper_clients.clone(),channels:whisper_channels.clone(),data:&packet.payload}};conn.send_audio(OutAudio::new(&data))?;sequence=sequence.wrapping_add(1);}},
+            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&crate::media::opus_has_audio(&packet.payload)&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){enforce(conn)?;let codec=if conn.get_state()?.clients.get(&conn.get_state()?.own_client).and_then(|c|conn.get_state().ok()?.channels.get(&c.channel)).is_some_and(|c|c.codec==Codec::OpusMusic){CodecType::OpusMusic}else{CodecType::OpusVoice};let data=if whisper_clients.is_empty()&&whisper_channels.is_empty(){AudioData::C2S{id:sequence,codec,data:&packet.payload}}else{AudioData::C2SWhisper{id:sequence,codec,clients:whisper_clients.clone(),channels:whisper_channels.clone(),data:&packet.payload}};conn.send_audio(OutAudio::new(&data))?;sequence=sequence.wrapping_add(1);let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}},
             event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak网络或协议错误"))?;enforce(conn)?;match event{
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>changed=true,
@@ -489,8 +491,8 @@ async fn connected(
                 StreamItem::FileDownload(handle,result)=>avatars.downloaded(handle.0,result,app.clone()),
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
                 StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
-                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if speaking.get(from).is_none_or(|t|t.elapsed()>Duration::from_millis(300)){emit(tx,json!({"type":"speaking","client":from}))?;speaking.insert(*from,Instant::now());}},_=>{}}},
-                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,json!({"type":"result","id":id,"ok":result.is_ok(),"message":result.err().map(|e|format!("TS拒绝操作：{}（错误代码{}）",e,e.error as u16))}))?;},
+                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
+                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
                 _=>{}
             }},
             completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
@@ -595,6 +597,34 @@ fn targets(value: &Value, max: u64) -> Result<Vec<u64>> {
         })
         .collect()
 }
+// Display activity from consecutive audio frames, not from an open microphone or
+// isolated Opus DTX refresh frames. This never gates or delays transmitted speech.
+fn speech_activity(
+    states: &mut HashMap<u16, (Instant, Option<Instant>)>,
+    client: u16,
+    now: Instant,
+) -> bool {
+    let Some((previous, announced)) = states.get_mut(&client) else {
+        states.insert(client, (now, None));
+        return false;
+    };
+    let continuous = now.saturating_duration_since(*previous) <= Duration::from_millis(120);
+    *previous = now;
+    if continuous
+        && announced
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(100))
+    {
+        *announced = Some(now);
+        true
+    } else {
+        false
+    }
+}
+fn command_result(id: &str, result: std::result::Result<(), tsclientlib::CommandError>) -> Value {
+    let error = result.err();
+    json!({"type":"result","id":id,"ok":error.is_none(),"code":error.as_ref().map(|e|e.error as u16),"message":error.map(|e|format!("TS拒绝操作：{}（错误代码{}）",e,e.error as u16))})
+}
+
 fn command(name: &str, args: &[(&str, String)]) -> OutCommand {
     let mut out = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, name);
     for (key, value) in args {
@@ -730,10 +760,77 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{connection_error, valid_nickname};
+    use super::{command_result, connection_error, speech_activity, valid_nickname};
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
     use tsclientlib::Error;
     use tsproto_types::errors::Error as TsError;
 
+    #[test]
+    fn periodic_dtx_refresh_does_not_look_like_continuous_speech() {
+        let mut states = HashMap::new();
+        let start = Instant::now();
+        for ms in [0, 400, 800, 1200] {
+            assert!(!speech_activity(
+                &mut states,
+                1,
+                start + Duration::from_millis(ms)
+            ));
+        }
+        assert!(speech_activity(
+            &mut states,
+            1,
+            start + Duration::from_millis(1220)
+        ));
+        assert!(!speech_activity(
+            &mut states,
+            1,
+            start + Duration::from_millis(1240)
+        ));
+        assert!(speech_activity(
+            &mut states,
+            1,
+            start + Duration::from_millis(1320)
+        ));
+        assert!(!speech_activity(
+            &mut states,
+            2,
+            start + Duration::from_millis(1340)
+        ));
+        assert!(!speech_activity(
+            &mut states,
+            1,
+            start + Duration::from_millis(1800)
+        ));
+    }
+    #[test]
+    fn channel_password_verdict_is_distinct_from_permission_and_server_password() {
+        for error in [
+            TsError::ChannelInvalidPassword,
+            TsError::ServerInvalidPassword,
+            TsError::PermissionsClientInsufficient,
+        ] {
+            let result = command_result(
+                "move-test",
+                Err(tsclientlib::CommandError {
+                    error,
+                    missing_permission: None,
+                }),
+            );
+            assert_eq!(result["id"], "move-test");
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["code"], error as u16);
+            assert_eq!(
+                result["code"] == 781,
+                error == TsError::ChannelInvalidPassword
+            );
+        }
+        let result = command_result("success", Ok(()));
+        assert_eq!(result["ok"], true);
+        assert!(result["code"].is_null());
+    }
     #[test]
     fn nickname_matches_ts_unicode_length_limits() {
         assert!(!valid_nickname("测试"));

@@ -274,6 +274,7 @@ async fn run() {
     let mut sequence = 0u16;
     let mut secure = false;
     let mut browser_voice = false;
+    let mut dtx_probes = 0;
     let mut ts_voice = false;
     let mut ts_whisper = false;
     let mut whisper_requested = false;
@@ -292,6 +293,12 @@ async fn run() {
             _=&mut deadline=>panic!("incomplete live test: secure={secure}, normal(browser/ts)={browser_voice}/{ts_voice}, whisper(browser/ts)={browser_whisper}/{ts_whisper}, chat={chat_received}, denied={denied}, revoked={revoked}"),
             _=timer.tick()=>{
                 if peer.check_cipher().await.unwrap().is_some() && secure {
+                    if dtx_probes < 50 {
+                        peer.audio(7,sequence,&[0x78]).await.unwrap();
+                        sequence=sequence.wrapping_add(1);
+                        dtx_probes+=1;
+                        continue;
+                    }
                     peer.audio(7,sequence,&payload).await.unwrap();
                     let native_audio = if browser_voice && own_id != 0 {
                         AudioData::C2SWhisper{id:sequence,codec:CodecType::OpusVoice,clients:vec![own_id],channels:vec![],data:&whisper_payload}
@@ -420,7 +427,7 @@ async fn run() {
     peer.close().await;
     server.abort();
     println!(
-        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, channel chat, bidirectional server avatars, permission refusal, session revocation"
+        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, DTX headers suppressed, channel chat, bidirectional server avatars, permission refusal, session revocation"
     );
     if std::env::var("WEBTS_TEST_KEEP_FIXTURE").as_deref() == Ok("1") {
         println!(

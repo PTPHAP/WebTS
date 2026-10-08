@@ -4,7 +4,9 @@ import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 
 const source = await readFile(new URL('../src/voice.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace("import('./noise')",'globalThis.loadFixtureNoise()');
+const qualityCode=ts.transpileModule(await readFile(new URL('../src/connection-quality.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const qualityURL='data:text/javascript;base64,'+Buffer.from(qualityCode).toString('base64');
+const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace('./connection-quality',qualityURL).replace("import('./noise')",'globalThis.loadFixtureNoise()');
 const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 
 function browser(microphoneError) {
@@ -92,6 +94,13 @@ test('listen-only never requests microphone or announces transmission', async()=
   assert.ok(env.sent.some(event=>event.identity==='fixture'));
   assert.ok(!env.sent.some(event=>event.type==='transmit'&&event.enabled));
   voice.close();
+});
+test('quality polling does not overlap or report stale results after disconnect',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));let resolve,reads=0;
+  RTCPeerConnection.prototype.getStats=()=>{reads++;return new Promise(r=>resolve=r);};
+  await voice.connect({identity:'fixture'},'',true);env.tick();env.tick();assert.equal(reads,1);
+  voice.close();resolve(new Map([['pair',{type:'candidate-pair',state:'succeeded',nominated:true,currentRoundTripTime:.02}]]));await Promise.resolve();await Promise.resolve();
+  assert.ok(!events.some(e=>e.type==='quality'),'late stats cannot populate a closed or replacement connection');
 });
 test('default local keyboard chain feeds the send track; native NS stays off and failures do not gate speech',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);

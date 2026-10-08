@@ -29,7 +29,7 @@ async fn encrypted_opus_packet_round_trip() {
     a.sync_speakers(&[7], &at).await.unwrap();
     b.sync_speakers(&[8], &bt).await.unwrap();
     let offer = a.peer.create_offer(None).await.unwrap();
-    assert!(offer.sdp.contains("usedtx=0"));
+    assert!(offer.sdp.contains("usedtx=1"));
     a.peer.set_local_description(offer.clone()).await.unwrap();
     b.peer.set_remote_description(offer).await.unwrap();
     let answer = b.peer.create_answer(None).await.unwrap();

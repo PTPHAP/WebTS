@@ -396,8 +396,21 @@ fn opus_codec() -> RTCRtpCodec {
         mime_type: "audio/opus".to_owned(),
         clock_rate: 48000,
         channels: 2,
-        sdp_fmtp_line: "minptime=10;useinbandfec=1;usedtx=0".to_owned(),
+        sdp_fmtp_line: "minptime=10;useinbandfec=1;usedtx=1".to_owned(),
         rtcp_feedback: vec![],
+    }
+}
+// DTX header-only packets contain no encoded audio. Do not treat them as TS speech.
+// Preserve short valid frames: payload length alone cannot identify silence.
+pub fn opus_has_audio(data: &[u8]) -> bool {
+    match data {
+        [] => false,
+        [toc] => !matches!(toc & 3, 0 | 1),
+        [toc, count] => {
+            !((toc & 3 == 2 && *count == 0)
+                || (toc & 3 == 3 && count & 0xc0 == 0 && count & 63 != 0))
+        }
+        _ => true,
     }
 }
 pub fn opus_samples(data: &[u8]) -> Result<u32> {
@@ -425,6 +438,16 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dtx_headers_do_not_light_speech_but_short_audio_is_preserved() {
+        for packet in [&[0xf8][..], &[0xf9], &[0xfa, 0], &[0xfb, 1], &[0xfb, 3]] {
+            assert!(!opus_has_audio(packet));
+            assert!(opus_samples(packet).is_ok());
+        }
+        for packet in [&[0xf8, 1][..], &[0xf8, 0xff, 0xfe], &[0xfb, 1, 1]] {
+            assert!(opus_has_audio(packet));
+        }
+    }
     #[test]
     fn ice_and_embedded_sdp_do_not_probe_private_or_named_targets() {
         for address in [

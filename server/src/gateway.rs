@@ -17,7 +17,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
@@ -43,6 +46,7 @@ struct Entry {
 }
 pub struct Connections {
     max: usize,
+    shutting_down: AtomicBool,
     entries: Mutex<HashMap<String, Entry>>,
 }
 struct Lease {
@@ -61,6 +65,7 @@ impl Connections {
     pub fn new(max: usize) -> Self {
         Self {
             max,
+            shutting_down: AtomicBool::new(false),
             entries: Mutex::new(HashMap::new()),
         }
     }
@@ -75,6 +80,9 @@ impl Connections {
         }
     }
     fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(retryable("网关正在重启"));
+        }
         let mut entries = self.entries.lock().unwrap();
         if entries.len() >= self.max {
             return Err(retryable("网关连接已满"));
@@ -123,6 +131,7 @@ impl Connections {
         }
     }
     pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
         for e in self.entries.lock().unwrap().values() {
             e.cancel.cancel();
         }
@@ -328,7 +337,7 @@ async fn bridge(
         .connect()
         .map_err(report_connection_error)?;
     let cancel = lease.cancel.clone();
-    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>bail!("连接已撤销"),_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
+    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销")},_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
@@ -510,7 +519,7 @@ async fn connected(
     let mut described_channel = None;
     loop {
         tokio::select! {
-            _=cancel.cancelled()=>break,
+            _=cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}break;},
             _=done.cancelled()=>break,
             _=timer.tick()=>{
                 enforce(conn)?;

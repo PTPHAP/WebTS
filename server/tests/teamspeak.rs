@@ -118,7 +118,7 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
     })
     .await
     .unwrap();
-    let (mut duplicate, _) = connect_async(request).await.unwrap();
+    let (mut duplicate, _) = connect_async(request.clone()).await.unwrap();
     duplicate
         .send(Message::Text(
             json!({"server":"isolated","identity":id,"page":"alias","name":"WebTS alias test"})
@@ -178,6 +178,43 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
     .await
     .expect("custom connection survived policy change");
     assert!(!app.runtime.read().unwrap().settings.allow_custom);
+    let (mut restart, _) = connect_async(request).await.unwrap();
+    restart
+        .send(Message::Text(
+            json!({"server":"isolated","identity":id,"page":"restart","name":"WebTS restart test"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(Ok(Message::Text(text))) = restart.next().await {
+            let message: Value = serde_json::from_str(&text).unwrap();
+            assert_ne!(message["type"], "error", "{message}");
+            if message["type"] == "state" {
+                return;
+            }
+        }
+        panic!("restart fixture never connected");
+    })
+    .await
+    .unwrap();
+    app.connections.shutdown();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(Message::Text(text))) = restart.next().await {
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["type"] == "disconnected" {
+                assert_eq!(
+                    message["retryable"], true,
+                    "graceful gateway restart must allow reconnect"
+                );
+                return;
+            }
+        }
+        panic!("restart fixture did not receive explicit retry verdict");
+    })
+    .await
+    .unwrap();
     server.abort();
 }
 

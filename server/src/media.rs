@@ -144,6 +144,7 @@ struct Speaker {
     sender: Arc<dyn RtpSender>,
     ssrc: u32,
     seq: Option<u16>,
+    sequence_offset: u16,
     timestamp: u32,
     samples: u32,
     last: Instant,
@@ -282,6 +283,7 @@ impl Media {
                     sender,
                     ssrc,
                     seq: None,
+                    sequence_offset: 0,
                     timestamp: 0,
                     samples: 960,
                     last: Instant::now(),
@@ -352,7 +354,11 @@ impl Media {
         if !self.secure.load(Ordering::Acquire) {
             return Ok(());
         }
-        let samples = opus_samples(data)?;
+        let samples = if data.is_empty() {
+            None
+        } else {
+            Some(opus_samples(data)?)
+        };
         let Some(s) = self.speakers.get_mut(&from) else {
             return Ok(());
         };
@@ -370,13 +376,19 @@ impl Media {
             s.timestamp = s.timestamp.wrapping_add(advance);
         }
         s.seq = Some(sequence);
-        s.samples = samples;
         s.last = Instant::now();
+        let Some(samples) = samples else {
+            // TS end markers occupy a TS sequence number but have no RTP audio.
+            // Compress that intentional gap so it is not reported as packet loss.
+            s.sequence_offset = s.sequence_offset.wrapping_add(1);
+            return Ok(());
+        };
+        s.samples = samples;
         let packet = Packet {
             header: Header {
                 version: 2,
                 payload_type: 111,
-                sequence_number: sequence,
+                sequence_number: sequence.wrapping_sub(s.sequence_offset),
                 timestamp: s.timestamp,
                 ssrc: s.ssrc,
                 ..Default::default()

@@ -51,6 +51,27 @@ async fn encrypted_opus_packet_round_trip() {
             Some(packet)=b_audio.recv()=>{assert_eq!(packet.payload.as_ref(),payload);got_b=true;if got_a{break;}},
         }
     }
+    a.audio(7, seq, &[])
+        .await
+        .expect("TS end-of-speech marker must not fail the RTC bridge");
+    // Repeated/stale end markers must neither disconnect nor double-compress RTP.
+    a.audio(7, seq, &[]).await.unwrap();
+    let resumed = [0xf8, 0xff, 0xfe, 0x00];
+    a.audio(7, seq.wrapping_add(1), &resumed).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let packet = b_audio.recv().await.unwrap();
+            if packet.payload.as_ref() == resumed {
+                assert_eq!(
+                    packet.header.sequence_number, seq,
+                    "intentional TS end marker must not count as RTP packet loss"
+                );
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
     a.close().await;
     b.close().await;
     drop(Arc::clone(&app));

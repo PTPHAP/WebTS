@@ -454,6 +454,7 @@ async fn connected(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut changed = true;
     let mut transmit = false;
+    let mut voice_open = false;
     let mut muted = false;
     let mut deafened = false;
     let mut whisper_clients = Vec::<u16>::new();
@@ -483,7 +484,7 @@ async fn connected(
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){bail!("浏览器语音协商超时");}
                 if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();pending.retain(|_,(id,start)|{if start.elapsed()>Duration::from_secs(15){let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});}
             },
-            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&crate::media::opus_has_audio(&packet.payload)&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){enforce(conn)?;let codec=if conn.get_state()?.clients.get(&conn.get_state()?.own_client).and_then(|c|conn.get_state().ok()?.channels.get(&c.channel)).is_some_and(|c|c.codec==Codec::OpusMusic){CodecType::OpusMusic}else{CodecType::OpusVoice};let data=if whisper_clients.is_empty()&&whisper_channels.is_empty(){AudioData::C2S{id:sequence,codec,data:&packet.payload}}else{AudioData::C2SWhisper{id:sequence,codec,clients:whisper_clients.clone(),channels:whisper_channels.clone(),data:&packet.payload}};conn.send_audio(OutAudio::new(&data))?;sequence=sequence.wrapping_add(1);let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}},
+            packet=audio.recv()=>{let Some(packet)=packet else{bail!("语音通道已关闭");};if transmit&&!muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}},
             event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(|_|anyhow::anyhow!("TeamSpeak网络或协议错误"))?;enforce(conn)?;match event{
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>changed=true,
@@ -491,7 +492,7 @@ async fn connected(
                 StreamItem::FileDownload(handle,result)=>avatars.downloaded(handle.0,result,app.clone()),
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
                 StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
-                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
+                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if data.is_empty(){if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
                 StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
                 _=>{}
             }},
@@ -505,9 +506,9 @@ async fn connected(
                     "channel_info"=>{let id=value["channel"].as_u64().context("频道无效")?;if conn.get_state()?.channels.contains_key(&tsproto_types::ChannelId(id)){command("channelgetdescription",&[("cid",id.to_string())]).send(conn)?;}},
                     "answer"=>media.answer(serde_json::from_value(value["description"].clone())?).await?,
                     "ice"=>media.ice(value["candidate"].clone()).await?,
-                    "transmit"=>transmit=value["enabled"].as_bool().unwrap_or(false),
-                    "whisper"=>{let clients=targets(&value["clients"],u16::MAX as u64)?;let channels=targets(&value["channels"],u64::MAX)?;let s=conn.get_state()?;if clients.iter().any(|id|!s.clients.keys().any(|c|u64::from(c.0)==*id))||channels.iter().any(|id|!s.channels.keys().any(|c|c.0==*id)){bail!("耳语目标不存在");}whisper_clients=clients.into_iter().map(|c|c as u16).collect();whisper_channels=channels;emit(tx,json!({"type":"whisper","active":!whisper_clients.is_empty()||!whisper_channels.is_empty()}))?;},
-                    "mute"=>{muted=value["muted"].as_bool().unwrap_or(false);deafened=value["deafened"].as_bool().unwrap_or(false);command("clientupdate",&[("client_input_muted",u8::from(muted).to_string()),("client_output_muted",u8::from(deafened).to_string())]).send_with_result(conn)?;},
+                    "transmit"=>{transmit=value["enabled"].as_bool().unwrap_or(false);if !transmit{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}},
+                    "whisper"=>{let clients=targets(&value["clients"],u16::MAX as u64)?;let channels=targets(&value["channels"],u64::MAX)?;let s=conn.get_state()?;if clients.iter().any(|id|!s.clients.keys().any(|c|u64::from(c.0)==*id))||channels.iter().any(|id|!s.channels.keys().any(|c|c.0==*id)){bail!("耳语目标不存在");}finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;whisper_clients=clients.into_iter().map(|c|c as u16).collect();whisper_channels=channels;emit(tx,json!({"type":"whisper","active":!whisper_clients.is_empty()||!whisper_channels.is_empty()}))?;},
+                    "mute"=>{muted=value["muted"].as_bool().unwrap_or(false);deafened=value["deafened"].as_bool().unwrap_or(false);if muted{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}command("clientupdate",&[("client_input_muted",u8::from(muted).to_string()),("client_output_muted",u8::from(deafened).to_string())]).send_with_result(conn)?;},
                     "disconnect"=>break,
                     "command"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();if pending.len()>=32{bail!("待处理操作过多");}match user_command(conn,&value){Ok(cmd)=>{let handle=cmd.send_with_result(conn)?;pending.insert(handle.0,(id,Instant::now()));},Err(error)=>emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?,}},
                     _=>bail!("不支持的网页请求")
@@ -596,6 +597,62 @@ fn targets(value: &Value, max: u64) -> Result<Vec<u64>> {
                 .context("目标ID无效")
         })
         .collect()
+}
+fn send_voice(
+    conn: &mut Connection,
+    sequence: &mut u16,
+    clients: &[u16],
+    channels: &[u64],
+    payload: &[u8],
+) -> Result<()> {
+    enforce(conn)?;
+    let state = conn.get_state()?;
+    let codec = if state
+        .clients
+        .get(&state.own_client)
+        .and_then(|client| state.channels.get(&client.channel))
+        .is_some_and(|channel| channel.codec == Codec::OpusMusic)
+    {
+        CodecType::OpusMusic
+    } else {
+        CodecType::OpusVoice
+    };
+    let data = if clients.is_empty() && channels.is_empty() {
+        AudioData::C2S {
+            id: *sequence,
+            codec,
+            data: payload,
+        }
+    } else {
+        AudioData::C2SWhisper {
+            id: *sequence,
+            codec,
+            clients: clients.to_vec(),
+            channels: channels.to_vec(),
+            data: payload,
+        }
+    };
+    conn.send_audio(OutAudio::new(&data))?;
+    *sequence = sequence.wrapping_add(1);
+    Ok(())
+}
+fn finish_voice(
+    conn: &mut Connection,
+    sequence: &mut u16,
+    clients: &[u16],
+    channels: &[u64],
+    open: &mut bool,
+    tx: &mpsc::Sender<Value>,
+) -> Result<()> {
+    if *open {
+        send_voice(conn, sequence, clients, channels, &[])?;
+        *open = false;
+        emit(
+            tx,
+            json!({"type":"speaking","client":conn.get_state()?.own_client.0,"enabled":false}),
+        )?;
+    }
+    Ok(())
 }
 // Display activity from consecutive audio frames, not from an open microphone or
 // isolated Opus DTX refresh frames. This never gates or delays transmitted speech.

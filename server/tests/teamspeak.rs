@@ -275,6 +275,11 @@ async fn run() {
     let mut secure = false;
     let mut browser_voice = false;
     let mut dtx_probes = 0;
+    let mut end_requested = false;
+    let mut ts_end = false;
+    let mut native_end_requested = false;
+    let mut own_end_received = false;
+    let mut native_end_received = false;
     let mut ts_voice = false;
     let mut ts_whisper = false;
     let mut whisper_requested = false;
@@ -335,8 +340,8 @@ async fn run() {
 
                     assert!(!packet.data().packet().header().flags().contains(Flags::UNENCRYPTED));
                     match packet.data().data(){
-                        AudioData::S2C{data,..}=>{assert_eq!(*data,payload);ts_voice=true;},
-                        AudioData::S2CWhisper{data,..}=>{assert_eq!(*data,payload);ts_whisper=true;},
+                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;}else{assert_eq!(*data,payload);ts_voice=true;}},
+                        AudioData::S2CWhisper{data,..} if !data.is_empty()=>{assert_eq!(*data,payload);ts_whisper=true;},
                         _=>{}
                     }
                     },
@@ -347,6 +352,7 @@ async fn run() {
                 let Some(Ok(Message::Text(text)))=event else {assert!(revoked,"unexpected WebSocket close");break;};
                 let value:Value=serde_json::from_str(&text).unwrap();
                 match value["type"].as_str().unwrap_or(""){
+                    "speaking" if value["enabled"]==false=>{if value["client"]==own_id{own_end_received=true;}else if value["client"]==native_id{native_end_received=true;}},
                     "offer"=>{
                         peer.peer.set_remote_description(serde_json::from_value(value["description"].clone()).unwrap()).await.unwrap();
                         let answer=peer.peer.create_answer(None).await.unwrap();
@@ -385,7 +391,25 @@ async fn run() {
                 }
             }
         }
-        if ts_voice && browser_voice && !ts_whisper && !whisper_requested {
+        if ts_voice && browser_voice && !end_requested {
+            peer.audio(7, sequence, &[0x78]).await.unwrap();
+            sequence = sequence.wrapping_add(1);
+            end_requested = true;
+        }
+        if ts_end && !native_end_requested {
+            native
+                .send_audio(OutAudio::new(&AudioData::C2SWhisper {
+                    id: sequence,
+                    codec: CodecType::OpusVoice,
+                    clients: vec![own_id],
+                    channels: vec![],
+                    data: &[],
+                }))
+                .unwrap();
+            sequence = sequence.wrapping_add(1);
+            native_end_requested = true;
+        }
+        if ts_end && ts_voice && browser_voice && !ts_whisper && !whisper_requested {
             socket
                 .send(Message::Text(
                     json!({"type":"whisper","clients":[native_id],"channels":[]})
@@ -399,6 +423,10 @@ async fn run() {
         if ts_whisper
             && browser_voice
             && browser_whisper
+            && ts_end
+            && native_end_requested
+            && own_end_received
+            && native_end_received
             && chat_received
             && browser_chat
             && browser_poke
@@ -418,6 +446,10 @@ async fn run() {
             && browser_whisper
             && ts_voice
             && ts_whisper
+            && ts_end
+            && native_end_requested
+            && own_end_received
+            && native_end_received
             && chat_received
             && denied
             && avatar_to_native
@@ -427,7 +459,7 @@ async fn run() {
     peer.close().await;
     server.abort();
     println!(
-        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, DTX headers suppressed, channel chat, bidirectional server avatars, permission refusal, session revocation"
+        "PASS: live TS3 / WebRTC AES-256-GCM bidirectional Opus and encrypted whispers, DTX/end-of-speech markers handled without disconnect, channel chat, bidirectional server avatars, permission refusal, session revocation"
     );
     if std::env::var("WEBTS_TEST_KEEP_FIXTURE").as_deref() == Ok("1") {
         println!(

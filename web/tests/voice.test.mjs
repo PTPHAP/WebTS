@@ -128,6 +128,7 @@ test('voice-only model activity controls TS transmit while the capture track sta
   const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false,'silence must not open TS voice');
   assert.equal(env.tracks[0].enabled,true,'keep processing so speech attack is not clipped');
+  await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});
   const old=env.processors[0];old.onspeech(true);assert.equal(env.sent.at(-1).enabled,true);
   old.onspeech(false);await env.wait();assert.equal(env.sent.at(-1).enabled,false);
   voice.setMute(true,false);old.onspeech(true);assert.equal(env.tracks[0].enabled,false);voice.setMute(false,false);assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,true);
@@ -164,4 +165,12 @@ test('channel restore survives another drop and deleted channels fall back with 
   for(let i=0;i<2;i++){env.sockets.at(-1).onclose();await env.wait();await env.message({type:'state',own:2,members:[{id:2,channel:1}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});}
   assert.equal(events.filter(e=>e.type==='restore_channel').length,2);
   env.sockets.at(-1).onclose();await env.wait();await env.message({type:'state',own:3,members:[{id:3,channel:1}],channels:[{id:1,name:'default'}]});assert.ok(events.some(e=>e.type==='notice'&&e.message.includes('已不存在')));voice.close();
+});
+
+
+test('speech changes during a slow TS handshake never flood queued control requests',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  for(let i=0;i<60;i++){env.processors[0].onspeech(true);env.processors[0].onspeech(false);await env.wait();}
+  assert.equal(env.sent.filter(e=>e.type==='transmit').length,1);
+  await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false);voice.close();
 });

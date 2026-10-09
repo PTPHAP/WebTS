@@ -72,7 +72,7 @@ function App(){
     if(auth==='login'){disconnect();setProfileReady(false);}
     setBusy(true);setNotice('');setAuthError('');
     try{
-      if(auth==='login'){const generation=++accountGeneration.current;const d=await api<{user:{email:string;is_admin?:boolean}}>('/auth/login',{email:data.get('email'),password:data.get('password'),remember:data.get('remember')==='on'});if(generation!==accountGeneration.current)return;setProfile(emptyProfile);syncedProfile.current=null;setUser(d.user);await refresh(generation);if(generation!==accountGeneration.current)return;setModal('');setAuthResult(null);navigate('app');}
+      if(auth==='login'){const generation=++accountGeneration.current;const d=await api<{user:{email:string;is_admin?:boolean}}>('/auth/login',{email:data.get('email'),password:data.get('password'),remember:data.get('remember')==='on'});if(generation!==accountGeneration.current)return;setProfile(emptyProfile);syncedProfile.current=null;setIdentities([]);setIdentity('');setServers([]);setServer('');setAllowCustom(false);setCustomAddress('');setUser(d.user);await refresh(generation);if(generation!==accountGeneration.current)return;setModal('');setAuthResult(null);navigate('app');}
       else{
         if(data.get('email'))setAuthEmail(String(data.get('email')));
         const body=auth==='verify'?{token}:auth==='reset'?{token,password:data.get('password')}:['forgot','resend'].includes(auth)?{email:data.get('email')}:{email:data.get('email'),password:data.get('password')};

@@ -8,7 +8,7 @@ export function ProfileSettings({profile,email,onSaved}:{profile:Profile;email:s
   const[value,setValue]=useState(profile),[busy,setBusy]=useState(false),[imageBusy,setImageBusy]=useState(false),[message,setMessage]=useState('');
   const revision=useRef(0);useEffect(()=>()=>{revision.current++;},[]);
   async function upload(file:File){const id=++revision.current;setImageBusy(true);setMessage('');try{const avatar=await avatarImage(file);if(id===revision.current)setValue(v=>({...v,avatar,sync_avatar:true}));}catch(e){if(id===revision.current)setMessage(e instanceof Error?e.message:'图片处理失败');}finally{if(id===revision.current)setImageBusy(false);}}
-  async function save(e:FormEvent){e.preventDefault();setBusy(true);setMessage('');try{const data=await api<Profile>('/profile',value);setValue(data);onSaved(data);setMessage('资料已保存。昵称作为下次连接的默认值；头像和介绍按同步开关尝试应用到当前连接。');}catch(e){setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}}
+  async function save(e:FormEvent){e.preventDefault();const id=++revision.current;setBusy(true);setMessage('');try{const data=await api<Profile>('/profile',value);if(id!==revision.current)return;setValue(data);onSaved(data);setMessage('资料已保存。昵称作为下次连接的默认值；头像和介绍按同步开关尝试应用到当前连接。');}catch(e){if(id===revision.current)setMessage(e instanceof Error?e.message:'保存失败');}finally{if(id===revision.current)setBusy(false);}}
   return <form className="profile-settings" onSubmit={save}>
     <div className="profile-cover"><span className="avatar large">{value.avatar?<img src={`data:image/png;base64,${value.avatar}`} alt="我的头像"/>:(value.display_name||email)[0]}</span><div><h3>我的声音名片</h3><p>一份资料，在不同服务器延续。</p></div></div>
     <p className="auth-help" role="status">{message||'资料随邮箱账号保存。头像与介绍同步由目标 TeamSpeak 服务器检查权限。'}</p>

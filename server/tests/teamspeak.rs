@@ -1,5 +1,7 @@
 //! Opt-in live test: WEBTS_TEST_TARGET must point to an authorized, isolated TS3.
 //! Uses protocol clients, not the official desktop client; no SMTP delivery claim.
+//! The profile/AFK test additionally needs b_client_modify_own_description and avatar
+//! transfer permissions on the test identities; never change production groups for it.
 use axum::http::HeaderValue;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};

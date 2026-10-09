@@ -54,6 +54,15 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(ValueError):manager.private_write(link,'secret')
         self.assertEqual(other.read_text(),'preserve')
 
+    def test_operator_credentials_never_enter_argv_container_logs_or_network(self):
+        with patch.object(manager,'run') as run:
+            manager.tool('set-settings',text='operator-private-value',capture=True)
+        args=run.call_args.args[0]
+        self.assertEqual(args[args.index('--log-driver')+1],'none')
+        self.assertEqual(args[args.index('--network')+1],'none')
+        self.assertNotIn('operator-private-value',args)
+        self.assertEqual(run.call_args.kwargs['text'],'operator-private-value')
+
     def test_mail_change_preserves_other_settings_and_never_puts_password_in_argv(self):
         previous={'servers':[{'id':'custom','name':'Existing','address':'ts.example.com:9988'}],'default_server':'custom','allow_custom':True,'smtp':{'host':'smtp.example.com','port':465,'username':'mail@example.com','from':'mail@example.com','password':'old-private'}}
         next_mail={**previous['smtp'],'password':'new-private'}

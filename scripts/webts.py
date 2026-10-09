@@ -135,8 +135,14 @@ def smtp_values(previous=None):
         print('首次配置必须填写授权码，不能包含换行。')
 
 
-def tool(command, *, text=None, capture=False):
-    return compose('run', '--rm', '-T', '--no-deps', 'webts', command, '/app/config.local.toml', text=text, capture=capture)
+def tool(command, *args, text=None, capture=False):
+    # Docker logs capture stdout even when Python captures it. Operator commands
+    # may return SMTP credentials: disable container logging and network entirely.
+    return run(['docker','run','--rm','-i','--network','none','--log-driver','none','--read-only',
+                '--cap-drop','ALL','--security-opt','no-new-privileges','--tmpfs','/tmp:size=32m,mode=1777',
+                '-v',f'{ROOT}/config.local.toml:/app/config.local.toml:ro',
+                '-v',f'{ROOT}/data:/app/data','-v',f'{ROOT}/secrets:/app/secrets:ro',
+                'webts:managed',command,'/app/config.local.toml',*args],text=text,capture=capture)
 
 
 def settings():
@@ -262,7 +268,7 @@ def configure(kind):
 
 def admin():
     config=state();address=ask('授予站长权限的已验证邮箱',config['admin_email'],email)
-    compose('run','--rm','-T','--no-deps','webts','grant-admin','/app/config.local.toml',address)
+    tool('grant-admin',address)
     print('重新登录后点击顶部“站点管理”；网站管理权限不增加 TS 身份权限。')
 
 
@@ -309,7 +315,7 @@ def main():
     if os.geteuid()!=0 or not (ROOT/'.webts-managed').is_file():
         raise ValueError('请用 root/sudo 操作已由安装器管理的 /opt/webts。')
     endpoint=run(['docker','context','inspect','--format','{{.Endpoints.docker.Host}}'],capture=True).stdout.strip()
-    if endpoint!='unix:///var/run/docker.sock' or os.environ.get('DOCKER_HOST',endpoint)!=endpoint:
+    if endpoint!='unix:///var/run/docker.sock' or (os.environ.get('DOCKER_HOST') or endpoint)!=endpoint:
         raise ValueError('只管理本机标准 Docker，不操作远程 Docker context。')
     import fcntl
     with (ROOT/'.manage.lock').open('w') as lock:

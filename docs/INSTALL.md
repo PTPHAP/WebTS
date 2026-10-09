@@ -1,5 +1,7 @@
 # 一条命令安装与中文管理
 
+[文档中心](README.md) · [安装后的配置教程](CONFIGURATION.md) · [支持范围](SUPPORT.md) · [隐私政策](../PRIVACY.md)
+
 自动安装支持 **Debian 12、Ubuntu 24.04 的 Linux 服务器**。在服务器 SSH/控制台的 root 终端执行：
 
 ```bash

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">WebTS · TeamSpeak in your browser</title>
+  <desc id="desc">Self-hosted encrypted voice, real identities and community channels. Built with Rust, React and TypeScript.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101526"/><stop offset="1" stop-color="#22213e"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#72d8ff"/><stop offset="1" stop-color="#ac8cff"/></linearGradient>
+  </defs>
+  <rect width="1200" height="280" rx="24" fill="url(#bg)"/>
+  <circle cx="1060" cy="50" r="180" fill="#8b5cf6" opacity=".08"/>
+  <circle cx="180" cy="275" r="190" fill="#38bdf8" opacity=".05"/>
+  <path d="M0 232H1200" stroke="#8793b8" opacity=".14"/>
+  <g stroke="url(#accent)" stroke-width="9" stroke-linecap="round">
+    <path d="M131 128v24M150 112v56M169 96v88M188 117v46M207 127v26"/>
+    <path d="M988 126v28M1007 110v60M1026 94v92M1045 117v46M1064 129v22" opacity=".5"/>
+  </g>
+  <g text-anchor="middle" font-family="Segoe UI,Arial,sans-serif">
+    <text x="600" y="112" fill="#f5f7ff" font-size="66" font-weight="700" letter-spacing="3">Web<tspan fill="#85cfff">TS</tspan></text>
+    <text x="600" y="157" fill="#d0d7ec" font-size="21" letter-spacing="1">Your TeamSpeak. In your browser.</text>
+    <text x="600" y="197" fill="#9baccd" font-size="14" letter-spacing="2">SELF-HOSTED / REAL IDENTITIES / ENCRYPTED VOICE</text>
+    <text x="600" y="260" fill="#b2bdd7" font-size="13" letter-spacing="2">RUST + REACT + TYPESCRIPT + WEBRTC</text>
+  </g>
+</svg>

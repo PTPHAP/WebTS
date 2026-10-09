@@ -18,21 +18,48 @@ export function imageDimensions(bytes:Uint8Array):[number,number] {
   }
   throw new Error('图片格式或头部无效，请使用PNG、JPEG或WebP。');
 }
-export async function avatarImage(file:File):Promise<string> {
-  if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>2*1024*1024)throw new Error('请选择2MiB以内的PNG、JPEG或WebP图片。');
+export type Crop={x:number;y:number;width:number;height:number};
+export type ImagePurpose='avatar'|'content';
+export async function loadCropImage(file:File,purpose:ImagePurpose):Promise<ImageBitmap> {
+  const limit=purpose==='avatar'?2:4;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>limit*1024*1024)throw new Error(`请选择${limit}MiB以内的PNG、JPEG或WebP图片。`);
   const [width,height]=imageDimensions(new Uint8Array(await file.arrayBuffer()));
   if(!width||!height||width>4096||height>4096||width*height>8*1024*1024)throw new Error('图片尺寸过大，请先缩小图片。');
   const image=await createImageBitmap(file);
-  try {
-    if(image.width>8192||image.height>8192)throw new Error('图片尺寸过大，请先缩小图片。');
-    const canvas=document.createElement('canvas');
-    for(const size of [256,128,96]) {
-      canvas.width=size;canvas.height=size;
-      const context=canvas.getContext('2d');if(!context)throw new Error('浏览器不能处理头像');
-      const side=Math.min(image.width,image.height);context.drawImage(image,(image.width-side)/2,(image.height-side)/2,side,side,0,0,size,size);
-      const data=canvas.toDataURL('image/png').split(',')[1];
-      if(data.length<=Math.ceil(65536/3)*4)return data;
-    }
-    throw new Error('图片压缩后仍过大，请更换图片。');
-  } finally {image.close();}
+  if(!image.width||!image.height||image.width>4096||image.height>4096||image.width*image.height>8*1024*1024){image.close();throw new Error('图片尺寸过大，请先缩小图片。');}
+  return image;
+}
+export function initialCrop(width:number,height:number,square:boolean):Crop {
+  const side=Math.min(width,height);
+  return square?{x:(width-side)/2,y:(height-side)/2,width:side,height:side}:{x:0,y:0,width,height};
+}
+export function adjustCrop(crop:Crop,width:number,height:number,dx:number,dy:number,handle:string,square:boolean):Crop {
+  const clamp=(v:number,min:number,max:number)=>Math.max(min,Math.min(max,v));
+  if(handle==='move')return {...crop,x:clamp(crop.x+dx,0,width-crop.width),y:clamp(crop.y+dy,0,height-crop.height)};
+  const left=handle.includes('w'),top=handle.includes('n');
+  const ax=left?crop.x+crop.width:crop.x,ay=top?crop.y+crop.height:crop.y;
+  const maxW=left?ax:width-ax,maxH=top?ay:height-ay,min=Math.min(16,maxW,maxH);
+  let w=clamp(crop.width+(left?-dx:dx),min,maxW),h=clamp(crop.height+(top?-dy:dy),min,maxH);
+  if(square)w=h=clamp(crop.width+(Math.abs(dx)>=Math.abs(dy)?(left?-dx:dx):(top?-dy:dy)),min,Math.min(maxW,maxH));
+  return {x:left?ax-w:ax,y:top?ay-h:ay,width:w,height:h};
+}
+export function croppedImage(image:ImageBitmap,crop:Crop,purpose:ImagePurpose):string {
+  if(!Object.values(crop).every(Number.isFinite)||crop.x<0||crop.y<0||crop.width<1||crop.height<1||crop.x+crop.width>image.width+.001||crop.y+crop.height>image.height+.001)throw new Error('裁剪范围无效，请重置后再试。');
+  if(purpose==='avatar'&&Math.abs(crop.width-crop.height)>.001)throw new Error('头像需要正方形裁剪。');
+  const canvas=document.createElement('canvas');
+  for(const size of purpose==='avatar'?[256,128,96]:[1280,960,640]){
+    const scale=purpose==='avatar'?size/crop.width:Math.min(1,size/crop.width,960/crop.height);
+    canvas.width=Math.max(1,Math.round(crop.width*scale));canvas.height=Math.max(1,Math.round(crop.height*scale));
+    const context=canvas.getContext('2d');if(!context)throw new Error('浏览器无法处理图片');
+    if(purpose==='content'){context.fillStyle='#151b2c';context.fillRect(0,0,canvas.width,canvas.height);}
+    context.drawImage(image,crop.x,crop.y,crop.width,crop.height,0,0,canvas.width,canvas.height);
+    const result=canvas.toDataURL(purpose==='avatar'?'image/png':'image/jpeg',.75);
+    const data=purpose==='avatar'?result.split(',')[1]:result;
+    if(data.length<=(purpose==='avatar'?Math.ceil(65536/3)*4:170000))return data;
+  }
+  throw new Error('图片压缩后仍过大，请缩小裁剪范围或更换图片。');
+}
+export async function avatarImage(file:File):Promise<string> {
+  const image=await loadCropImage(file,'avatar');
+  try{return croppedImage(image,initialCrop(image.width,image.height,true),'avatar');}finally{image.close();}
 }

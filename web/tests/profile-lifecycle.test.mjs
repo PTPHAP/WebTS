@@ -7,8 +7,8 @@ const moduleURL=code=>`data:text/javascript;base64,${Buffer.from(code).toString(
 const hooks=moduleURL(`export const useRef=value=>({current:value});export const useState=value=>[value,v=>globalThis.profileFixture.updates.push(v)];export const useEffect=effect=>{globalThis.profileFixture.cleanup=effect();};`);
 const jsx=moduleURL(`export const jsx=(type,props)=>({type,props});export const jsxs=jsx;`);
 const api=moduleURL(`export const api=(...args)=>globalThis.profileFixture.api(...args);`);
-const avatar=moduleURL(`export const avatarImage=()=>Promise.resolve('');`);
-const code=ts.transpileModule(await readFile(new URL('../src/ProfileSettings.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText.replace('react/jsx-runtime',jsx).replace("from 'react'",`from '${hooks}'`).replace("from './api'",`from '${api}'`).replace("from './avatar'",`from '${avatar}'`);
+const cropper=moduleURL(`export const ImageCropper=()=>null;`);
+const code=ts.transpileModule(await readFile(new URL('../src/ProfileSettings.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText.replace('react/jsx-runtime',jsx).replace("from 'react'",`from '${hooks}'`).replace("from './api'",`from '${api}'`).replace("from './ImageCropper'",`from '${cropper}'`);
 const {ProfileSettings,emptyProfile}=await import(moduleURL(code));
 test('a delayed saved profile cannot update a new account after its editor unmounts',async()=>{
   let resolve;const saved=[];

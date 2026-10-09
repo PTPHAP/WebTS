@@ -67,11 +67,12 @@ function App(){
   async function connection(e:FormEvent<HTMLFormElement>){e.preventDefault();connectionEpoch.current++;const epoch=connectionEpoch.current;const data=new FormData(e.currentTarget);setModal('');setBusy(true);try{setStatus(data.get('listen')==='on'?'正在连接服务器…':'正在打开麦克风…');voice.current!.configure(audio);await voice.current!.connect({server:server==='$custom'?'':server,...(server==='$custom'?{address:customAddress.trim()}:{}),identity,page:page.current,name:data.get('name'),password:data.get('password')},input,data.get('listen')==='on');if(epoch===connectionEpoch.current)navigator.mediaDevices?.enumerateDevices().then(setDevices).catch(()=>{});}catch(e){if(epoch!==connectionEpoch.current)return;disconnect();setNotice(e instanceof Error?e.message:'连接失败');}}
   function authView(kind:string){setAuth(kind);setAuthResult(null);setAuthError('');setNotice('');}
   async function authenticate(e:FormEvent<HTMLFormElement>){
-    e.preventDefault();const data=new FormData(e.currentTarget);
+    e.preventDefault();if(busy)return;const data=new FormData(e.currentTarget);
     if(auth==='reset'&&data.get('password')!==data.get('confirm')){setAuthError('两次输入的密码不同，请重新确认。');return;}
+    if(auth==='login'){disconnect();setProfileReady(false);}
     setBusy(true);setNotice('');setAuthError('');
     try{
-      if(auth==='login'){const generation=++accountGeneration.current;disconnect();setProfileReady(false);const d=await api<{user:{email:string;is_admin?:boolean}}>('/auth/login',{email:data.get('email'),password:data.get('password'),remember:data.get('remember')==='on'});if(generation!==accountGeneration.current)return;setProfile(emptyProfile);syncedProfile.current=null;setUser(d.user);await refresh(generation);if(generation!==accountGeneration.current)return;setModal('');setAuthResult(null);navigate('app');}
+      if(auth==='login'){const generation=++accountGeneration.current;const d=await api<{user:{email:string;is_admin?:boolean}}>('/auth/login',{email:data.get('email'),password:data.get('password'),remember:data.get('remember')==='on'});if(generation!==accountGeneration.current)return;setProfile(emptyProfile);syncedProfile.current=null;setUser(d.user);await refresh(generation);if(generation!==accountGeneration.current)return;setModal('');setAuthResult(null);navigate('app');}
       else{
         if(data.get('email'))setAuthEmail(String(data.get('email')));
         const body=auth==='verify'?{token}:auth==='reset'?{token,password:data.get('password')}:['forgot','resend'].includes(auth)?{email:data.get('email')}:{email:data.get('email'),password:data.get('password')};

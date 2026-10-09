@@ -61,9 +61,14 @@ jobs:
           persist-credentials: false
       - name: Validate deployment and build container
         run: |
+          bash -n install.sh
+          python3 -m unittest discover -s scripts/tests -v
           WEBTS_DOMAIN=voice.example.com docker compose config --quiet
           docker build -t webts:ci .
           docker run --rm webts:ci init-key /tmp/master.key
+      - name: Real Chinese installer smoke on isolated runner
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 scripts/tests/install-smoke.py
       - name: Verify complete source archive deployment
         run: |
           python3 scripts/package-source.py

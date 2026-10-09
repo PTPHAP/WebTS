@@ -19,7 +19,17 @@ WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管
 
 > **0.1 预览版**：已提供可启动的网页、账号与多身份接口、真实 TS 协议网关、WebRTC Opus 转发及部署配置。TS3 / TS6 原生客户端兼容及容量目标仍需完整验收；部署者也应验证自己的邮件与网络环境，请先在独立测试环境部署。
 
-[下载完整预览源码包](https://github.com/PTPHAP/WebTS/releases) · [更新记录](CHANGELOG.md)。Release 中的 `webts-…-source.zip` 包含固定的协议子模块源码，可解压后构建 Docker；GitHub 自动生成的源码归档不包含子模块内容，需要按部署指南递归克隆。
+## 一条命令安装
+
+Debian 12 / Ubuntu 24.04 服务器，在 root 终端执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh)
+```
+
+按中文提示填写域名、邮箱和 TS 地址。安装后输入 **`webts`** 打开中文菜单；`webts smtp` 配邮箱，`webts server` 配 TS，`webts admin` 授予已验证账号站长权限，`webts update` 保留数据更新。源码自动下载并构建，首次需要时间。
+
+[中文安装与权限说明](docs/INSTALL.md) · [更新记录](CHANGELOG.md)。旧 `0.1.0-preview.1` Release 包已撤下；安装以仓库源码与自动检查为准。
 
 ![WebTS 深色界面预览](docs/images/webts-preview.jpg)
 
@@ -72,7 +82,7 @@ Windows开发、配置和协议探针见[部署指南](docs/DEPLOYMENT.md)。不
 
 ### 使用流程
 
-邮箱注册 → 验证邮箱 → 创建或导入身份 → 选择服务器 → 连接。默认持续开麦，静音后停止发送，也可切换为空格按键发言；选择频道后点击“进入此频道”，桌面也支持双击切换，选择成员可私聊、戳一戳和调整音量。仅在TS明确要求频道密码后询问，有豁免权限可直接进入。
+邮箱注册 → 验证邮箱 → 创建或导入身份 → 选择服务器 → 连接。默认自由发言、静默停发，也可切换为默认 V 的自定义按键发言；选择频道后点击“进入此频道”，桌面也支持双击切换，选择成员可私聊、戳一戳和调整音量。仅在TS明确要求频道密码后询问，有豁免权限可直接进入。
 
 语音设置提供提示音开关、音量及连接质量。发言亮灯依据实际连续音频帧，区分麦克风开启与正在发言。网络RTT不等于说话到听见的总延迟；详见[语音说明](docs/CLIENT.md)。
 

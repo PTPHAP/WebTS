@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
-use std::{fs::OpenOptions, io::Write};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+};
 use web_ts::{identity, probe};
 
 #[tokio::main]
@@ -9,6 +12,27 @@ async fn main() -> Result<()> {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("get-settings") if args.len() == 2 => {
+            let app = web_ts::app::App::new(web_ts::config::Config::load(&args[1])?)?;
+            let text = zeroize::Zeroizing::new(serde_json::to_string(
+                &app.runtime.read().unwrap().settings,
+            )?);
+            // Captured only by the local management CLI; includes SMTP credentials.
+            println!("{}", text.as_str());
+        }
+        Some("set-settings") if args.len() == 2 => {
+            let app = web_ts::app::App::new(web_ts::config::Config::load(&args[1])?)?;
+            let mut text = zeroize::Zeroizing::new(Vec::new());
+            std::io::stdin().take(65537).read_to_end(&mut text)?;
+            if text.len() > 65536 {
+                bail!("站点配置过大");
+            }
+            let updated = web_ts::settings::Runtime::new(serde_json::from_slice(&text)?)?;
+            let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&updated.settings)?);
+            app.db
+                .configure_locally(&app.vault.seal(0, "site-settings", "v1", &plaintext)?)?;
+            println!("站点配置已加密保存；重启网关后生效。");
+        }
         Some("serve") if args.len() == 2 => {
             let config = web_ts::config::Config::load(&args[1])?;
             let bind = config.bind.clone();

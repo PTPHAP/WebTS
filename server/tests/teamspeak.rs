@@ -316,6 +316,9 @@ async fn run() {
     let mut secure = false;
     let mut browser_voice = false;
     let mut dtx_probes = 0;
+    let mut leading_sent = 0;
+    let mut leading_received = false;
+    let leading_payload = [0xf8, 0x12, 0x34];
     let mut end_requested = false;
     let mut ts_end = false;
     let mut stopped_at: Option<std::time::Instant> = None;
@@ -346,7 +349,8 @@ async fn run() {
                         dtx_probes+=1;
                         continue;
                     }
-                    peer.audio(7,sequence,&payload).await.unwrap();
+                    peer.audio(7,sequence,if leading_sent==0 {&leading_payload} else {&payload}).await.unwrap();
+                    if leading_sent<3 {leading_sent+=1;if leading_sent==3 {socket.send(Message::Text(json!({"type":"transmit","enabled":true,"pre_roll":true}).to_string().into())).await.unwrap();}}
                     let native_audio = if browser_voice && own_id != 0 {
                         AudioData::C2SWhisper{id:sequence,codec:CodecType::OpusVoice,clients:vec![own_id],channels:vec![],data:&whisper_payload}
                     } else { AudioData::C2S{id:sequence,codec:CodecType::OpusVoice,data:&payload} };
@@ -382,7 +386,7 @@ async fn run() {
 
                     assert!(!packet.data().packet().header().flags().contains(Flags::UNENCRYPTED));
                     match packet.data().data(){
-                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;stopped_at.get_or_insert_with(std::time::Instant::now);}else{assert!(!ts_end||whisper_requested,"valid browser RTP silence/refresh must not reopen ended TS voice");assert_eq!(*data,payload);ts_voice=true;}},
+                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;stopped_at.get_or_insert_with(std::time::Instant::now);}else if *data==leading_payload {leading_received=true;}else{assert!(leading_received,"delayed automatic speech start must not discard the initial phoneme");assert!(!ts_end||whisper_requested,"valid browser RTP silence/refresh must not reopen ended TS voice");assert_eq!(*data,payload);ts_voice=true;}},
                         AudioData::S2CWhisper{data,..} if !data.is_empty()=>{assert_eq!(*data,payload);ts_whisper=true;},
                         _=>{}
                     }
@@ -403,7 +407,7 @@ async fn run() {
                     },
                     "ice"=>peer.peer.add_ice_candidate(serde_json::from_value(value["candidate"].clone()).unwrap()).await.unwrap(),
                     "encryption"=>{assert_eq!(value["browser"],"SRTP_AEAD_AES_256_GCM");secure=true;
-                        socket.send(Message::Text(json!({"type":"transmit","enabled":true}).to_string().into())).await.unwrap();
+                        socket.send(Message::Text(json!({"type":"transmit","enabled":false,"pre_roll":true}).to_string().into())).await.unwrap();
                         socket.send(Message::Text(json!({"type":"command","id":"denied","action":"kick","client":native_id,"scope":"server","text":"permission test"}).to_string().into())).await.unwrap();
                         socket.send(Message::Text(json!({"type":"command","id":"chat","action":"chat","scope":"channel","text":"WebTS live channel chat"}).to_string().into())).await.unwrap();
                     },

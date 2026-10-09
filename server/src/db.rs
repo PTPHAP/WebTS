@@ -96,6 +96,12 @@ impl Db {
         }
         Ok(())
     }
+    // Local deployment operator already controls the database and vault key.
+    // HTTP callers must continue using session-checked save_settings above.
+    pub fn configure_locally(&self, ciphertext: &[u8]) -> Result<()> {
+        self.connection.lock().unwrap().execute("INSERT INTO site_settings(id,ciphertext) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", [ciphertext])?;
+        Ok(())
+    }
     pub fn password(&self, email: &str) -> Result<Option<(i64, String, bool)>> {
         Ok(self
             .connection

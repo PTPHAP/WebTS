@@ -140,6 +140,7 @@ test('turning off strict voice-only processing still ends TS speech in pauses; f
   await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.tracks[0].enabled,true,'default microphone must be open');
   assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'continuous capture must not mean continuous TS speech');
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.pre_roll,true,'automatic speech needs a bounded leading-audio buffer before recognition arrives');
   await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});
   env.processors[0].onspeech(true);assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,true);
   env.processors[0].onspeech(false);await env.wait();assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'native TS must receive an end marker during a pause');
@@ -148,6 +149,7 @@ test('turning off strict voice-only processing still ends TS speech in pauses; f
   voice.setMute(true,false);assert.equal(env.tracks[0].enabled,false);
   voice.setMute(false,false);assert.equal(env.tracks[0].enabled,true);
   voice.setMode('ptt');assert.equal(env.tracks[0].enabled,false);
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.pre_roll,false,'PTT must clear automatic lookback even if it was already silent');
   voice.press(true);assert.equal(env.tracks[0].enabled,true);
   env.focus(false);voice.press(true);assert.equal(env.tracks[0].enabled,false);
   voice.setMode('open');assert.equal(env.tracks[0].enabled,true);

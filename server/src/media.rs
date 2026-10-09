@@ -17,13 +17,51 @@ use rtc::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+
+// Recognition and WSS control can arrive after RTP. Keep only a short, bounded
+// Opus lead-in while automatic speech is idle; PTT/mute/permission changes clear it.
+#[derive(Default)]
+pub(crate) struct SpeechLead(VecDeque<(Instant, Bytes)>);
+impl SpeechLead {
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub(crate) fn push(&mut self, payload: Bytes, now: Instant) {
+        self.expire(now);
+        self.0.push_back((now, payload));
+        while self.0.len() > 32
+            || self.0.iter().map(|(_, p)| p.len()).sum::<usize>() > 16384
+            || self
+                .0
+                .iter()
+                .map(|(_, p)| opus_samples(p).unwrap_or(9601))
+                .sum::<u32>()
+                > 9600
+        {
+            self.0.pop_front();
+        }
+    }
+    fn expire(&mut self, now: Instant) {
+        while self
+            .0
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > Duration::from_millis(200))
+        {
+            self.0.pop_front();
+        }
+    }
+    pub(crate) fn take(&mut self, now: Instant) -> Vec<Bytes> {
+        self.expire(now);
+        self.0.drain(..).map(|(_, p)| p).collect()
+    }
+}
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use webrtc::{
@@ -457,6 +495,43 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_speech_retains_leading_packets_and_discards_expired_or_muted_audio() {
+        let now = Instant::now();
+        let mut lead = SpeechLead::default();
+        for i in 0..15 {
+            lead.push(
+                Bytes::from(vec![0x98, i]),
+                now + Duration::from_millis(u64::from(i) * 20),
+            );
+        }
+        let captured = lead.take(now + Duration::from_millis(300));
+        assert_eq!(captured.len(), 10);
+        assert_eq!(
+            captured[0][1], 5,
+            "retain the first phoneme from before the delayed start signal"
+        );
+        assert_eq!(captured[9][1], 14);
+        assert!(
+            lead.take(now + Duration::from_millis(300)).is_empty(),
+            "duplicate start must not replay speech twice"
+        );
+        lead.push(Bytes::from_static(&[0x98, 42]), now);
+        assert!(lead.take(now + Duration::from_millis(201)).is_empty());
+        lead.push(Bytes::from_static(&[0x98, 42]), now);
+        lead.clear();
+        assert!(
+            lead.take(now).is_empty(),
+            "mute/PTT/whisper/channel changes discard previous speech"
+        );
+        for _ in 0..1000 {
+            lead.push(Bytes::from(vec![0x98; 1276]), now);
+        }
+        assert!(
+            lead.take(now).len() <= 10,
+            "packet flood cannot grow the duration/byte bound"
+        );
+    }
     #[tokio::test]
     async fn transient_ice_disconnect_does_not_cancel_the_connection() {
         let (signals, mut events) = mpsc::channel(8);

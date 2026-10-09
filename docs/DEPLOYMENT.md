@@ -2,6 +2,8 @@
 
 WebTS 0.1为可启动的预览版。先在独立环境小规模验证，再向社区开放。TS3/TS6原生客户端兼容、真实邮件送达和容量目标需另行验收。
 
+推荐通过 [一条命令安装与中文 `webts` 管理菜单](INSTALL.md) 完成首次部署、邮箱与站长权限配置。以下保留手动部署方法。
+
 ## 准备
 
 - 一个指向Linux主机的HTTPS域名；反向代理需支持WebSocket。2核/4GB为容量测试参考，不是已测容量承诺。
@@ -37,7 +39,7 @@ systemd部署：创建专用webts用户，将包放入/opt/webts，给该用户d
 
 采用host网络保留UDP候选地址，不适用于Docker Desktop常规Windows网络。已有80/443服务时复用现有HTTPS代理，为新网站单独增加域名规则，避免抢占端口。
 
-也可从 [Releases](https://github.com/PTPHAP/WebTS/releases) 下载完整 `webts-…-source.zip`，按 `SHA256SUMS_SOURCE` 校验后解压，在包根目录执行下方配置与 Docker 命令，省略 `git clone` / `cd WebTS`。这个包包含固定协议库及其声明子模块，Docker 构建会应用随包补丁；没有预设账号、数据库、部署密钥或真实邮箱配置。不要将 GitHub 自动生成的 “Source code” 归档当成完整包，它不包含子模块。
+旧首个 Release 包已撤下，使用一条命令安装或下方递归克隆源码。不建议使用 GitHub 自动生成的 “Source code” 归档，它不包含协议子模块。构建会应用随仓库补丁，没有预设账号、数据库、部署密钥或真实邮箱配置。
 
 ```sh
 git clone --recurse-submodules https://github.com/PTPHAP/WebTS.git

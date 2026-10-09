@@ -114,11 +114,11 @@ export class Voice {
     if(sendStream){this.sendTrack=sendStream.getAudioTracks()[0].clone();this.sendTrack.enabled=false;this.peer.addTrack(this.sendTrack,new MediaStream([this.sendTrack]));this.update();}
     this.watchCapture(stream,generation);if (stream&&sendStream) this.detect(stream,sendStream);
     const socket = new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/connect`); this.socket=socket;
-    socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}};
+    socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.sendTransmit();}};
     socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
       if(generation!==this.generation)return;
       if(message.type==='state'){
-        if(!this.ready){this.ready=true;this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.send({type:'transmit',enabled:this.active});}
+        if(!this.ready){this.ready=true;this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.sendTransmit();}
         this.retryCount=0;this.event({type:'reconnecting',active:false});
         const channel=message.members.find((member:{id:number})=>member.id===message.own)?.channel;
         this.currentChannel=channel;
@@ -151,9 +151,10 @@ export class Voice {
     const raw=monitor(input),processed=monitor(output);
     this.timer=window.setInterval(()=>this.event({type:'level',level:processed(),input_level:raw()}),30);
   }
-  private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(this.mode==='ptt'||!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.send({type:'transmit',enabled:active});this.event({type:'transmit',enabled:active});this.applyAudio();}}
+  private sendTransmit(){this.send({type:'transmit',enabled:this.active,pre_roll:this.mode==='open'&&this.gated&&!this.processingBlocked&&!this.captureBlocked&&!this.muted});}
+  private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(this.mode==='ptt'||!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.sendTransmit();this.event({type:'transmit',enabled:active});this.applyAudio();}}
   press(value:boolean){this.pressed=value;this.update();}
-  setMode(mode:'ptt'|'open'){this.mode=mode;this.pressed=false;this.update();}
+  setMode(mode:'ptt'|'open'){this.mode=mode;this.pressed=false;this.update();if(this.ready)this.sendTransmit();}
   configure(settings:AudioSettings){this.settings={...defaultAudioSettings,...settings};this.applyAudio();}
   outputVolume(value:number){this.settings.volume=Math.max(0,Math.min(1,value));this.applyAudio();}
   setMute(muted:boolean,deafened:boolean){this.muted=muted;this.deafened=deafened;this.update();this.applyAudio();this.send({type:'mute',muted,deafened});}

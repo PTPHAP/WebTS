@@ -235,6 +235,8 @@
 | [ptr_meta](https://crates.io/crates/ptr_meta/0.3.2) | 0.3.2 | MIT |
 | [ptr_meta_derive](https://crates.io/crates/ptr_meta_derive/0.3.2) | 0.3.2 | MIT |
 | [pxfm](https://crates.io/crates/pxfm/0.1.30) | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
+| [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.0) | 0.13.0 | MIT |
+| [pulldown-cmark-escape](https://crates.io/crates/pulldown-cmark-escape/0.11.0) | 0.11.0 | MIT |
 | [quick-error](https://crates.io/crates/quick-error/2.0.1) | 2.0.1 | MIT/Apache-2.0 |
 | [quicklz](https://crates.io/crates/quicklz/0.3.1) | 0.3.1 | MIT/Apache-2.0 |
 | [quinn-udp](https://crates.io/crates/quinn-udp/0.6.3) | 0.6.3 | MIT OR Apache-2.0 |

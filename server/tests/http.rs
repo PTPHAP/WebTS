@@ -31,6 +31,16 @@ async fn call(
     cookie: &str,
     origin: &str,
 ) -> (StatusCode, axum::http::HeaderMap, Value) {
+    // Normal credential flows explicitly accept the current published policies.
+    let body = body.map(|mut value| {
+        if matches!(path, "/auth/login" | "/auth/register") {
+            value["accept_policies"] = json!(true);
+            value["policy_version"] = json!(web_ts::site::policy_version(
+                &app.runtime.read().unwrap().settings.home
+            ));
+        }
+        value
+    });
     let request = Request::builder()
         .method(if body.is_some() { "POST" } else { "GET" })
         .uri(format!("/api{path}"))

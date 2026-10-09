@@ -267,6 +267,24 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route("/me", get(me))
         .route("/site", get(crate::site::public))
+        .route("/policies", get(crate::site::policies))
+        .route("/notices", get(crate::notices::list))
+        .route("/notices/preferences", post(crate::notices::preferences))
+        .route("/notices/{id}", post(crate::notices::detail))
+        .route(
+            "/admin/notices",
+            get(crate::notices::history)
+                .post(crate::notices::publish)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/admin/notices/preview",
+            post(crate::notices::preview).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/admin/notices/{id}/withdraw",
+            post(crate::notices::withdraw),
+        )
         .route(
             "/admin/home",
             get(crate::site::get)
@@ -423,6 +441,10 @@ struct CredentialsBody {
     password: String,
     #[serde(default)]
     remember: bool,
+    #[serde(default)]
+    accept_policies: bool,
+    #[serde(default)]
+    policy_version: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -468,6 +490,9 @@ async fn register(
     State(app): State<Arc<App>>,
     Json(body): Json<CredentialsBody>,
 ) -> Api<Json<Value>> {
+    if !body.accept_policies {
+        return Err(Error::bad("请先阅读并同意隐私政策与使用协议及免责声明"));
+    }
     if !app.smtp_ready() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -476,9 +501,13 @@ async fn register(
     }
     let email = email(&body.email)?;
     app.work(move |a| {
+        let runtime=a.runtime.read().unwrap();
+        if body.policy_version!=crate::site::policy_version(&runtime.settings.home){return Err(Error(StatusCode::CONFLICT,"协议已更新，请重新阅读并勾选同意"));}
         let p = Zeroizing::new(body.password);
         let hash = password::hash(&p).map_err(|_| Error::bad("密码需要12至128字节"))?;
-        let (_, verified, token) = a.db.register(&email, &hash)?;
+        let (id, verified, token) = a.db.register(&email, &hash)?;
+        if !verified{a.db.connection.lock().unwrap().execute("INSERT INTO policy_acceptances VALUES(?,?,?) ON CONFLICT(user_id,version) DO UPDATE SET accepted_at=excluded.accepted_at",rusqlite::params![id,body.policy_version,crate::db::now()]).map_err(anyhow::Error::from)?;}
+        drop(runtime);
         if !verified {
             a.queue_mail(email, "verify", token)?;
         }
@@ -489,8 +518,13 @@ async fn register(
     .await
 }
 async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -> Api<Response> {
+    if !body.accept_policies {
+        return Err(Error::bad("请先阅读并同意隐私政策与使用协议及免责声明"));
+    }
     let email = email(&body.email)?;
     app.work(move |a| {
+        let runtime=a.runtime.read().unwrap();
+        if body.policy_version!=crate::site::policy_version(&runtime.settings.home){return Err(Error(StatusCode::CONFLICT,"协议已更新，请重新阅读并勾选同意"));}
         let found = a.db.password(&email)?;
         let stored = found
             .as_ref()
@@ -505,6 +539,8 @@ async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -
             ));
         };
         let token = a.db.create_session(id, body.remember, &hash)?;
+        a.db.connection.lock().unwrap().execute("INSERT INTO policy_acceptances VALUES(?,?,?) ON CONFLICT(user_id,version) DO UPDATE SET accepted_at=excluded.accepted_at",rusqlite::params![id,body.policy_version,crate::db::now()]).map_err(anyhow::Error::from)?;
+        drop(runtime);
         let mut response =
             Json(json!({"user":a.db.session(&token)?.context("登录会话不存在")?.user}))
                 .into_response();

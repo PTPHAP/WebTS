@@ -8,29 +8,32 @@ import ts from 'typescript';
 // command-result callback, without duplicating the UI's message logic.
 const source=await readFile(new URL('../src/main.tsx',import.meta.url),'utf8');
 const file=ts.createSourceFile('main.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
-let submit,event,command;
+let submit,event,command,sendChat;
 function visit(node){
   if(ts.isJsxOpeningElement(node)&&node.tagName.getText(file)==='form'&&node.attributes.properties.some(p=>p.name?.getText(file)==='className'&&p.initializer?.text==='composer')){
     submit=node.attributes.properties.find(p=>p.name?.getText(file)==='onSubmit').initializer.expression;
   }
   if(ts.isNewExpression(node)&&node.expression.getText(file)==='Voice')event=node.arguments[0];
   if(ts.isFunctionDeclaration(node)&&node.name?.text==='command')command=node;
+  if(ts.isFunctionDeclaration(node)&&node.name?.text==='sendChat')sendChat=node;
   ts.forEachChild(node,visit);
 }
-visit(file);assert.ok(submit&&event&&command,'real chat handlers must be found');
+visit(file);assert.ok(submit&&event&&command&&sendChat,'real chat handlers must be found');
 const printer=ts.createPrinter();
 const code=ts.transpileModule(`${printer.printNode(ts.EmitHint.Unspecified,command,file)}
+${printer.printNode(ts.EmitHint.Unspecified,sendChat,file)}
 globalThis.submit=${printer.printNode(ts.EmitHint.Expression,submit,file)};
+globalThis.sendChat=sendChat;
 globalThis.receive=${printer.printNode(ts.EmitHint.Expression,event,file)};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 function client(scope='channel'){
   let messages=[],draft='same message',sequence=0;const sent=[],notices=[];
-  const context=createContext({scope,message:draft,recipient:{id:2},own:{name:'Sender'},state:{own:1},
+  const context=createContext({scope,message:draft,recipient:{id:2},own:{name:'Sender'},state:{own:1,members:[{id:2}]},connected:true,
     crypto:{randomUUID:()=>String(++sequence)},pending:{current:new Map()},voice:{current:{send:value=>sent.push(value)}},
-    setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
+    setActivityAlert:()=>{},setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
     moves:{current:{result:()=>false}},channelAction:{current:''},avatarAction:{current:''},setAvatarBusy:()=>{},
-    sounds:{current:{play:()=>{}}},previousState:{current:{own:1}}});
+    sounds:{current:{play:()=>{}}},previousState:{current:{own:1,members:[]}}});
   runInContext(code,context);
-  return {sent,notices,messages:()=>messages,submit:()=>context.submit({preventDefault(){}}),receive:value=>context.receive(value)};
+  return {sent,notices,messages:()=>messages,submit:()=>scope==='private'?context.sendChat(scope,context.message,context.recipient):context.submit({preventDefault(){}}),receive:value=>context.receive(value)};
 }
 
 for(const scope of ['channel','server'])for(const echoFirst of [true,false]){

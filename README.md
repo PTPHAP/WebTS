@@ -49,6 +49,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 单击预览、调整布局与创建频道 | [工作区与频道管理](docs/WORKSPACE.md) |
 | 查看频道格式、图片与音乐机器人兼容 | [TeamSpeak 渲染与音乐](docs/TEAMSPEAK-RENDERING.md) |
 | 设置 AFK、管理网站账号和封禁 | [AFK 与账号管理](docs/ACCOUNT-ADMIN.md) |
+| 发布维护通知与更新邮件 | [信件与通知](docs/NOTIFICATIONS.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
 完整导航见 [文档中心](docs/README.md)。旧首个 Release 包已撤下，目前通过仓库源码安装；GitHub 自动生成的 Source code 归档不包含协议子模块。
@@ -57,10 +58,11 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 
 | 模块 | 功能 |
 | --- | --- |
-| 账号 | 邮箱验证、密码登录、可选记住登录、单次链接找回、退出当前或全部设备 |
+| 账号 | 邮箱验证、密码登录与协议主动确认、可选记住登录、单次链接找回、退出当前或全部设备 |
 | 身份 | 导入、创建、命名、默认项、切换、删除、TS3 兼容导出；显示 UID，各身份权限独立 |
 | 频道 | 按服务器实际顺序显示频道树，成员、介绍、密码频道与切换；支持安全的有限 BBCode |
-| 聊天 | 频道聊天、服务器聊天、私聊、戳一戳与可调提示音 |
+| 聊天 | 频道/服务器聊天、独立私聊窗口、明显的消息与戳一戳提示音和提醒 |
+| 站点信件 | 右上角信箱、未读与已读、HTML/Markdown通知、裁剪图片、管理员专页发布/撤回；可选订阅更新邮件 |
 | 语音 | Opus 双向通话、自由发言与自动静默停发、默认 V 的可自定义按键发言 |
 | 音频处理 | 本地 GTCRN AI 降噪、RNNoise 轻量档、降噪强度、键鼠抑制；设备支持的回声消除/增益及实际状态 |
 | AFK 离开 | 原生离开状态与留言互通、暂停开麦、保留收听；自动重连恢复，成功进入/返回时播放提示音 |
@@ -85,7 +87,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 浏览器语音 | **WebRTC · Opus · AudioWorklet · WebAssembly** | 加密音频传输、本地处理与设备控制 |
 | 本地降噪 | **GTCRN · RNNoise** | 在访问者设备上运行，不接入云降噪服务 |
 | 认证与存储保护 | **Argon2id · AES-256-GCM** | 密码哈希、身份与后台敏感设置加密 |
-| 邮件 | **SMTP over TLS · lettre** | 邮箱验证和账号找回 |
+| 邮件 | **SMTP over TLS · lettre** | 验证、找回与用户订阅的更新通知 |
 | 安装与运维 | **Bash · Python 3 · Docker Compose · Caddy** | 中文引导、管理命令、反向代理与 HTTPS |
 
 依赖版本由锁文件、固定工具链和子模块提交约束。[依赖说明](docs/DEPENDENCIES.md) · [架构说明](docs/ARCHITECTURE.md) · [第三方许可](THIRD_PARTY_NOTICES.md)。

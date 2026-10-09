@@ -59,7 +59,7 @@ fn text(value: &str, max: usize, multiline: bool) -> bool {
             .chars()
             .any(|c| c.is_control() && !(multiline && c == '\n'))
 }
-fn image(value: &mut String) -> Api<()> {
+pub(crate) fn image(value: &mut String) -> Api<()> {
     if value.is_empty() {
         return Ok(());
     }
@@ -102,13 +102,19 @@ impl Home {
     pub fn upgrade_default_policies(&mut self) {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
-        if hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n")))
-            == "f3222ba772448b34efd344229a4c7849e92b626d623bf6c80cb94e813f05c192"
+        if [
+            "f3222ba772448b34efd344229a4c7849e92b626d623bf6c80cb94e813f05c192",
+            "8b2e9978b6ddbf3bfcdc48e48486058fe3d2bac392d35d791f1a03b79ad7aea8",
+        ]
+        .contains(&hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n"))).as_str())
         {
             self.privacy_policy = defaults.privacy_policy;
         }
-        if hex::encode(Sha256::digest(self.terms.replace("\r\n", "\n")))
-            == "38786738d19090abfbb13643be1a36c1219d4ac2792c5a3a0f47dc8b2410f1db"
+        if [
+            "38786738d19090abfbb13643be1a36c1219d4ac2792c5a3a0f47dc8b2410f1db",
+            "0bea1750e2e76f979bcf4633cb6b60c94f15ce8292b4e46ce4426b25192fd596",
+        ]
+        .contains(&hex::encode(Sha256::digest(self.terms.replace("\r\n", "\n"))).as_str())
         {
             self.terms = defaults.terms;
         }
@@ -233,6 +239,23 @@ pub async fn public(State(app): State<Arc<App>>) -> Json<Home> {
     home.footer_html = clean_footer(&home.footer_html);
     home.announcements.retain(|r| r.enabled);
     Json(home)
+}
+pub fn policy_version(home: &Home) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(&(
+            &home.site_name,
+            &home.operator,
+            &home.contact,
+            &home.data_details,
+            &home.privacy_policy,
+            &home.terms,
+        ))
+        .unwrap(),
+    ))
+}
+pub async fn policies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"version":policy_version(&app.runtime.read().unwrap().settings.home)}))
 }
 pub async fn get(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Home>> {
     settings::admin(&app, &headers)?;

@@ -84,6 +84,12 @@ impl Db {
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS profiles(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS notice_preferences(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, email_enabled INTEGER NOT NULL DEFAULT 0 CHECK(email_enabled IN(0,1)));
+          CREATE TABLE IF NOT EXISTS notices(id INTEGER PRIMARY KEY, author INTEGER REFERENCES users(id) ON DELETE SET NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL, title TEXT NOT NULL, html TEXT NOT NULL, created_at INTEGER NOT NULL, withdrawn INTEGER NOT NULL DEFAULT 0, UNIQUE(author,request_id));
+          CREATE TABLE IF NOT EXISTS notice_receipts(notice_id INTEGER NOT NULL REFERENCES notices(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, read_at INTEGER, mail_state TEXT NOT NULL DEFAULT 'none', PRIMARY KEY(notice_id,user_id));
+          CREATE INDEX IF NOT EXISTS notice_inbox ON notice_receipts(user_id,notice_id DESC);
+          CREATE INDEX IF NOT EXISTS notice_mail_queue ON notice_receipts(mail_state,notice_id,user_id);
+          CREATE TABLE IF NOT EXISTS policy_acceptances(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, version TEXT NOT NULL, accepted_at INTEGER NOT NULL, PRIMARY KEY(user_id,version));")?;
         Ok(Self {
             connection: Mutex::new(connection),
         })

@@ -12,6 +12,7 @@
 | [原生频道显示与音乐](TEAMSPEAK-RENDERING.md) | spacer、BBCode、ts3image、音乐机器人加密兼容 |
 | [首页与个人资料](HOME-PROFILE.md) | 首页、登录入口、图片公告、固定头像与 TS 资料同步 |
 | [AFK 与账号管理](ACCOUNT-ADMIN.md) | 离开状态互通、封禁/解封、强制退出、网站管理员与操作记录 |
+| [信件与通知](NOTIFICATIONS.md) | 管理员专页、HTML/Markdown、裁剪图片、站点信箱、更新邮件订阅与撤回 |
 | [身份互用](IDENTITIES.md) | UID、导入/导出、多身份与 TS 原生客户端 |
 | [隐私政策](../PRIVACY.md) | 收集的数据、用途、接收方、保留与用户控制 |
 | [安全说明](SECURITY.md) | 加密、信任边界、会话、权限与部署密钥 |

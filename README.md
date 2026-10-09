@@ -46,6 +46,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 登录、导入身份、语音设置、头像 | [身份互用](docs/IDENTITIES.md) · [语音与头像](docs/CLIENT.md) |
 | 判断设备或某项功能是否支持 | [支持范围与常见问题](docs/SUPPORT.md) |
 | 设置首页图片公告与个人资料 | [首页与个人资料](docs/HOME-PROFILE.md) |
+| 单击预览、调整布局与创建频道 | [工作区与频道管理](docs/WORKSPACE.md) |
 | 查看频道格式、图片与音乐机器人兼容 | [TeamSpeak 渲染与音乐](docs/TEAMSPEAK-RENDERING.md) |
 | 设置 AFK、管理网站账号和封禁 | [AFK 与账号管理](docs/ACCOUNT-ADMIN.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |

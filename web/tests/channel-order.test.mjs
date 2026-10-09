@@ -11,7 +11,7 @@ let channelSiblings;
 try{const source=await readFile(new URL('../src/channel-order.ts',import.meta.url),'utf8');const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;({channelSiblings}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`));}catch(e){if(e.code!=='ENOENT')throw e;}
 const spacerSource=await readFile(new URL('../src/ts-text.ts',import.meta.url),'utf8');
 const {channelSpacer}=await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(spacerSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64')}`);
-function render(channels,parent=0){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members:[]},own:{},Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children})});}
+function render(channels,parent=0){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members:[]},own:{},inspectedChannel:undefined,Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children})});}
 const channels=[{id:10,parent:0,order:30},{id:20,parent:0,order:10},{id:30,parent:0,order:0},{id:4,parent:30,order:90},{id:90,parent:30,order:0}];
 test('actual channel tree follows predecessor IDs instead of numeric order',()=>{assert.deepEqual(Array.from(render(channels),n=>n.props.key),[30,10,20]);});
 test('nested siblings keep their own TS order and follow live repositioning',()=>{

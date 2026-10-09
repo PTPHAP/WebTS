@@ -776,8 +776,46 @@ fn speech_activity(
     }
 }
 fn command_result(id: &str, result: std::result::Result<(), tsclientlib::CommandError>) -> Value {
+    use tsproto_types::errors::Error as TsError;
     let error = result.err();
-    json!({"type":"result","id":id,"ok":error.is_none(),"code":error.as_ref().map(|e|e.error as u16),"message":error.map(|e|format!("TS拒绝操作：{}（错误代码{}）",e,e.error as u16))})
+    json!({"type":"result","id":id,"ok":error.is_none(),"code":error.as_ref().map(|e|e.error as u16),"missing_permission":error.as_ref().and_then(|e|e.missing_permission.as_ref().map(|p|p.0)),"message":error.map(|e|if e.error==TsError::PermissionsClientInsufficient{format!("当前 TeamSpeak 身份权限不足，请联系 TS 管理员授权{}（错误代码{}）",e.missing_permission.map(|p|format!("（缺少权限ID {}）",p.0)).unwrap_or_default(),e.error as u16)}else{format!("TS拒绝操作：{}（错误代码{}）",e,e.error as u16)})})
+}
+
+fn channel_creation_options(value: &Value) -> Result<Vec<(&'static str, String)>> {
+    let (permanent, semi) = match value
+        .get("kind")
+        .map(|v| v.as_str().context("频道类型无效"))
+        .transpose()?
+        .unwrap_or("temporary")
+    {
+        "temporary" => ("0", "0"),
+        "semi" => ("0", "1"),
+        "permanent" => ("1", "0"),
+        _ => bail!("频道类型无效"),
+    };
+    let codec = match value
+        .get("codec")
+        .map(|v| v.as_str().context("频道编码无效"))
+        .transpose()?
+        .unwrap_or("voice")
+    {
+        "voice" => "4",
+        "music" => "5",
+        _ => bail!("只允许 Opus 语音或音乐编码"),
+    };
+    let quality = match value.get("quality") {
+        None => 6,
+        Some(q) => q
+            .as_u64()
+            .filter(|q| (1..=10).contains(q))
+            .context("Opus 质量需为1–10")?,
+    };
+    Ok(vec![
+        ("channel_flag_permanent", permanent.into()),
+        ("channel_flag_semi_permanent", semi.into()),
+        ("channel_codec", codec.into()),
+        ("channel_codec_quality", quality.to_string()),
+    ])
 }
 
 fn command(name: &str, args: &[(&str, String)]) -> OutCommand {
@@ -885,8 +923,20 @@ fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
                 bail!("频道名称不能为空");
             }
             args.push(("channel_name", title));
-            args.push(("channel_codec", "4".to_owned()));
-            args.push(("cpid", value["parent"].as_u64().unwrap_or(0).to_string()));
+            args.extend(channel_creation_options(value)?);
+            let parent = value["parent"].as_u64().context("父频道无效")?;
+            if parent != 0
+                && !conn
+                    .get_state()?
+                    .channels
+                    .contains_key(&tsproto_types::ChannelId(parent))
+            {
+                bail!("父频道不可见");
+            }
+            args.push(("cpid", parent.to_string()));
+            if value.get("topic").is_some() {
+                args.push(("channel_topic", text("topic", 256)?));
+            }
             args.push(("channel_description", text("description", 4096)?));
             args.push(("channel_password", wire_password(&text("password", 256)?)));
             "channelcreate"
@@ -940,6 +990,37 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_creation_options_allow_only_supported_types_codecs_and_quality() {
+        for (kind, permanent, semi) in [
+            ("temporary", "0", "0"),
+            ("semi", "0", "1"),
+            ("permanent", "1", "0"),
+        ] {
+            let args = super::channel_creation_options(
+                &serde_json::json!({"kind":kind,"codec":"music","quality":10}),
+            )
+            .unwrap();
+            assert!(args.contains(&("channel_flag_permanent", permanent.into())));
+            assert!(args.contains(&("channel_flag_semi_permanent", semi.into())));
+            assert!(args.contains(&("channel_codec", "5".into())));
+        }
+        for value in [
+            serde_json::json!({"kind":"admin"}),
+            serde_json::json!({"kind":1}),
+            serde_json::json!({"codec":"celt"}),
+            serde_json::json!({"quality":0}),
+            serde_json::json!({"quality":11}),
+            serde_json::json!({"quality":6.5}),
+        ] {
+            assert!(super::channel_creation_options(&value).is_err());
+        }
+        assert!(
+            super::channel_creation_options(&serde_json::json!({}))
+                .unwrap()
+                .contains(&("channel_codec", "4".into()))
+        );
+    }
     use super::{command_result, connection_error, speech_activity, valid_nickname};
     use std::{
         collections::HashMap,
@@ -1038,6 +1119,20 @@ mod tests {
         let result = command_result("success", Ok(()));
         assert_eq!(result["ok"], true);
         assert!(result["code"].is_null());
+        let denied = command_result(
+            "create",
+            Err(tsclientlib::CommandError {
+                error: TsError::PermissionsClientInsufficient,
+                missing_permission: Some(tsproto_types::Permission(125)),
+            }),
+        );
+        assert_eq!(denied["missing_permission"], 125);
+        assert!(
+            denied["message"]
+                .as_str()
+                .unwrap()
+                .contains("当前 TeamSpeak 身份权限不足")
+        );
     }
     #[test]
     fn nickname_matches_ts_unicode_length_limits() {

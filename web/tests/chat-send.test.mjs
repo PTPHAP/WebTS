@@ -27,7 +27,7 @@ function client(scope='channel'){
   const context=createContext({scope,message:draft,recipient:{id:2},own:{name:'Sender'},state:{own:1},
     crypto:{randomUUID:()=>String(++sequence)},pending:{current:new Map()},voice:{current:{send:value=>sent.push(value)}},
     setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
-    moves:{current:{result:()=>false}},avatarAction:{current:''},setAvatarBusy:()=>{},
+    moves:{current:{result:()=>false}},channelAction:{current:''},avatarAction:{current:''},setAvatarBusy:()=>{},
     sounds:{current:{play:()=>{}}},previousState:{current:{own:1}}});
   runInContext(code,context);
   return {sent,notices,messages:()=>messages,submit:()=>context.submit({preventDefault(){}}),receive:value=>context.receive(value)};

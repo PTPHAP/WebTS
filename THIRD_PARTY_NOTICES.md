@@ -21,3 +21,7 @@
 键盘增强复用相同固定包的 GTCRN：@sapphi-red/gtcrn-wasm 0.0.3 与 GTCRN 模型（MIT），PFFFT/FFTPACK（UCAR许可）；生成器 onnx2c 的原文许可与作者表也随包保存。来源提交及完整许可见上述音频归属目录。GTCRN 内部16kHz语音处理、48kHz接口重新采样；不将其描述为回声消除算法。
 
 tsclientlib额外补丁限制头像TCP只访问已验证TS服务器IP、仅处理未过期且单次匹配的主动请求，设置连接超时；不修改加密算法。MD5仅用于TS原生头像版本标识，不用于密码或安全签名。
+
+## 音乐机器人发送端临时兼容
+
+scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（HoneyBBQ / teamspeak-js，MIT）的有界语音发送修补片段；不是 WebTS 运行依赖。原始许可保存在 licenses/teamspeak-js/LICENSE，并进入发布包。源码：https://github.com/HoneyBBQ/teamspeak-js 。仅对已验证版本和摘要提供显式应用工具。

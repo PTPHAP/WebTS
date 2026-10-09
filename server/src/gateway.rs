@@ -494,6 +494,10 @@ fn connection_error(error: &tsclientlib::Error) -> String {
     }
 }
 
+pub fn audio_is_encrypted(flags: Flags) -> bool {
+    !flags.contains(Flags::UNENCRYPTED)
+}
+
 fn enforce(conn: &Connection) -> Result<()> {
     let state = conn.get_state()?;
     if state.server.codec_encryption_mode != CodecEncryptionMode::ForcedOn {
@@ -550,6 +554,8 @@ async fn connected(
     let mut speaking = HashMap::<u16, (Instant, Option<Instant>)>::new();
     let mut negotiated = Instant::now();
     let mut avatars = crate::avatar::Avatars::default();
+    let mut images = crate::channel_images::Images::default();
+    let mut unsafe_notice = Instant::now() - Duration::from_secs(5);
     let mut described_channel = None;
     loop {
         tokio::select! {
@@ -561,6 +567,7 @@ async fn connected(
                 let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
+                for completed in images.expire(){emit(tx,crate::channel_images::event(conn,completed))?;}
                 if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
                 if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
@@ -573,18 +580,20 @@ async fn connected(
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>{lead.clear();changed=true;},
                 StreamItem::DisconnectedTemporarily(_)=>unreachable!(),
-                StreamItem::FileDownload(handle,result)=>avatars.downloaded(handle.0,result,app.clone()),
+                StreamItem::FileDownload(handle,result)=>{if images.contains(handle.0){images.downloaded(handle.0,result,app.clone());}else{avatars.downloaded(handle.0,result,app.clone());}},
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
-                StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
-                StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if data.len()<=1{if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
+                StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=images.failed(handle.0){emit(tx,crate::channel_images::event(conn,completed))?;}else if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
+                StreamItem::Audio(packet)=>{if !audio_is_encrypted(packet.data().packet().header().flags()){if unsafe_notice.elapsed()>=Duration::from_secs(5){emit(tx,json!({"type":"notice","message":"已拒收未加密语音；网页连接保留。请让该成员或音乐机器人启用语音加密。"}))?;unsafe_notice=Instant::now();}continue;}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if data.len()<=1{if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
                 StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if away_handles.remove(&handle.0)&&result.is_err(){emit(tx,command_result(&id,result))?;bail!("TeamSpeak拒绝离开状态更新，连接已停止；请重新连接以确认状态");}else if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
                 _=>{}
             }},
             completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
+            completed=images.tasks.join_next(),if !images.tasks.is_empty()=>{if let Some(Ok(completed))=completed{emit(tx,crate::channel_images::event(conn,completed))?;}},
             message=input.next()=>{let Some(message)=message else{return Err(retryable("网页发送连接已中断"));};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){return Err(retryable("网页连接已关闭"));}continue;};
                 if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
                 let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
                 match value["type"].as_str().unwrap_or(""){
+                    "ts_image_get"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();let url=value["url"].as_str().unwrap_or("").to_owned();let source=value["source_channel"].as_u64().unwrap_or(0);if let Err(error)=images.download(conn,id.clone(),source,url.clone()){emit(tx,json!({"type":"ts_image","id":id,"url":url,"source_channel":source,"data":null,"error":error.to_string()}))?;}},
                     "avatar_get"=>{let client=value["client"].as_u64().filter(|id|*id<=u16::MAX as u64).context("头像成员无效")? as u16;if let Err(error)=avatars.download(conn,client){emit(tx,json!({"type":"avatar","client":client,"uid":conn.get_state()?.clients.get(&tsproto_types::ClientId(client)).and_then(|c|c.uid.as_ref()).map(|u|u.to_string()),"hash":value["hash"].as_str().filter(|s|s.len()==32&&s.bytes().all(|b|b.is_ascii_hexdigit())).unwrap_or(""),"data":null,"error":error.to_string()}))?;}},
                     "avatar_upload"=>{let id=value["id"].as_str().filter(|id|id.starts_with("avatar:")&&id.len()<=64).context("头像操作ID无效")?.to_owned();let result=avatars.prepare_upload(app.clone(),id.clone(),value["data"].as_str().unwrap_or(""));if let Err(error)=result{emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?;}},
                     "channel_info"=>{let id=value["channel"].as_u64().context("频道无效")?;if conn.get_state()?.channels.contains_key(&tsproto_types::ChannelId(id)){command("channelgetdescription",&[("cid",id.to_string())]).send(conn)?;}},
@@ -990,6 +999,15 @@ mod tests {
             1,
             start + Duration::from_millis(1800)
         ));
+    }
+    #[test]
+    fn plaintext_voice_music_and_whisper_are_rejected_before_media_without_end_marker_exceptions() {
+        use super::audio_is_encrypted;
+        use tsproto_packets::packets::Flags;
+        for flags in [Flags::empty(), Flags::NEWPROTOCOL, Flags::FRAGMENTED] {
+            assert!(audio_is_encrypted(flags));
+            assert!(!audio_is_encrypted(flags | Flags::UNENCRYPTED));
+        }
     }
     #[test]
     fn channel_password_verdict_is_distinct_from_permission_and_server_password() {

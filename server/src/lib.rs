@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod app;
 pub mod avatar;
+pub mod channel_images;
 pub mod config;
 pub mod db;
 pub mod email;

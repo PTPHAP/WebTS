@@ -76,3 +76,7 @@ localStorage用于 `webts-theme`、`webts-audio`、`webts-ptt-key`、`webts-soun
 本文依据当前代码与 [安全说明](docs/SECURITY.md) 编写。透明说明的项目参考 [ICO隐私信息指引](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/individual-rights/the-right-to-be-informed/what-privacy-information-should-we-provide/)；该参考不代表项目已获得认证或满足所有地区法规。
 
 [文档中心](docs/README.md) · [配置教程](docs/CONFIGURATION.md) · [项目首页](README.md)
+
+## 频道格式与图片
+
+频道 BBCode 在本机以安全 React 节点显示，不执行 HTML。原生频道图片仅以当前 TS 身份向当前服务器读取，TS 仍检查文件权限；图片重编码后通过 WSS 返回浏览器，仅当前连接内缓存。TS3 原生文件传输不加密，图片只能用于可公开内容。不会自动加载描述中的外部 HTTP 图片；用户主动打开外部链接时，该站点可能获取 IP。音乐机器人的明文语音被丢弃，不会转发或保存。

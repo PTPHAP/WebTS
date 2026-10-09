@@ -46,6 +46,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 登录、导入身份、语音设置、头像 | [身份互用](docs/IDENTITIES.md) · [语音与头像](docs/CLIENT.md) |
 | 判断设备或某项功能是否支持 | [支持范围与常见问题](docs/SUPPORT.md) |
 | 设置首页图片公告与个人资料 | [首页与个人资料](docs/HOME-PROFILE.md) |
+| 查看频道格式、图片与音乐机器人兼容 | [TeamSpeak 渲染与音乐](docs/TEAMSPEAK-RENDERING.md) |
 | 设置 AFK、管理网站账号和封禁 | [AFK 与账号管理](docs/ACCOUNT-ADMIN.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
@@ -124,3 +125,4 @@ Windows 工具链、测试与配置细节见 [部署指南](docs/DEPLOYMENT.md)�
 <sub>独立第三方开源项目，与 TeamSpeak 官方无隶属关系。TeamSpeak 及相关标识归其权利人所有。</sub>
 
 </div>
+

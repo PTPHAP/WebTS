@@ -17,3 +17,4 @@ done
 cp LICENSE THIRD_PARTY_NOTICES.md "$destination/"
 
 cp -R licenses/audio "$destination/"
+cp -R licenses/teamspeak-js "$destination/"

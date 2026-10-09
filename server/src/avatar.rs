@@ -29,7 +29,7 @@ pub struct Target {
     pub hash: String,
 }
 enum Pending {
-    Download(Target),
+    Download { target: Target, limits: ImageLimits },
     Upload { request: String, bytes: Vec<u8> },
 }
 pub enum Completed {
@@ -56,7 +56,12 @@ impl Avatars {
         }
         Ok(())
     }
-    pub fn download(&mut self, conn: &mut Connection, client: u16) -> Result<Target> {
+    pub fn download(
+        &mut self,
+        conn: &mut Connection,
+        client: u16,
+        limits: ImageLimits,
+    ) -> Result<Target> {
         self.available()?;
         let state = conn.get_state()?;
         let member = state
@@ -81,7 +86,13 @@ impl Avatars {
         let handle = conn.download_file(ChannelId(0), &path, None, None)?;
         self.pending.insert(
             handle.0,
-            (Pending::Download(target.clone()), Instant::now()),
+            (
+                Pending::Download {
+                    target: target.clone(),
+                    limits,
+                },
+                Instant::now(),
+            ),
         );
         Ok(target)
     }
@@ -120,8 +131,7 @@ impl Avatars {
         Ok(())
     }
     pub fn downloaded(&mut self, handle: u16, result: FileDownloadResult, app: Arc<App>) {
-        if let Some((Pending::Download(target), _)) = self.pending.remove(&handle) {
-            let limits = app.runtime.read().unwrap().settings.image_limits;
+        if let Some((Pending::Download { target, limits }, _)) = self.pending.remove(&handle) {
             self.tasks.spawn(async move {
                 let data = async {
                     if result.size == 0
@@ -188,7 +198,7 @@ impl Avatars {
 fn failure(pending: Pending, message: &'static str) -> Completed {
     let error = Err(anyhow::anyhow!(message));
     match pending {
-        Pending::Download(target) => Completed::Download(target, error),
+        Pending::Download { target, .. } => Completed::Download(target, error),
         Pending::Upload { request, .. } => {
             Completed::Uploaded(request, Err(anyhow::anyhow!(message)))
         }
@@ -244,6 +254,71 @@ pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn in_flight_avatar_uses_request_policy_after_hot_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("master.key");
+        std::fs::write(&key, hex::encode([42; 32])).unwrap();
+        let config: crate::config::Config =
+            toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        let app = App::new(crate::config::Config {
+            database: directory.path().join("db").to_string_lossy().into_owned(),
+            master_key_file: key.to_string_lossy().into_owned(),
+            ..config
+        })
+        .unwrap();
+        let limits = ImageLimits {
+            avatar_dimension: 1024,
+            ..Default::default()
+        };
+        let image = image::RgbImage::from_pixel(700, 1, image::Rgb([30, 70, 120]));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        let bytes = encoded.into_inner();
+        let mut avatars = Avatars::default();
+        avatars.pending.insert(
+            1,
+            (
+                Pending::Download {
+                    target: Target {
+                        client: 1,
+                        uid: "fixture".into(),
+                        hash: format!("{:x}", Md5::digest(&bytes)),
+                    },
+                    limits,
+                },
+                Instant::now(),
+            ),
+        );
+        app.runtime.write().unwrap().settings.image_limits = ImageLimits::default();
+        assert!(
+            sanitize_with_limits(&bytes, app.runtime.read().unwrap().settings.image_limits)
+                .is_err()
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sender = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (receiver, _) = listener.accept().await.unwrap();
+        let size = bytes.len() as u64;
+        let writer = tokio::spawn(async move {
+            let mut sender = sender;
+            sender.write_all(&bytes).await.unwrap();
+        });
+        avatars.downloaded(
+            1,
+            FileDownloadResult {
+                size,
+                stream: receiver,
+            },
+            app,
+        );
+        match avatars.tasks.join_next().await.unwrap().unwrap() {
+            Completed::Download(_, result) => assert!(result.unwrap().starts_with(b"\x89PNG")),
+            _ => panic!("expected avatar download"),
+        }
+        writer.await.unwrap();
+    }
     #[test]
     fn configurable_avatar_dimensions_preserve_reencoding_and_hard_caps() {
         let image = image::RgbImage::from_pixel(700, 1, image::Rgb([30, 70, 120]));

@@ -301,6 +301,14 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(middleware::from_fn_with_state(app.clone(), guard));
     Router::new()
         .nest("/api", api)
+        .route_service(
+            "/login",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
+        .route_service(
+            "/app",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
         .fallback_service(
             ServeDir::new(&app.config.web_dir)
                 .not_found_service(ServeFile::new(format!("{}/index.html", app.config.web_dir))),

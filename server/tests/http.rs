@@ -53,6 +53,28 @@ async fn call(
 }
 
 #[tokio::test]
+async fn page_links_support_direct_navigation_without_masking_missing_assets() {
+    let (directory, mut app) = setup();
+    let web = directory.path().join("web");
+    std::fs::create_dir(&web).unwrap();
+    let index = "<!doctype html><title>WebTS</title>";
+    std::fs::write(web.join("index.html"), index).unwrap();
+    std::sync::Arc::get_mut(&mut app).unwrap().config.web_dir = web.to_string_lossy().into_owned();
+    for path in ["/", "/login", "/app", "/assets/missing.js"] {
+        let response = router(app.clone())
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        if path.starts_with("/assets/") {
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        } else {
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), index);
+        }
+    }
+}
+
+#[tokio::test]
 async fn profiles_and_public_home_keep_ownership_and_admin_boundaries() {
     let (_dir, app) = setup();
     let pw = "profile fixture password";

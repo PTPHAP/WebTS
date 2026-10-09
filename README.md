@@ -36,7 +36,7 @@ WebTS 是独立开源的 **TeamSpeak 网页客户端与协议网关**。成员�
 apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
-中文引导会收集域名、公网 IP、邮箱和默认 TS 地址，从源码构建并启动。安装后输入 **`webts`** 打开中文管理菜单。首次构建需要时间；部署前准备 HTTPS 域名、TLS SMTP 和开启全局语音加密的 TS 服务器。
+中文引导会先配置站名、公开运营资料，再收集域名、公网 IP、邮箱和默认 TS 地址，从源码构建并启动。安装后输入 **`webts`** 打开中文管理菜单。首次构建需要时间；部署前准备 HTTPS 域名、TLS SMTP 和开启全局语音加密的 TS 服务器。
 
 | 我要做什么 | 从这里开始 |
 | --- | --- |

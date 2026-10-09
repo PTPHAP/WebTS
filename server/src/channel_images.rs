@@ -1,4 +1,4 @@
-//! Channel pictures use the current identity's native file permission, never an HTTP proxy.
+//! Native pictures use the real identity; external server banners are separately restricted.
 use crate::{
     app::{App, Error},
     settings::ImageLimits,
@@ -135,6 +135,7 @@ impl Images {
         id: String,
         source: u64,
         url: String,
+        app: Arc<App>,
         limits: ImageLimits,
     ) -> Result<()> {
         if id.len() > 64 || self.pending.len() + self.tasks.len() >= 2 {
@@ -148,36 +149,52 @@ impl Images {
             bail!("图片读取过于频繁，请稍后重试");
         }
         let state = conn.get_state()?;
-        let description = state
-            .channels
-            .get(&ChannelId(source))
-            .and_then(|c| c.optional_data.as_ref())
-            .context("频道介绍不可见")?;
-        if !description_image(&description.description, &url, limits.channel_images) {
-            bail!("图片未出现在当前可见频道介绍中");
+        let request = Request {
+            id,
+            url,
+            source,
+            limits,
+        };
+        if !visible(conn, &request) {
+            bail!("图片不属于当前可见的服务器或频道介绍");
         }
-        let target = image_path(&url)?;
-        if !state.channels.contains_key(&ChannelId(target.channel)) {
-            bail!("图片频道不可见");
+        if let Some(banner) = request.url.strip_prefix("tsserver:banner:") {
+            let banner = banner.to_owned();
+            self.tasks.spawn(async move {
+                let result = async {
+                    let max = request.limits.channel_download_kib as usize * 1024;
+                    let permit = app
+                        .image_bytes
+                        .clone()
+                        .try_acquire_many_owned(max.div_ceil(1024) as u32)
+                        .context("图片读取内存预算正忙，请稍后重试")?;
+                    let bytes = crate::server_banner::download(&banner, max).await?;
+                    let limits = request.limits;
+                    app.work(move |_| {
+                        let _permit = permit;
+                        sanitize_with_limits(&bytes, limits)
+                            .map_err(|_| Error::bad("图片格式、尺寸或内容无效"))
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.1))
+                }
+                .await;
+                Completed { request, result }
+            });
+            return Ok(());
         }
-        if let Some(uid) = target.server_uid.as_ref()
-            && *uid != state.server.public_key.get_uid()
-        {
-            bail!("图片属于其他服务器");
-        }
-        let handle = conn.download_file(ChannelId(target.channel), &target.path, None, None)?;
-        self.pending.insert(
-            handle.0,
-            (
-                Request {
-                    id,
-                    url,
-                    source,
-                    limits,
-                },
-                Instant::now(),
-            ),
-        );
+        let handle = if request.url.starts_with("tsserver:icon:") {
+            conn.download_file(
+                ChannelId(0),
+                &format!("/icon_{}", state.server.icon.0),
+                None,
+                None,
+            )?
+        } else {
+            let target = image_path(&request.url)?;
+            conn.download_file(ChannelId(target.channel), &target.path, None, None)?
+        };
+        self.pending.insert(handle.0, (request, Instant::now()));
         Ok(())
     }
     pub fn downloaded(&mut self, handle: u16, result: FileDownloadResult, app: Arc<App>) {
@@ -238,20 +255,45 @@ impl Images {
             .collect()
     }
 }
+fn visible(conn: &Connection, request: &Request) -> bool {
+    let Ok(state) = conn.get_state() else {
+        return false;
+    };
+    if request.source == 0 {
+        if request.url == format!("tsserver:icon:{}", state.server.icon.0) {
+            return state.server.icon.0 != 0;
+        }
+        if let Some(banner) = request.url.strip_prefix("tsserver:banner:") {
+            return !banner.is_empty() && banner == state.server.hostbanner_gfx_url;
+        }
+    }
+    let description = if request.source == 0 {
+        format!(
+            "{}\n{}",
+            state.server.welcome_message, state.server.hostmessage
+        )
+    } else {
+        let Some(data) = state
+            .channels
+            .get(&ChannelId(request.source))
+            .and_then(|c| c.optional_data.as_ref())
+        else {
+            return false;
+        };
+        data.description.clone()
+    };
+    description_image(&description, &request.url, request.limits.channel_images)
+        && image_path(&request.url).ok().is_some_and(|target| {
+            state.channels.contains_key(&ChannelId(target.channel))
+                && target
+                    .server_uid
+                    .as_ref()
+                    .is_none_or(|uid| *uid == state.server.public_key.get_uid())
+        })
+}
 pub fn event(conn: &Connection, completed: Completed) -> serde_json::Value {
     let request = completed.request;
-    let visible = conn
-        .get_state()
-        .ok()
-        .and_then(|s| s.channels.get(&ChannelId(request.source)))
-        .and_then(|c| c.optional_data.as_ref())
-        .is_some_and(|d| {
-            description_image(&d.description, &request.url, request.limits.channel_images)
-        })
-        && image_path(&request.url).ok().is_some_and(|target| {
-            conn.get_state()
-                .is_ok_and(|state| state.channels.contains_key(&ChannelId(target.channel)))
-        });
+    let visible = visible(conn, &request);
     let (data, error) = match completed.result {
         Ok(bytes) if visible => (
             Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes))),

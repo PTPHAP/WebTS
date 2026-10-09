@@ -23,11 +23,16 @@ async fn main() -> Result<()> {
         Some("set-settings") if args.len() == 2 => {
             let app = web_ts::app::App::new(web_ts::config::Config::load(&args[1])?)?;
             let mut text = zeroize::Zeroizing::new(Vec::new());
-            std::io::stdin().take(65537).read_to_end(&mut text)?;
-            if text.len() > 65536 {
+            std::io::stdin().take(1048577).read_to_end(&mut text)?;
+            if text.len() > 1048576 {
                 bail!("站点配置过大");
             }
-            let updated = web_ts::settings::Runtime::new(serde_json::from_slice(&text)?)?;
+            let mut settings: web_ts::settings::Settings = serde_json::from_slice(&text)?;
+            settings
+                .home
+                .normalize()
+                .map_err(|e| anyhow::anyhow!(e.1))?;
+            let updated = web_ts::settings::Runtime::new(settings)?;
             let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&updated.settings)?);
             app.db
                 .configure_locally(&app.vault.seal(0, "site-settings", "v1", &plaintext)?)?;

@@ -99,7 +99,21 @@ fn image(value: &mut String) -> Api<()> {
     Ok(())
 }
 impl Home {
-    fn normalize(&mut self) -> Api<()> {
+    pub fn upgrade_default_policies(&mut self) {
+        use sha2::{Digest, Sha256};
+        let defaults = Self::default();
+        if hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n")))
+            == "f3222ba772448b34efd344229a4c7849e92b626d623bf6c80cb94e813f05c192"
+        {
+            self.privacy_policy = defaults.privacy_policy;
+        }
+        if hex::encode(Sha256::digest(self.terms.replace("\r\n", "\n")))
+            == "38786738d19090abfbb13643be1a36c1219d4ac2792c5a3a0f47dc8b2410f1db"
+        {
+            self.terms = defaults.terms;
+        }
+    }
+    pub fn normalize(&mut self) -> Api<()> {
         if self.site_name.trim().is_empty()
             || !text(&self.site_name, 40, false)
             || !text(&self.operator, 100, false)
@@ -264,6 +278,21 @@ pub async fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn defaults_follow_site_branding_and_custom_policies_survive_upgrade() {
+        let default = Home::default();
+        assert!(default.privacy_policy.contains("{{site_name}}"));
+        assert!(default.terms.contains("{{site_name}}"));
+        let mut home = Home {
+            site_name: "自定义站点".into(),
+            privacy_policy: "自定义隐私政策".into(),
+            terms: "自定义协议".into(),
+            ..default
+        };
+        home.upgrade_default_policies();
+        assert_eq!(home.privacy_policy, "自定义隐私政策");
+        assert_eq!(home.terms, "自定义协议");
+    }
     #[test]
     fn partial_commit_preserves_intervening_settings_and_checks_combined_image_budget() {
         let mut stale = Home {

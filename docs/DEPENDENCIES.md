@@ -53,6 +53,7 @@
 | [combine](https://crates.io/crates/combine/4.6.8) | 4.6.8 | MIT |
 | [concurrent-queue](https://crates.io/crates/concurrent-queue/2.5.0) | 2.5.0 | Apache-2.0 OR MIT |
 | [const-oid](https://crates.io/crates/const-oid/0.9.6) | 0.9.6 | Apache-2.0 OR MIT |
+| [core-foundation](https://crates.io/crates/core-foundation/0.10.1) | 0.10.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://crates.io/crates/core-foundation/0.9.4) | 0.9.4 | MIT OR Apache-2.0 |
 | [core-foundation-sys](https://crates.io/crates/core-foundation-sys/0.8.7) | 0.8.7 | MIT OR Apache-2.0 |
 | [cpufeatures](https://crates.io/crates/cpufeatures/0.2.17) | 0.2.17 | MIT OR Apache-2.0 |
@@ -138,6 +139,7 @@
 | [httparse](https://crates.io/crates/httparse/1.10.1) | 1.10.1 | MIT OR Apache-2.0 |
 | [httpdate](https://crates.io/crates/httpdate/1.0.3) | 1.0.3 | MIT OR Apache-2.0 |
 | [hyper](https://crates.io/crates/hyper/1.12.0) | 1.12.0 | MIT |
+| [hyper-rustls](https://crates.io/crates/hyper-rustls/0.27.10) | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | [hyper-util](https://crates.io/crates/hyper-util/0.1.21) | 0.1.21 | MIT |
 | [icu_collections](https://crates.io/crates/icu_collections/2.3.0) | 2.3.0 | Unicode-3.0 |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.3.0) | 2.3.0 | Unicode-3.0 |
@@ -202,6 +204,7 @@
 | [omnom](https://crates.io/crates/omnom/3.0.0) | 3.0.0 | MIT OR Apache-2.0 |
 | [once_cell](https://crates.io/crates/once_cell/1.21.4) | 1.21.4 | MIT OR Apache-2.0 |
 | [opaque-debug](https://crates.io/crates/opaque-debug/0.3.1) | 0.3.1 | MIT OR Apache-2.0 |
+| [openssl-probe](https://crates.io/crates/openssl-probe/0.2.1) | 0.2.1 | MIT OR Apache-2.0 |
 | [p256](https://crates.io/crates/p256/0.13.2) | 0.13.2 | Apache-2.0 OR MIT |
 | [parking](https://crates.io/crates/parking/2.2.1) | 2.2.1 | Apache-2.0 OR MIT |
 | [parking_lot](https://crates.io/crates/parking_lot/0.12.5) | 0.12.5 | MIT OR Apache-2.0 |
@@ -283,14 +286,20 @@
 | [rusticata-macros](https://crates.io/crates/rusticata-macros/4.1.0) | 4.1.0 | MIT/Apache-2.0 |
 | [rustix](https://crates.io/crates/rustix/1.1.5) | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [rustls](https://crates.io/crates/rustls/0.23.45) | 0.23.45 | Apache-2.0 OR ISC OR MIT |
+| [rustls-native-certs](https://crates.io/crates/rustls-native-certs/0.8.4) | 0.8.4 | Apache-2.0 OR ISC OR MIT |
 | [rustls-pki-types](https://crates.io/crates/rustls-pki-types/1.15.1) | 1.15.1 | MIT OR Apache-2.0 |
+| [rustls-platform-verifier](https://crates.io/crates/rustls-platform-verifier/0.7.1) | 0.7.1 | MIT OR Apache-2.0 |
+| [rustls-platform-verifier-android](https://crates.io/crates/rustls-platform-verifier-android/0.2.0) | 0.2.0 | MIT OR Apache-2.0 |
 | [rustls-webpki](https://crates.io/crates/rustls-webpki/0.103.15) | 0.103.15 | ISC |
 | [rustversion](https://crates.io/crates/rustversion/1.0.23) | 1.0.23 | MIT OR Apache-2.0 |
 | [ryu](https://crates.io/crates/ryu/1.0.23) | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | [same-file](https://crates.io/crates/same-file/1.0.6) | 1.0.6 | Unlicense/MIT |
 | [sansio](https://crates.io/crates/sansio/1.0.1) | 1.0.1 | MIT/Apache-2.0 |
+| [schannel](https://crates.io/crates/schannel/0.1.29) | 0.1.29 | MIT |
 | [scopeguard](https://crates.io/crates/scopeguard/1.2.0) | 1.2.0 | MIT OR Apache-2.0 |
 | [sec1](https://crates.io/crates/sec1/0.7.3) | 0.7.3 | Apache-2.0 OR MIT |
+| [security-framework](https://crates.io/crates/security-framework/3.7.0) | 3.7.0 | MIT OR Apache-2.0 |
+| [security-framework-sys](https://crates.io/crates/security-framework-sys/2.17.0) | 2.17.0 | MIT OR Apache-2.0 |
 | [self_cell](https://crates.io/crates/self_cell/1.3.0) | 1.3.0 | Apache-2.0 OR GPL-2.0-only |
 | [semver](https://crates.io/crates/semver/1.0.28) | 1.0.28 | MIT OR Apache-2.0 |
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 |
@@ -365,12 +374,12 @@
 | [tracing-log](https://crates.io/crates/tracing-log/0.2.0) | 0.2.0 | MIT |
 | [tracing-subscriber](https://crates.io/crates/tracing-subscriber/0.3.23) | 0.3.23 | MIT |
 | [try-lock](https://crates.io/crates/try-lock/0.2.5) | 0.2.5 | MIT |
-| ts-bookkeeping | 0.1.0 | MIT OR Apache-2.0 |
-| tsclientlib | 0.2.0 | MIT OR Apache-2.0 |
-| tsproto | 0.2.0 | MIT OR Apache-2.0 |
-| tsproto-packets | 0.1.0 | MIT OR Apache-2.0 |
-| tsproto-structs | 0.2.0 | MIT OR Apache-2.0 |
-| tsproto-types | 0.1.0 | MIT OR Apache-2.0 |
+| [ts-bookkeeping](https://github.com/ReSpeak/tsclientlib/tree/master/utils/ts-bookkeeping) | 0.1.0 | MIT OR Apache-2.0 |
+| [tsclientlib](https://github.com/ReSpeak/tsclientlib) | 0.2.0 | MIT OR Apache-2.0 |
+| [tsproto](https://github.com/ReSpeak/tsclientlib) | 0.2.0 | MIT OR Apache-2.0 |
+| [tsproto-packets](https://github.com/ReSpeak/tsclientlib/tree/master/utils/tsproto-packets) | 0.1.0 | MIT OR Apache-2.0 |
+| [tsproto-structs](https://github.com/ReSpeak/tsclientlib/tree/master/utils/tsproto-structs) | 0.2.0 | MIT OR Apache-2.0 |
+| [tsproto-types](https://github.com/ReSpeak/tsclientlib/tree/master/utils/tsproto-types) | 0.1.0 | MIT OR Apache-2.0 |
 | [tungstenite](https://crates.io/crates/tungstenite/0.29.0) | 0.29.0 | MIT OR Apache-2.0 |
 | [typenum](https://crates.io/crates/typenum/1.20.1) | 1.20.1 | MIT OR Apache-2.0 |
 | [unicase](https://crates.io/crates/unicase/2.10.0) | 2.10.0 | MIT OR Apache-2.0 |
@@ -392,9 +401,11 @@
 | [wasm-bindgen-macro](https://crates.io/crates/wasm-bindgen-macro/0.2.129) | 0.2.129 | MIT OR Apache-2.0 |
 | [wasm-bindgen-macro-support](https://crates.io/crates/wasm-bindgen-macro-support/0.2.129) | 0.2.129 | MIT OR Apache-2.0 |
 | [wasm-bindgen-shared](https://crates.io/crates/wasm-bindgen-shared/0.2.129) | 0.2.129 | MIT OR Apache-2.0 |
+| [wasm-streams](https://crates.io/crates/wasm-streams/0.5.0) | 0.5.0 | MIT OR Apache-2.0 |
 | [web-sys](https://crates.io/crates/web-sys/0.3.106) | 0.3.106 | MIT OR Apache-2.0 |
-| web-ts | 0.1.0 | MIT |
+| [web-ts](https://github.com/PTPHAP/WebTS) | 0.1.0 | MIT |
 | [web_atoms](https://crates.io/crates/web_atoms/0.3.0) | 0.3.0 | MIT OR Apache-2.0 |
+| [webpki-root-certs](https://crates.io/crates/webpki-root-certs/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
 | [webpki-roots](https://crates.io/crates/webpki-roots/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
 | [webrtc](https://crates.io/crates/webrtc/0.21.0) | 0.21.0 | MIT/Apache-2.0 |
 | [weezl](https://crates.io/crates/weezl/0.1.12) | 0.1.12 | MIT OR Apache-2.0 |

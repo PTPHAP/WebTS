@@ -14,3 +14,5 @@ pub mod profile;
 pub mod settings;
 pub mod site;
 pub mod vault;
+
+mod server_banner;

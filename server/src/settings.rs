@@ -103,7 +103,8 @@ pub struct Runtime {
     pub mailer: Option<Mailer>,
 }
 impl Runtime {
-    pub fn new(settings: Settings) -> Result<Self> {
+    pub fn new(mut settings: Settings) -> Result<Self> {
+        settings.home.upgrade_default_policies();
         settings.validate()?;
         let mailer = settings
             .smtp

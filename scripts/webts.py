@@ -118,6 +118,17 @@ def save(config):
     private_write(ROOT/'setup.json', json.dumps(config, ensure_ascii=False, indent=2)+'\n')
 
 
+def site_values(previous=None):
+    previous = previous or {}
+    def public_text(value, limit, required=True):
+        return (bool(value) or not required) and len(value) <= limit and not any(ord(c)<32 or ord(c)==127 for c in value)
+    print('以下信息向访问者公开；不要填写密码、授权码或私人资料。站点图标可登录后台裁剪上传。')
+    return {'site_name':ask('站点名称', previous.get('site_name','WebTS'), lambda v:public_text(v,40)),
+            'operator':ask('公开运营者名称', previous.get('operator',''), lambda v:public_text(v,100)),
+            'contact':ask('公开隐私联系/注销申请渠道', previous.get('contact',''), lambda v:public_text(v,200)),
+            'data_details':ask('公开部署地区、服务提供方与日志/备份期限说明', previous.get('data_details',''), lambda v:public_text(v,4000))}
+
+
 def smtp_values(previous=None):
     previous = previous or {}
     from email.utils import parseaddr
@@ -184,6 +195,11 @@ def setup():
     if (ROOT/'setup.json').exists():
         print('已有配置，保留它们并继续构建启动。')
         run(['docker','build','-t','webts:managed',str(ROOT/'current')])
+        config=state()
+        if config.get('site_pending'):
+            updated=settings();updated['home'].update(config['site_pending'])
+            tool('set-settings',text=json.dumps(updated),capture=True)
+            config.pop('site_pending');save(config)
         compose('up','-d','--no-build');health()
         return
     config = {'domain':ask('网站域名（提前解析到本机公网 IP）', validate=domain),
@@ -205,6 +221,8 @@ def setup():
     else:
         config['proxy']=ask('HTTPS：1 自动证书 / 2 使用现有代理', '1', lambda v:v in {'1','2'})
         config['proxy']='auto' if config['proxy']=='1' else 'external'
+    public_site = site_values()
+    config['site_pending'] = public_site
     smtp = smtp_values()
     config.update(smtp_host=smtp['host'],smtp_port=smtp['port'],smtp_user=smtp['username'],smtp_from=smtp['from'])
     for name in ['data','secrets']:
@@ -217,8 +235,13 @@ def setup():
     save(config)
     print('开始构建固定依赖源码，首次可能需要数分钟。')
     run(['docker','build','-t','webts:managed',str(ROOT/'current')])
+    updated = settings()
+    updated['home'].update(public_site)
+    tool('set-settings', text=json.dumps(updated), capture=True)
+    config.pop('site_pending');save(config)
     compose('up','-d','--no-build');health()
     print('网站：https://'+config['domain'])
+    print('站点名称与运营信息已保存；默认协议自动使用站名。图标、协议及公告可在后台“外观、协议与公告”配置，或运行 webts site 修改公开信息。')
     print('先在网页用站长邮箱注册并验证，再运行 webts admin 授予网站管理权限。')
     print('需要放行 TCP 80/443 和 UDP 40000–40100；TS 要开启全局语音加密与 Opus。')
     if config['proxy']=='external':
@@ -239,7 +262,9 @@ def configure(kind):
         config['port']=number
     else:
         updated=json.loads(json.dumps(original))
-        if kind=='smtp':
+        if kind=='site':
+            updated['home'].update(site_values(updated['home']))
+        elif kind=='smtp':
             updated['smtp']=smtp_values(updated['smtp'])
             smtp=updated['smtp'];config.update(smtp_host=smtp['host'],smtp_port=smtp['port'],smtp_user=smtp['username'],smtp_from=smtp['from'])
         else:
@@ -291,12 +316,12 @@ def update():
     print('更新完成，原账号、身份、配置和密钥已保留。')
 
 
-COMMANDS=['setup','config','smtp','server','admin','start','stop','restart','status','logs','backup','update']
+COMMANDS=['setup','config','site','smtp','server','admin','start','stop','restart','status','logs','backup','update']
 
 
 def execute(command):
     if command=='setup':setup()
-    elif command in {'config','smtp','server'}:configure(command)
+    elif command in {'config','site','smtp','server'}:configure(command)
     elif command=='admin':admin()
     elif command=='backup':backup()
     elif command=='update':update()
@@ -324,10 +349,10 @@ def main():
         if len(sys.argv)>1:
             execute(sys.argv[1]);return
         while True:
-            print('\nWebTS 中文管理\n1 基础配置  2 邮箱配置  3 默认TS/自定义连接\n4 站长权限  5 启动  6 停止  7 重启\n8 状态  9 日志  10 备份  11 更新  0 退出')
-            selected=ask('选择','0',lambda v:v.isdecimal() and 0<=int(v)<=11)
+            print('\nWebTS 中文管理\n1 基础配置  2 邮箱配置  3 默认TS/自定义连接\n4 站长权限  5 启动  6 停止  7 重启\n8 状态  9 日志  10 备份  11 更新  12 站点名称与公开协议信息  0 退出')
+            selected=ask('选择','0',lambda v:v.isdecimal() and 0<=int(v)<=12)
             if selected=='0':return
-            command=['config','smtp','server','admin','start','stop','restart','status','logs','backup','update'][int(selected)-1]
+            command=['config','smtp','server','admin','start','stop','restart','status','logs','backup','update','site'][int(selected)-1]
             try:execute(command)
             except (ValueError,subprocess.CalledProcessError):print('操作失败，原数据保留；请检查输入或用 webts logs 查看服务状态。')
 

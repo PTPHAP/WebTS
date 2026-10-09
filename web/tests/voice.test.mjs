@@ -15,8 +15,8 @@ const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled
 
 function browser(microphoneError) {
   const sent = [], tracks = [], timers = [], captured=[],constraints=[],contexts=[],sockets=[],processors=[],connections=[];
-  let requests = 0, focused = true;
-  const track = () => ({enabled:true, stopped:false, stop(){this.stopped=true;}, clone:track,getSettings:()=>({noiseSuppression:true}),applyConstraints:async()=>{}});
+  let requests = 0, focused = true, sampleFailure=false;
+  const track = () => ({readyState:'live',enabled:true, stopped:false, stop(){this.stopped=true;}, clone:track,getSettings:()=>({noiseSuppression:true}),applyConstraints:async()=>{}});
   globalThis.fetch = async () => ({ok:true, json:async()=>({})});
   Object.defineProperty(globalThis, 'navigator', {configurable:true, value:{mediaDevices:{getUserMedia:async options=>{
     constraints.push(options);requests++;if(microphoneError)throw microphoneError;const input=track();captured.push(input);return new MediaStream([input]);
@@ -26,13 +26,13 @@ function browser(microphoneError) {
   const delays=new Map();let clock=0;globalThis.window = {setInterval:callback=>{timers.push(callback);return timers.length;},setTimeout:(callback,ms)=>{const id=++clock;delays.set(id,{callback,ms});return id;},clearTimeout:id=>delays.delete(id)};
   globalThis.clearInterval = ()=>{};
   globalThis.MediaStream = class {constructor(tracks){this.tracks=tracks;}getAudioTracks(){return this.tracks;}getTracks(){return this.tracks;}};
-  globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);}close(){}};
+  globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);return {track,replaceTrack:async function(next){this.track=next;tracks.push(next);}};}close(){}};
   globalThis.AudioContext = class {
     constructor(options){this.options=options;this.state='suspended';this.resumes=0;contexts.push(this);}
     createMediaStreamSource(stream){return {connect(target){target.input=stream;connections.push(target);},disconnect(){}};}
     createGain(){this.gain={gain:{value:1},connect(){}};return this.gain;}
     createMediaStreamDestination(){const output=track();captured.push(output);return {stream:new MediaStream([output])};}
-    createAnalyser(){return {fftSize:512,getFloatTimeDomainData(data){data.fill(this.input?.getAudioTracks()[0]?.sample??0);}};}
+    createAnalyser(){return {fftSize:512,getFloatTimeDomainData(data){if(sampleFailure)throw Error('sample unavailable');data.fill(this.input?.getAudioTracks()[0]?.sample??0);}};}
     close(){this.closed=true;this.state='closed';} resume(){this.resumes++;this.state='running';return Promise.resolve();}
   };
   globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard,voiceOnly)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',voiceOnly,destroy(){this.destroyed=true;}};processors.push(node);return node;}});
@@ -43,7 +43,7 @@ function browser(microphoneError) {
     send(message){sent.push(JSON.parse(message));}
     close(){this.readyState=3;}
   };
-  return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
+  return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
 test('AFK pauses both PTT and free speech, preserves mute and restores state after reconnect',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));
@@ -98,11 +98,11 @@ test('listen-only audio also recovers a suspended context and removes wake liste
  const voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);const context=env.contexts[0];context.state='suspended';context.onstatechange();await Promise.resolve();assert.equal(context.state,'running');assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='paused'));assert.ok(handlers.size>0);voice.close();assert.equal(handlers.size,0);assert.equal(context.onstatechange,null);
 });
 
-test('microphone mute explains zero input and an ended device reconnects instead of silently staying connected',async()=>{
+test('microphone mute pauses sending and ended device restores capture without reconnecting',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
   const input=env.captured[0];input.muted=true;input.onmute?.();assert.ok(events.some(e=>e.type==='audio_capture'&&e.status==='muted'));assert.equal(env.tracks[0].enabled,false);
   input.muted=false;input.onunmute?.();assert.equal(env.tracks[0].enabled,true);
-  input.readyState='ended';input.onended?.();assert.ok(events.some(e=>e.type==='disconnected'&&/麦克风/.test(e.message)));assert.equal(env.delays.size,1);voice.close();
+  input.readyState='ended';input.onended?.();await voice.microphoneTask;assert.ok(!events.some(e=>e.type==='disconnected'));assert.equal(env.requests(),2);assert.equal(env.sockets[0].readyState,1);assert.equal(env.delays.size,0);voice.close();
 });
 
 test('input meter still moves when voice recognition intentionally produces silence',async()=>{
@@ -309,4 +309,77 @@ test('AFK confirmation emits one sound per accepted transition, never for reject
   assert.equal(events.filter(e=>e.type==='afk_sound').length,1);
   voice.setAway(false);request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:true});
   assert.deepEqual(events.filter(e=>e.type==='afk_sound').map(e=>e.enabled),[true,false]);voice.close();
+});
+
+test('ended microphone keeps TS socket, peer, receive audio and original channel alive',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:7,name:'original'}]});
+  const socket=env.sockets[0],peer=voice.peer,context=env.contexts[0];
+  env.captured[0].readyState='ended';env.captured[0].onended();
+  assert.equal(socket.readyState,1,'microphone failure must not disconnect TeamSpeak');
+  assert.equal(voice.peer,peer);assert.equal(context.closed,undefined);assert.equal(voice.currentChannel,7);
+  assert.ok(!events.some(e=>e.type==='disconnected'));
+  assert.ok(!env.sent.some(e=>e.type==='disconnect'&&socket.readyState===3));voice.close();
+});
+
+test('sampling failure retries only the microphone with bounded backoff and keeps AI protection',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'selected-device',false);
+  await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:7}]});
+  const socket=voice.socket,node=voice.noiseNode;
+  navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('device busy','NotReadableError');};
+  env.sampleFailure(true);env.tick();await voice.microphoneTask;
+  assert.equal(voice.socket,socket);assert.equal(socket.readyState,1);assert.equal(voice.noiseNode,node);assert.equal(voice.currentChannel,7);
+  assert.equal(env.tracks[0].enabled,false);assert.equal(env.sent.findLast(e=>e.type==='transmit').pre_roll,false);
+  assert.equal([...env.delays.values()][0].ms,2000);
+  await env.wait();await voice.microphoneTask;assert.equal([...env.delays.values()][0].ms,4000);
+  assert.ok(!events.some(e=>e.type==='disconnected'));voice.close();assert.equal(env.delays.size,0);
+});
+test('recovered microphone uses the same processed send track and recognizer, without bypassing mute or AFK',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  const socket=voice.socket,peer=voice.peer,node=voice.noiseNode,send=voice.sendTrack;
+  voice.setMute(true,false);env.captured[0].readyState='ended';env.captured[0].onended();await voice.microphoneTask;
+  assert.equal(voice.socket,socket);assert.equal(voice.peer,peer);assert.equal(voice.sendTrack,send);assert.equal(voice.noiseNode,node);
+  assert.equal(send.enabled,false);assert.equal(env.constraints.at(-1).audio.noiseSuppression,false);
+  voice.setMute(false,false);assert.equal(send.enabled,true);node.onspeech(true);
+  voice.setAway(true);assert.equal(send.enabled,false);voice.close();
+});
+test('late microphone recovery after disconnect or device change releases the stale stream',async()=>{
+  for(const changed of [false,true]){
+    const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+    const replacement=new MediaStream([{...env.captured[0],stopped:false,stop(){this.stopped=true;}}]);let resolve;
+    navigator.mediaDevices.getUserMedia=()=>new Promise(r=>resolve=r);
+    env.captured[0].readyState='ended';env.captured[0].onended();const task=voice.microphoneTask;
+    if(changed)voice.inputDevice('new-device');else voice.close();
+    resolve(replacement);await task;
+    assert.equal(replacement.getTracks()[0].stopped,true);
+    if(changed){assert.equal(voice.intent.device,'new-device');assert.equal(voice.socket.readyState,1);}
+    voice.close();
+  }
+});
+test('unprocessed microphone recovery replaces only the outgoing sender track',async()=>{
+  const env=browser(),voice=new Voice(()=>{});voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);
+  const socket=voice.socket,old=voice.sendTrack;env.captured[0].readyState='ended';env.captured[0].onended();await voice.microphoneTask;
+  assert.equal(voice.socket,socket);assert.notEqual(voice.sendTrack,old);assert.equal(old.stopped,true);assert.equal(voice.sendTrack.enabled,true);voice.close();
+});
+
+test('capture timeout releases late microphone and permission denial stays paused until explicit recovery',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  let resolve;const old=env.captured[0];navigator.mediaDevices.getUserMedia=()=>new Promise(r=>resolve=r);
+  old.readyState='ended';old.onended();const task=voice.microphoneTask;
+  await env.wait();await task;assert.equal(voice.socket.readyState,1);assert.equal([...env.delays.values()][0].ms,2000);
+  const track={readyState:'live',stopped:false,stop(){this.stopped=true;}};resolve(new MediaStream([track]));await Promise.resolve();assert.equal(track.stopped,true);
+  navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('denied','NotAllowedError');};
+  await env.wait();await voice.microphoneTask;assert.equal(env.delays.size,0);assert.equal(voice.sendTrack.enabled,false);
+  old.onunmute();voice.context.onstatechange();await Promise.resolve();assert.equal(voice.microphoneTask,undefined);
+  assert.equal(voice.socket.readyState,1);voice.close();
+});
+
+test('recovering capture retains active receivers and processor failure cannot leak raw audio afterward',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  let destroyed=false;voice.receivers.set('remote',{destroy(){destroyed=true;},tick(){},setVolume(){}});
+  voice.elements.set('remote',{pause(){},srcObject:{}});
+  const old=env.captured[0],node=voice.noiseNode;
+  old.readyState='ended';old.onended();await voice.microphoneTask;assert.equal(destroyed,false);assert.ok(voice.receivers.has('remote'));
+  node.onerror();assert.equal(voice.sendTrack.enabled,false);assert.equal(voice.processingBlocked,true);
+  voice.inputDevice('replacement');await voice.microphoneTask;assert.equal(voice.sendTrack.enabled,false);assert.equal(destroyed,false);voice.close();assert.equal(destroyed,true);
 });

@@ -63,6 +63,19 @@ class ManagementTests(unittest.TestCase):
         self.assertNotIn('operator-private-value',args)
         self.assertEqual(run.call_args.kwargs['text'],'operator-private-value')
 
+    def test_site_configuration_preserves_credentials_identities_and_custom_policy(self):
+        previous={'home':{'site_name':'Old','privacy_policy':'Custom policy','terms':'Custom terms','site_icon':'saved-icon'},'smtp':{'password':'private-value'},'servers':[{'id':'saved'}]}
+        public={'site_name':'新站点','operator':'公开运营者','contact':'privacy@example.com','data_details':'独立测试环境'}
+        calls=[]
+        with patch.object(manager,'settings',return_value=previous),patch.object(manager,'site_values',return_value=public),patch.object(manager,'compose'),patch.object(manager,'tool',side_effect=lambda c,**kw:calls.append((c,kw))),patch.object(manager,'health'),contextlib.redirect_stdout(io.StringIO()) as output:
+            manager.configure('site')
+        updated=json.loads(calls[0][1]['text'])
+        self.assertEqual(updated['home']['site_name'],'新站点')
+        for field in ['privacy_policy','terms','site_icon']:self.assertEqual(updated['home'][field],previous['home'][field])
+        self.assertEqual(updated['smtp'],previous['smtp']);self.assertEqual(updated['servers'],previous['servers'])
+        self.assertNotIn('private-value',output.getvalue())
+        self.assertEqual((self.root/'secrets/master.key').read_text(),'test key must stay unchanged')
+
     def test_mail_change_preserves_other_settings_and_never_puts_password_in_argv(self):
         previous={'servers':[{'id':'custom','name':'Existing','address':'ts.example.com:9988'}],'default_server':'custom','allow_custom':True,'smtp':{'host':'smtp.example.com','port':465,'username':'mail@example.com','from':'mail@example.com','password':'old-private'}}
         next_mail={**previous['smtp'],'password':'new-private'}

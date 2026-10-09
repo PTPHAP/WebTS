@@ -393,21 +393,47 @@ fn mail_message(
         ammonia::clean_text(site),
         ammonia::clean_text(origin)
     );
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use lettre::message::{Attachment, MultiPart, SinglePart, header::ContentType};
+    let mut html = String::new();
+    let mut images = Vec::new();
+    // Only canonical, already-sanitized img tags have raw quoted data URLs.
+    for part in job.html.split_inclusive('>') {
+        let mut part = part.to_owned();
+        if let Some(tag) = part.rfind("<img ") {
+            let marker = "src=\"data:image/jpeg;base64,";
+            if let Some(attribute) = part[tag..].find(marker) {
+                let begin = tag + attribute + marker.len();
+                let end = begin + part[begin..].find('"')?;
+                let bytes = STANDARD.decode(&part[begin..end]).ok()?;
+                let cid = format!("webts-letter-{}-{}", job.id, images.len());
+                part.replace_range(tag + attribute + 5..end, &format!("cid:{cid}"));
+                images.push(
+                    Attachment::new_inline(cid).body(bytes, ContentType::parse("image/jpeg").ok()?),
+                );
+            }
+        }
+        html.push_str(&part);
+    }
+    let mut related = MultiPart::related().singlepart(SinglePart::html(format!(
+        "<!doctype html><html><body><h1>{}</h1>{html}{footer}</body></html>",
+        ammonia::clean_text(&job.title)
+    )));
+    for image in images {
+        related = related.singlepart(image);
+    }
     Message::builder()
         .from(from)
         .to(job.email.parse().ok()?)
         .subject(format!("[{site}] {}", job.title))
-        .multipart(lettre::message::MultiPart::alternative_plain_html(
-            format!(
-                "{}\n\n请登录 {origin}/app 查看完整内容，或在站点信箱关闭更新邮件。",
-                job.title
-            ),
-            format!(
-                "<!doctype html><html><body><h1>{}</h1>{}{footer}</body></html>",
-                ammonia::clean_text(&job.title),
-                job.html
-            ),
-        ))
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(SinglePart::plain(format!(
+                    "{}\n\n请登录 {origin}/app 查看完整内容，或在站点信箱关闭更新邮件。",
+                    job.title
+                )))
+                .multipart(related),
+        )
         .ok()
 }
 pub fn start(app: Arc<App>) {
@@ -619,5 +645,53 @@ mod tests {
         assert!(formatted.contains("multipart/alternative"));
         assert!(formatted.contains("text/html"));
         assert!(formatted.contains("text/plain"));
+    }
+    #[test]
+    fn cropped_mail_images_use_inline_mime_instead_of_data_urls() {
+        use base64::Engine;
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(8, 8)
+            .write_to(&mut image, image::ImageFormat::Jpeg)
+            .unwrap();
+        let html = clean_html(&format!(
+            "<p>图片</p><img src='data:image/jpeg;base64,{}' alt='更新'>",
+            base64::engine::general_purpose::STANDARD.encode(image.into_inner())
+        ));
+        let job = Delivery {
+            id: 71,
+            owner: 2,
+            email: "only@example.invalid".into(),
+            title: "图片通知".into(),
+            html,
+        };
+        let message = mail_message(
+            "site@example.invalid".parse().unwrap(),
+            &job,
+            "WebTS",
+            "https://example.invalid",
+        )
+        .unwrap();
+        let body = String::from_utf8(message.formatted()).unwrap();
+        assert!(body.contains("multipart/related"));
+        assert!(body.contains("Content-ID: <webts-letter-71-0>"));
+        assert!(body.contains("Content-Type: image/jpeg"));
+        let html_part = body
+            .split("\r\n--")
+            .find(|part| part.contains("Content-Type: text/html"))
+            .unwrap();
+        let (headers, payload) = html_part.split_once("\r\n\r\n").unwrap();
+        let decoded = if headers.contains("Content-Transfer-Encoding: base64") {
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(payload.split_whitespace().collect::<String>())
+                    .unwrap(),
+            )
+            .unwrap()
+        } else {
+            payload.replace("=\r\n", "")
+        };
+        assert!(decoded.contains("cid:webts-letter-71-0"));
+        assert!(!body.contains("data:image/"));
+        assert_eq!(message.envelope().to().len(), 1);
     }
 }

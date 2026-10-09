@@ -308,6 +308,9 @@ def main():
         return
     if os.geteuid()!=0 or not (ROOT/'.webts-managed').is_file():
         raise ValueError('请用 root/sudo 操作已由安装器管理的 /opt/webts。')
+    endpoint=run(['docker','context','inspect','--format','{{.Endpoints.docker.Host}}'],capture=True).stdout.strip()
+    if endpoint!='unix:///var/run/docker.sock' or os.environ.get('DOCKER_HOST',endpoint)!=endpoint:
+        raise ValueError('只管理本机标准 Docker，不操作远程 Docker context。')
     import fcntl
     with (ROOT/'.manage.lock').open('w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

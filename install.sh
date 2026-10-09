@@ -25,6 +25,8 @@ if ! command -v docker >/dev/null; then
   systemctl enable --now docker
 fi
 docker info >/dev/null || { echo 'Docker 未运行，请先启动 Docker 后重试。'; exit 1; }
+endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+[[ "$endpoint" == unix:///var/run/docker.sock && ${DOCKER_HOST:-$endpoint} == unix:///var/run/docker.sock ]] || { echo '安装只操作本机标准 Docker，不会部署到远程 Docker context。'; exit 1; }
 if ! docker compose version >/dev/null 2>&1; then
   # Docker's documented plugin location; do not replace an existing Engine.
   case $(uname -m) in x86_64|aarch64) asset="docker-compose-linux-$(uname -m)" ;; *) echo '当前架构请先安装 Docker Compose V2。'; exit 1 ;; esac

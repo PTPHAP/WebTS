@@ -37,7 +37,7 @@ def interactive(args,replies,timeout=900):
         assert position==len(replies)
     finally:os.close(fd)
 
-interactive(['bash',str(Path('install.sh').resolve())],[
+interactive(['bash','-c','f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'],[
     ('网站域名','voice.example.com'),('本机公网 IPv4','8.8.8.8'),
     ('网关本机端口','18080'),('默认 TS 公网地址','ts.example.com:9987'),
     ('站长邮箱','owner@example.com'),('HTTPS：','2'),

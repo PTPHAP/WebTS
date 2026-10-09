@@ -3,7 +3,7 @@
 自动安装支持 **Debian 12、Ubuntu 24.04 的 Linux 服务器**。在服务器 SSH/控制台的 root 终端执行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh)
+apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
 安装器下载本仓库与固定协议子模块，通过 Docker 从源码构建。首次构建需要时间与网络；它不要求下载 Release 包，不创建演示账号，不内置邮箱、身份或密钥。HTTPS 下载失败时停止，不禁用证书验证。非 root 请先 `sudo -i`。

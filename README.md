@@ -24,7 +24,7 @@ WebTS 是面向 TeamSpeak 3 / 6 的开源网页客户端。用邮箱登录，管
 Debian 12 / Ubuntu 24.04 服务器，在 root 终端执行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh)
+apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
 按中文提示填写域名、邮箱和 TS 地址。安装后输入 **`webts`** 打开中文菜单；`webts smtp` 配邮箱，`webts server` 配 TS，`webts admin` 授予已验证账号站长权限，`webts update` 保留数据更新。源码自动下载并构建，首次需要时间。

@@ -5,7 +5,7 @@ import ts from 'typescript';
 async function load(file){const text=await readFile(new URL(`../src/${file}`,import.meta.url),'utf8');const compiled=ts.transpileModule(text,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;return import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);}
 const {readAudioSettings,processingLabel}=await load('audio-settings.ts');
 const {tsText}=await load('ts-text.ts');
-const {imageDimensions,avatarImage,initialCrop,adjustCrop,croppedImage,loadCropImage}=await load('avatar.ts');
+const {imageDimensions,avatarImage,initialCrop,adjustCrop,croppedImage,loadCropImage,zoomCrop}=await load('avatar.ts');
 test('malformed persisted audio options revert safely; values are bounded',()=>{
   for(const value of ['{bad','null']){globalThis.localStorage={getItem:()=>value};assert.equal(readAudioSettings().noise,'rnnoise');assert.equal(readAudioSettings().keyboard,true);}
   globalThis.localStorage={getItem:()=>JSON.stringify({noise:'other',gain:100,volume:-9,echo:'yes',autoGain:false,strength:99,receiveAutoGain:'yes',ducking:-9,typing:0})};assert.deepEqual(readAudioSettings(),{noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:false,gain:2,volume:0,strength:1,receiveAutoGain:true,ducking:0,typing:true});
@@ -58,6 +58,19 @@ test('export uses the selected off-center rectangle and keeps output format/size
   assert.equal(canvas.width,900);assert.equal(canvas.height,300);
   for(const bad of [{...crop,x:-1},{...crop,x:950},{...crop,width:NaN},{...crop,width:0}])assert.throws(()=>croppedImage(image,bad,'content'),/裁剪范围/);
   assert.throws(()=>croppedImage(image,{...crop,height:80},'avatar'),/正方形/);
+});
+
+test('zoom preserves free aspect ratio and never creates a subpixel crop for tiny or thin images',()=>{
+  for(const [width,height] of [[4,4],[1,4096],[4096,1],[800,460]]){
+    let crop=initialCrop(width,height,false);
+    for(const factor of [1/8,1/8,8,8]){
+      crop=zoomCrop(crop,width,height,factor);
+      assert.ok(crop.width>=1&&crop.height>=1&&crop.x>=0&&crop.y>=0);
+      assert.ok(crop.x+crop.width<=width&&crop.y+crop.height<=height);
+      assert.ok(Math.abs(crop.width/crop.height-width/height)<.001);
+    }
+  }
+  assert.equal(zoomCrop(initialCrop(4,4,true),4,4,1/8).width,1);
 });
 
 test('decoded image dimensions are checked again and rejected bitmap is released',async()=>{

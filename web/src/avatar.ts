@@ -43,6 +43,11 @@ export function adjustCrop(crop:Crop,width:number,height:number,dx:number,dy:num
   if(square)w=h=clamp(crop.width+(Math.abs(dx)>=Math.abs(dy)?(left?-dx:dx):(top?-dy:dy)),min,Math.min(maxW,maxH));
   return {x:left?ax-w:ax,y:top?ay-h:ay,width:w,height:h};
 }
+export function zoomCrop(crop:Crop,width:number,height:number,factor:number):Crop {
+  const scale=Math.max(1/crop.width,1/crop.height,Math.min(factor,width/crop.width,height/crop.height));
+  const w=crop.width*scale,h=crop.height*scale;
+  return {x:Math.max(0,Math.min(width-w,crop.x+crop.width/2-w/2)),y:Math.max(0,Math.min(height-h,crop.y+crop.height/2-h/2)),width:w,height:h};
+}
 export function croppedImage(image:ImageBitmap,crop:Crop,purpose:ImagePurpose):string {
   if(!Object.values(crop).every(Number.isFinite)||crop.x<0||crop.y<0||crop.width<1||crop.height<1||crop.x+crop.width>image.width+.001||crop.y+crop.height>image.height+.001)throw new Error('裁剪范围无效，请重置后再试。');
   if(purpose==='avatar'&&Math.abs(crop.width-crop.height)>.001)throw new Error('头像需要正方形裁剪。');

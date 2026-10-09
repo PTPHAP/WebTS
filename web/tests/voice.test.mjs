@@ -45,6 +45,33 @@ function browser(microphoneError) {
   };
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests};
 }
+test('AFK pauses both PTT and free speech, preserves mute and restores state after reconnect',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+  await voice.connect({identity:'fixture'},'',false);
+  await env.message({type:'state',own:1,members:[{id:1,channel:1,away:false}],channels:[{id:1}]});
+  voice.setAway(true,'吃饭中');assert.equal(env.tracks.at(-1).enabled,false);
+  let request=env.sent.findLast(e=>e.action==='away');assert.equal(request.text,'吃饭中');
+  assert.equal(env.sent.findLast(e=>e.type==='transmit').pre_roll,false);
+  voice.setMode('ptt');voice.press(true);assert.equal(env.tracks.at(-1).enabled,false);
+  await env.message({type:'result',id:request.id,ok:true});
+  await env.message({type:'state',own:1,members:[{id:1,channel:1,away:true,awayMessage:'吃饭中'}],channels:[{id:1}]});
+  await env.message({type:'disconnected',retryable:true});await env.wait();
+  await env.message({type:'state',own:2,members:[{id:2,channel:1,away:false}],channels:[{id:1}]});
+  request=env.sent.findLast(e=>e.action==='away');assert.equal(request.enabled,true);assert.equal(request.text,'吃饭中');assert.equal(env.tracks.at(-1).enabled,false);
+  await env.message({type:'result',id:request.id,ok:true});
+  voice.setMute(true,false);voice.setAway(false);voice.press(true);assert.equal(env.tracks.at(-1).enabled,false);
+  request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:true});
+  voice.setMute(false,false);voice.press(true);assert.equal(env.tracks.at(-1).enabled,true);voice.close();
+});
+test('server rejection of AFK rolls back local capture state and manual disconnect clears AFK',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);voice.configure({noise:'off'});
+  await env.message({type:'state',own:1,members:[{id:1,channel:1,away:false}],channels:[{id:1}]});
+  voice.setAway(true,'暂时离开');const request=env.sent.findLast(e=>e.action==='away');
+  await env.message({type:'result',id:request.id,ok:false});assert.equal(env.tracks.at(-1).enabled,true);
+  voice.setAway(true);voice.close();await voice.connect({identity:'fixture'},'',false);
+  await env.message({type:'state',own:1,members:[{id:1,channel:1,away:false}],channels:[{id:1}]});
+  assert.equal(env.tracks.at(-1).enabled,true);voice.close();
+});
 
 test('microphone denial explains browser permission and listen-only recovery', async()=>{
   browser(new DOMException('Permission denied', 'NotAllowedError'));

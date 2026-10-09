@@ -153,7 +153,7 @@ pub struct Update {
     password: String,
     settings: Settings,
 }
-fn admin(app: &App, headers: &HeaderMap) -> Api<Session> {
+pub(crate) fn admin(app: &App, headers: &HeaderMap) -> Api<Session> {
     let session = app.session(headers)?;
     if !session.user.is_admin {
         return Err(Error(StatusCode::FORBIDDEN, "仅网站管理员可以设置站点"));

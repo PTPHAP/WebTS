@@ -262,6 +262,11 @@ pub fn router(app: Arc<App>) -> Router {
             get(crate::settings::get_settings).post(crate::settings::save_settings),
         )
         .route("/me", get(me))
+        .route("/admin/accounts", get(crate::accounts::list))
+        .route(
+            "/admin/accounts/{id}",
+            get(crate::accounts::detail).post(crate::accounts::update),
+        )
         .route("/auth/register", post(register))
         .route("/auth/resend", post(resend))
         .route("/auth/login", post(login))
@@ -335,7 +340,8 @@ async fn guard(
     } else {
         peer
     };
-    let auth = request.uri().path().contains("/auth/");
+    let auth = request.uri().path().contains("/auth/")
+        || (mutation && request.uri().path().contains("/admin/"));
     let window = if auth { 600 } else { 60 };
     let cap = if auth { 30 } else { 240 };
     let limited = {

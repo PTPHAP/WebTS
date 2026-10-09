@@ -64,6 +64,25 @@ impl Db {
                 "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        for (column, definition) in [
+            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_login", "INTEGER NOT NULL DEFAULT 0"),
+            ("banned_until", "INTEGER NOT NULL DEFAULT 0"),
+            ("ban_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("admin_note", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('users') WHERE name=?)",
+                [column],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                connection.execute_batch(&format!(
+                    "ALTER TABLE users ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -71,8 +90,8 @@ impl Db {
     }
     pub fn grant_admin(&self, email: &str) -> Result<()> {
         let changed = self.connection.lock().unwrap().execute(
-            "UPDATE users SET is_admin=1 WHERE email=? AND verified=1",
-            [email],
+            "UPDATE users SET is_admin=1 WHERE email=? AND verified=1 AND banned_until!=-1 AND banned_until<=?",
+            params![email, now()],
         )?;
         if changed != 1 {
             bail!("管理员必须是已验证的现有账号");
@@ -108,8 +127,8 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id,password_hash,verified FROM users WHERE email=?",
-                [email],
+                "SELECT id,password_hash,(verified=1 AND banned_until!=-1 AND banned_until<=?) FROM users WHERE email=?",
+                params![now(),email],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?)
@@ -143,8 +162,8 @@ impl Db {
             id
         } else {
             tx.execute(
-                "INSERT INTO users(email,password_hash) VALUES(?,?)",
-                params![email, hash],
+                "INSERT INTO users(email,password_hash,created_at) VALUES(?,?,?)",
+                params![email, hash, now()],
             )?;
             tx.last_insert_rowid()
         };
@@ -261,14 +280,18 @@ impl Db {
         let mut c = self.connection.lock().unwrap();
         let tx = c.transaction()?;
         let valid: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND verified=1 AND password_hash=?)",
-            params![owner, verified_hash],
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND verified=1 AND password_hash=? AND banned_until!=-1 AND banned_until<=?)",
+            params![owner, verified_hash,now()],
             |r| r.get(0),
         )?;
         if !valid {
             bail!("登录凭据已失效，请重新登录");
         }
         tx.execute("DELETE FROM sessions WHERE expires<?", [now()])?;
+        tx.execute(
+            "UPDATE users SET last_login=? WHERE id=?",
+            params![now(), owner],
+        )?;
         tx.execute(
             "INSERT INTO sessions VALUES(?,?,?)",
             params![
@@ -286,7 +309,7 @@ impl Db {
         }
         let hash = digest(value);
         let c = self.connection.lock().unwrap();
-        let user = c.query_row("SELECT u.id,u.email,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1", params![hash,now()], |r| Ok(User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?})).optional()?;
+        let user = c.query_row("SELECT u.id,u.email,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?", params![hash,now(),now()], |r| Ok(User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?})).optional()?;
         Ok(user.map(|user| Session { user, hash }))
     }
     pub fn revoke(&self, owner: i64, hash: Option<&str>) -> Result<()> {
@@ -432,6 +455,28 @@ mod tests {
             db.consume_email_token(&t, "verify", None).unwrap();
         }
         db
+    }
+    #[test]
+    fn timed_ban_expiry_and_password_recovery_never_restore_old_sessions() {
+        let db = accounts();
+        let original = db.create_session(1, true, "hash").unwrap();
+        let reset = db.email_token(1, "reset").unwrap();
+        db.connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET banned_until=? WHERE id=1", [now() + 60])
+            .unwrap();
+        assert!(db.session(&original).unwrap().is_none());
+        db.consume_email_token(&reset, "reset", Some("new_hash"))
+            .unwrap();
+        assert!(db.create_session(1, false, "new_hash").is_err());
+        db.connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET banned_until=? WHERE id=1", [now() - 1])
+            .unwrap();
+        assert!(db.session(&original).unwrap().is_none());
+        assert!(db.create_session(1, false, "new_hash").is_ok());
     }
     #[test]
     fn recovery_is_single_use_revokes_sessions_and_keeps_decryptable_identities() {

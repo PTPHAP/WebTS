@@ -104,6 +104,8 @@ turn_secret_file = "/app/secrets/turn-secret"
 
 ## 7. 常用维护
 
+站点后台还提供账号查询、详情、临时/永久封禁、解封、强制退出和管理员角色管理，所有修改复核当前管理员密码。具体操作与 AFK 使用见 [账号管理与 AFK](ACCOUNT-ADMIN.md)。
+
 ```bash
 webts status
 webts logs

@@ -79,6 +79,14 @@ impl Connections {
             }
         }
     }
+    pub fn count(&self, owner: i64) -> usize {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|e| e.owner == owner)
+            .count()
+    }
     fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(retryable("网关正在重启"));
@@ -502,7 +510,7 @@ fn enforce(conn: &Connection) -> Result<()> {
 fn snapshot(conn: &Connection) -> Result<Value> {
     let state = conn.get_state()?;
     Ok(
-        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
+        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
     )
 }
 // These borrows belong to a single connection actor; keeping ownership together
@@ -534,6 +542,7 @@ async fn connected(
     let mut whisper_channels = Vec::<u64>::new();
     let mut sequence = 0u16;
     let mut pending = HashMap::<u16, (String, Instant)>::new();
+    let mut away_handles = std::collections::HashSet::<u16>::new();
     let mut rate = (Instant::now(), 0u32);
     let mut check = Instant::now() - Duration::from_secs(2);
     let mut network_check = Instant::now();
@@ -552,11 +561,11 @@ async fn connected(
                 let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
-                if changed{let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
+                if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
                 if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
-                if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();pending.retain(|_,(id,start)|{if start.elapsed()>Duration::from_secs(15){let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});}
+                if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();let mut away_timeout=false;pending.retain(|handle,(id,start)|{if start.elapsed()>Duration::from_secs(15){away_timeout|=away_handles.remove(handle);let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});if away_timeout{bail!("离开状态更新超时，连接已停止；请重新连接以确认状态");}}
             },
             packet=audio.recv()=>{let Some(packet)=packet else{return Err(retryable("语音通道已关闭"));};let channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);if lead_channel!=channel{lead.clear();lead_channel=channel;}
             if !muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if transmit{if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}else if pre_roll&&crate::media::opus_has_audio(&packet.payload){lead.push(packet.payload,Instant::now());}}else{lead.clear();}},
@@ -568,7 +577,7 @@ async fn connected(
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
                 StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
                 StreamItem::Audio(packet)=>{if packet.data().packet().header().flags().contains(Flags::UNENCRYPTED){bail!("检测到未加密语音，连接已停止");}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if data.len()<=1{if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
-                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
+                StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if away_handles.remove(&handle.0)&&result.is_err(){emit(tx,command_result(&id,result))?;bail!("TeamSpeak拒绝离开状态更新，连接已停止；请重新连接以确认状态");}else if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
                 _=>{}
             }},
             completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
@@ -586,7 +595,7 @@ async fn connected(
                     "whisper"=>{let clients=targets(&value["clients"],u16::MAX as u64)?;let channels=targets(&value["channels"],u64::MAX)?;let s=conn.get_state()?;if clients.iter().any(|id|!s.clients.keys().any(|c|u64::from(c.0)==*id))||channels.iter().any(|id|!s.channels.keys().any(|c|c.0==*id)){bail!("耳语目标不存在");}lead.clear();finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;whisper_clients=clients.into_iter().map(|c|c as u16).collect();whisper_channels=channels;emit(tx,json!({"type":"whisper","active":!whisper_clients.is_empty()||!whisper_channels.is_empty()}))?;},
                     "mute"=>{muted=value["muted"].as_bool().unwrap_or(false);deafened=value["deafened"].as_bool().unwrap_or(false);lead.clear();if muted{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}command("clientupdate",&[("client_input_muted",u8::from(muted).to_string()),("client_output_muted",u8::from(deafened).to_string())]).send_with_result(conn)?;},
                     "disconnect"=>break,
-                    "command"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();if pending.len()>=32{bail!("待处理操作过多");}match user_command(conn,&value){Ok(cmd)=>{let handle=cmd.send_with_result(conn)?;pending.insert(handle.0,(id,Instant::now()));},Err(error)=>emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?,}},
+                    "command"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();if pending.len()>=32{bail!("待处理操作过多");}match user_command(conn,&value){Ok(cmd)=>{let handle=cmd.send_with_result(conn)?;if value["action"]=="away"{away_handles.insert(handle.0);}pending.insert(handle.0,(id,Instant::now()));},Err(error)=>emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?,}},
                     _=>bail!("不支持的网页请求")
                 }
             }
@@ -782,6 +791,26 @@ fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
     };
     let mut args = Vec::new();
     let name = match value["action"].as_str().unwrap_or("") {
+        "away" => {
+            if !conn
+                .get_state()?
+                .clients
+                .contains_key(&conn.get_state()?.own_client)
+            {
+                bail!("本人状态正在加载，请稍后设置离开状态");
+            }
+            let enabled = value["enabled"].as_bool().context("离开状态无效")?;
+            args.push(("client_away", u8::from(enabled).to_string()));
+            args.push((
+                "client_away_message",
+                if enabled {
+                    text("text", 512)?
+                } else {
+                    String::new()
+                },
+            ));
+            "clientupdate"
+        }
         "move" => {
             args.push((
                 "clid",

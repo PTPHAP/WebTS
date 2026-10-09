@@ -45,6 +45,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | Docker / systemd / 手动部署、备份恢复 | [部署与维护](docs/DEPLOYMENT.md) |
 | 登录、导入身份、语音设置、头像 | [身份互用](docs/IDENTITIES.md) · [语音与头像](docs/CLIENT.md) |
 | 判断设备或某项功能是否支持 | [支持范围与常见问题](docs/SUPPORT.md) |
+| 设置 AFK、管理网站账号和封禁 | [AFK 与账号管理](docs/ACCOUNT-ADMIN.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
 完整导航见 [文档中心](docs/README.md)。旧首个 Release 包已撤下，目前通过仓库源码安装；GitHub 自动生成的 Source code 归档不包含协议子模块。
@@ -59,11 +60,12 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 聊天 | 频道聊天、服务器聊天、私聊、戳一戳与可调提示音 |
 | 语音 | Opus 双向通话、自由发言与自动静默停发、默认 V 的可自定义按键发言 |
 | 音频处理 | 本地 GTCRN AI 降噪、RNNoise 轻量档、降噪强度、键鼠抑制；设备支持的回声消除/增益及实际状态 |
+| AFK 离开 | 原生离开状态与留言互通、暂停开麦、保留收听；自动重连恢复 |
 | 设备与收听 | 输入/输出选择、静音、停止收听、仅收听、成员独立音量、频道与成员耳语 |
 | 头像 | 上传本人经典 TS 服务器头像，显示可见成员服务器头像 |
 | 权限操作 | 依当前 TS 身份权限移动/踢出成员，创建、编辑或删除空频道 |
 | 连接恢复 | 持续退避重连、恢复断线前实际频道；可手动停止，遵守撤权与加密策略 |
-| 站点管理 | SMTP、服务器列表、默认连接、自定义公网目标开关；网页保存后热加载 |
+| 站点管理 | SMTP/服务器配置热加载；账号搜索、状态筛选、详情、临时/永久封禁、解封、强制退出、管理员角色、备注与操作记录 |
 | 部署管理 | 中文 `webts` 菜单，服务状态、日志、配置、备份及保留数据更新 |
 | 界面 | 中文优先、深浅主题、桌面三栏与手机响应式布局 |
 

@@ -1,6 +1,12 @@
 import {useEffect,useState} from 'react';
 import type {FormEvent} from 'react';
 import {api} from './api';
+import {AdminAccounts} from './AdminAccounts';
+
+export function AdminPanel({onSaved,currentEmail}:{onSaved:()=>Promise<void>;currentEmail:string}){
+  const[tab,setTab]=useState('accounts');
+  return <><div className="admin-tabs" role="tablist" aria-label="站点管理分类"><button role="tab" aria-selected={tab==='accounts'} onClick={()=>setTab('accounts')}>账号管理</button><button role="tab" aria-selected={tab==='settings'} onClick={()=>setTab('settings')}>基础配置</button></div><div role="tabpanel">{tab==='accounts'?<AdminAccounts currentEmail={currentEmail}/>:<AdminSettings onSaved={onSaved}/>}</div></>;
+}
 
 type Target={id:string;name:string;address:string};
 type Smtp={host:string;port:number;username:string;from:string;password?:string;password_set?:boolean};

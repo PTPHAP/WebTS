@@ -50,6 +50,163 @@ async fn call(
     )
 }
 #[tokio::test]
+async fn account_admin_bans_are_persistent_revoke_sessions_and_preserve_identities() {
+    let (_dir, app) = setup();
+    let hash = password::hash("account administration password").unwrap();
+    let mut ids = Vec::new();
+    let mut cookies = Vec::new();
+    for email in ["operator@example.com", "member@example.com"] {
+        let (id, _, verify) = app.db.register(email, &hash).unwrap();
+        app.db.consume_email_token(&verify, "verify", None).unwrap();
+        ids.push(id);
+        cookies.push(format!(
+            "__Host-webts={}",
+            app.db.create_session(id, true, &hash).unwrap()
+        ));
+    }
+    app.db.grant_admin("operator@example.com").unwrap();
+    let identity = app
+        .db
+        .add_identity(
+            ids[1],
+            "保留身份",
+            &tsclientlib::Identity::create(),
+            &app.vault,
+        )
+        .unwrap();
+    let path = format!("/admin/accounts/{}", ids[1]);
+    assert_eq!(
+        call(&app, "/admin/accounts", None, "", "https://webts.example")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, &path, None, &cookies[1], "https://webts.example")
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let ban = json!({"password":"account administration password","action":"ban","text":"测试封禁","seconds":3600});
+    assert_eq!(
+        call(
+            &app,
+            &path,
+            Some(ban.clone()),
+            &cookies[0],
+            "https://evil.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut wrong = ban.clone();
+    wrong["password"] = json!("wrong");
+    assert_eq!(
+        call(
+            &app,
+            &path,
+            Some(wrong),
+            &cookies[0],
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut invalid = ban.clone();
+    invalid["seconds"] = json!(u32::MAX);
+    assert_eq!(
+        call(
+            &app,
+            &path,
+            Some(invalid),
+            &cookies[0],
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/admin/accounts/{}", ids[0]),
+            Some(ban.clone()),
+            &cookies[0],
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, &path, Some(ban), &cookies[0], "https://webts.example")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/me", None, &cookies[1], "https://webts.example")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(app.db.create_session(ids[1], true, &hash).is_err());
+    assert_eq!(call(&app,"/auth/login",Some(json!({"email":"member@example.com","password":"account administration password","remember":true})),"","https://webts.example").await.0,StatusCode::UNAUTHORIZED);
+    let restored = App::new(app.config.clone()).unwrap();
+    assert!(restored.db.create_session(ids[1], false, &hash).is_err());
+    let (_, _, view) = call(&app, &path, None, &cookies[0], "https://webts.example").await;
+    assert_eq!(view["banned"], true);
+    assert_eq!(view["session_count"], 0);
+    assert_eq!(view["identity_count"], 1);
+    assert_eq!(view["audit"][0]["action"], "ban");
+    assert!(view.to_string().find("password_hash").is_none());
+    assert!(view.to_string().find("ciphertext").is_none());
+    let (_, _, list) = call(
+        &app,
+        "/admin/accounts?search=member&status=banned",
+        None,
+        &cookies[0],
+        "https://webts.example",
+    )
+    .await;
+    assert_eq!(list["total"], 1);
+    assert_eq!(
+        call(
+            &app,
+            "/admin/accounts?status=invalid",
+            None,
+            &cookies[0],
+            "https://webts.example"
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for action in ["unban", "note", "role", "revoke"] {
+        assert_eq!(call(&app,&path,Some(json!({"password":"account administration password","action":action,"text":"测试管理备注","is_admin":true})),&cookies[0],"https://webts.example").await.0,StatusCode::OK);
+    }
+    // Unbanning does not resurrect old login cookies or replace the original identity.
+    assert_eq!(
+        call(&app, "/me", None, &cookies[1], "https://webts.example")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let new_session = app.db.create_session(ids[1], false, &hash).unwrap();
+    assert!(app.db.session(&new_session).unwrap().unwrap().user.is_admin);
+    let stored = app.db.identity(ids[1], &identity).unwrap();
+    assert!(
+        app.vault
+            .open(ids[1], &identity, &stored.uid, &stored.ciphertext)
+            .is_ok()
+    );
+    let (_, _, detail) = call(&app, &path, None, &cookies[0], "https://webts.example").await;
+    assert_eq!(detail["admin_note"], "测试管理备注");
+    assert_eq!(detail["audit"].as_array().unwrap().len(), 5);
+}
+#[tokio::test]
 async fn administrator_settings_are_redacted_hot_loaded_and_persistent() {
     let (_dir, app) = setup();
     let hash = password::hash("administrator test password").unwrap();

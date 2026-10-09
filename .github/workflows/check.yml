@@ -40,7 +40,7 @@ jobs:
           mkdir -p .cache/package/webts-0.1.0-linux-x64/web
           cp target/release/web-ts .cache/package/webts-0.1.0-linux-x64/
           cp -r web/dist .cache/package/webts-0.1.0-linux-x64/web/
-          cp -r deploy docs scripts README.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-0.1.0-linux-x64/
+          cp -r deploy docs scripts README.md PRIVACY.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-0.1.0-linux-x64/
           sh scripts/collect-licenses.sh .cache/package/webts-0.1.0-linux-x64/licenses
           chmod +x .cache/package/webts-0.1.0-linux-x64/scripts/run.sh
           tar -czf .cache/webts-0.1.0-linux-x64.tar.gz -C .cache/package webts-0.1.0-linux-x64

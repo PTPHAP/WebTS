@@ -21,6 +21,117 @@ use web_ts::{
 
 #[tokio::test]
 #[ignore = "requires an explicitly authorized isolated TS3 server"]
+async fn afk_state_interoperates_and_site_ban_stops_active_connection() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let target = std::env::var("WEBTS_TEST_TARGET").expect("set isolated target");
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("key");
+    std::fs::write(&key, hex::encode([25; 32])).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let origin = format!("http://localhost:{port}");
+    let base: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+    let app = App::new(Config {
+        database: dir.path().join("db").to_string_lossy().into_owned(),
+        master_key_file: key.to_string_lossy().into_owned(),
+        public_url: origin.clone(),
+        servers: vec![Server {
+            id: "isolated".into(),
+            name: "AFK test".into(),
+            address: target.clone(),
+        }],
+        ..base
+    })
+    .unwrap();
+    let hash = password::hash("afk account fixture password").unwrap();
+    let mut accounts = Vec::new();
+    let mut sessions = Vec::new();
+    for email in ["afk-admin@example.com", "afk-member@example.com"] {
+        let (id, _, v) = app.db.register(email, &hash).unwrap();
+        app.db.consume_email_token(&v, "verify", None).unwrap();
+        accounts.push(id);
+        sessions.push(app.db.create_session(id, false, &hash).unwrap());
+    }
+    app.db.grant_admin("afk-admin@example.com").unwrap();
+    let identity = app
+        .db
+        .add_identity(accounts[1], "AFK fixture", &Identity::create(), &app.vault)
+        .unwrap();
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .into_future(),
+    );
+    let mut native = Connection::build(target)
+        .identity(Identity::create())
+        .name("WebTS AFK protocol peer")
+        .connect()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(event) = native.events().next().await {
+            if matches!(event.unwrap(), StreamItem::BookEvents(_)) {
+                return;
+            }
+        }
+        panic!("peer closed")
+    })
+    .await
+    .unwrap();
+    let mut request = format!("ws://127.0.0.1:{port}/api/connect")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", HeaderValue::from_str(&origin).unwrap());
+    request.headers_mut().insert(
+        "cookie",
+        HeaderValue::from_str(&format!("webts_dev={}", sessions[1])).unwrap(),
+    );
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    socket.send(Message::Text(json!({"server":"isolated","identity":identity,"page":"afk","name":"WebTS AFK fixture"}).to_string().into())).await.unwrap();
+    let mut own = 0u16;
+    tokio::time::timeout(Duration::from_secs(15),async{loop{tokio::select!{e=async {native.events().next().await}=>{e.unwrap().unwrap();},m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();assert_ne!(m["type"],"error","{m}");if m["type"]=="state"{own=m["own"].as_u64().unwrap()as u16;return}}}}}}).await.unwrap();
+    for enabled in [true, false] {
+        socket.send(Message::Text(json!({"type":"command","action":"away","id":"afk-check","enabled":enabled,"text":"暂时离开测试"}).to_string().into())).await.unwrap();
+        let (mut peer_seen, mut web_seen, mut result) = (false, false, false);
+        tokio::time::timeout(Duration::from_secs(10),async{while !(peer_seen&&web_seen&&result){tokio::select!{
+            e=async {native.events().next().await}=>{e.unwrap().unwrap();if let Some(c)=native.get_state().unwrap().clients.get(&tsproto_types::ClientId(own)){peer_seen=c.away_message.is_some()==enabled;if enabled&&peer_seen{assert_eq!(c.away_message.as_deref(),Some("暂时离开测试"));}}},
+            m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();assert_ne!(m["type"],"error","{m}");if m["type"]=="state"{web_seen=m["members"].as_array().unwrap().iter().find(|c|c["id"]==own).unwrap()["away"]==enabled;}else if m["type"]=="result"&&m["id"]=="afk-check"{assert_eq!(m["ok"],true,"{m}");result=true;}}
+        }}}}).await.unwrap_or_else(|_|panic!("AFK not propagated enabled={enabled} peer={peer_seen} web={web_seen} result={result}"));
+    }
+    let native_id = native.get_state().unwrap().own_client.0;
+    let mut away_command = tsproto_packets::packets::OutCommand::new(
+        tsproto_packets::packets::Direction::C2S,
+        Flags::empty(),
+        tsproto_packets::packets::PacketType::Command,
+        "clientupdate",
+    );
+    away_command.write_arg("client_away", &1);
+    away_command.write_arg("client_away_message", &"原生协议端离开");
+    away_command.send(&mut native).unwrap();
+    tokio::time::timeout(Duration::from_secs(10),async{loop{tokio::select!{e=async{native.events().next().await}=>{e.unwrap().unwrap();},m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();if m["type"]=="state"&&m["members"].as_array().unwrap().iter().any(|c|c["id"]==native_id&&c["away"]==true&&c["awayMessage"]=="原生协议端离开"){return}}}}}}).await.expect("native AFK missing in browser state");
+    assert_eq!(app.connections.count(accounts[1]), 1);
+    let response=router(app.clone()).oneshot(Request::builder().method("POST").uri(format!("/api/admin/accounts/{}",accounts[1])).header("origin",&origin).header("cookie",format!("webts_dev={}",sessions[0])).header("content-type","application/json").body(Body::from(json!({"password":"afk account fixture password","action":"ban","text":"独立测试封禁","seconds":0}).to_string())).unwrap()).await.unwrap();
+    let status = response.status();
+    let content = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert!(
+        status.is_success(),
+        "{status} {}",
+        String::from_utf8_lossy(&content)
+    );
+    tokio::time::timeout(Duration::from_secs(5),async{loop{tokio::select!{e=async {native.events().next().await}=>{e.unwrap().unwrap();},m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();if m["type"]=="disconnected"{assert_eq!(m["retryable"],false);return}}}}}}).await.expect("site ban left connection alive");
+    assert!(app.db.session(&sessions[1]).unwrap().is_none());
+    assert!(app.db.create_session(accounts[1], false, &hash).is_err());
+    assert_eq!(app.db.identities(accounts[1]).unwrap().len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly authorized isolated TS3 server"]
 async fn gateway_ts3_encrypted_voice_whisper_permission_and_revocation() {
     tokio::time::timeout(Duration::from_secs(90), run())
         .await

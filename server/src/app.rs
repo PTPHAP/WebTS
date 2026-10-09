@@ -312,6 +312,14 @@ pub fn router(app: Arc<App>) -> Router {
             "/app",
             ServeFile::new(format!("{}/index.html", app.config.web_dir)),
         )
+        .route_service(
+            "/privacy",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
+        .route_service(
+            "/terms",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
         .fallback_service(
             ServeDir::new(&app.config.web_dir)
                 .not_found_service(ServeFile::new(format!("{}/index.html", app.config.web_dir))),

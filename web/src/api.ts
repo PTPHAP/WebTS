@@ -5,5 +5,5 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
 }
 export type Identity = {id:string; name:string; uid:string; is_default:boolean};
 export type Member = {id:number; channel:number; name:string; uid?:string; avatarHash:string; muted:boolean; deafened:boolean; away?:boolean; awayMessage?:string; description:string; talkPower:number; serverGroups:number[]; channelGroup:number};
-export type Channel = {id:number; parent:number; order:number; name:string; topic?:string; description?:string; password:boolean};
+export type Channel = {id:number; parent:number; order:number; name:string; topic?:string; description?:string; password:boolean; codec?:number;quality?:number;kind?:string;maxClients?:number;maxFamilyClients?:number;neededTalkPower?:number};
 export type State = {server:string; own:number; canSpeak:boolean; channels:Channel[]; members:Member[]};

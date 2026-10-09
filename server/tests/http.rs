@@ -53,6 +53,114 @@ async fn call(
 }
 
 #[tokio::test]
+async fn site_branding_policies_and_footer_are_admin_only_sanitized_and_preserved() {
+    let (directory, app) = setup();
+    let pw = "synthetic site admin password";
+    let hash = password::hash(pw).unwrap();
+    let origin = "https://webts.example";
+    let mut cookies = Vec::new();
+    for email in ["site-admin@example.com", "site-member@example.com"] {
+        let (id, _, token) = app.db.register(email, &hash).unwrap();
+        app.db.consume_email_token(&token, "verify", None).unwrap();
+        cookies.push(format!(
+            "__Host-webts={}",
+            app.db.create_session(id, false, &hash).unwrap()
+        ));
+    }
+    app.db.grant_admin("site-admin@example.com").unwrap();
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::RgbImage::new(8, 8)
+        .write_to(&mut image, image::ImageFormat::Png)
+        .unwrap();
+    use base64::Engine;
+    let home = json!({"site_name":"Synthetic voice site","site_icon":format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(image.into_inner())),"operator":"Synthetic operator","contact":"contact@example.com","data_details":"test environment only","footer_html":"<a href='https://beian.miit.gov.cn/' onclick='steal()'>备案号</a><img src='https://evil.example/track'><script>steal()</script>","privacy_policy":"## Privacy\n\nActual policy text","terms":"## Terms\n\nActual disclaimer text"});
+    let body = json!({"password":pw,"home":home});
+    assert_eq!(
+        call(&app, "/admin/home", Some(body.clone()), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(body.clone()),
+            &cookies[0],
+            "https://evil.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(json!({"password":"wrong","home":home})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "/admin/home", Some(body), &cookies[0], origin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let public = call(&app, "/site", None, "", origin).await.2;
+    assert_eq!(public["site_name"], "Synthetic voice site");
+    assert!(
+        public["site_icon"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(
+        public["footer_html"]
+            .as_str()
+            .unwrap()
+            .contains("target=\"_blank\"")
+    );
+    assert!(!public.to_string().contains("steal()"));
+    assert!(!public.to_string().contains("evil.example"));
+    assert!(public.get("smtp").is_none());
+    assert!(public.get("servers").is_none());
+    // A pre-upgrade editor only sends old home fields; it must not erase branding or policies.
+    assert_eq!(call(&app,"/admin/home",Some(json!({"password":pw,"home":{"title":"Legacy title","subtitle":"","image":"","announcements":[]}})),&cookies[0],origin).await.0,StatusCode::OK);
+    let settings = call(&app, "/admin/settings", None, &cookies[0], origin)
+        .await
+        .2;
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":pw,"settings":settings})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let retained = call(&app, "/site", None, "", origin).await.2;
+    assert_eq!(retained["site_name"], public["site_name"]);
+    assert_eq!(retained["privacy_policy"], public["privacy_policy"]);
+    assert_eq!(retained["terms"], public["terms"]);
+    assert_eq!(retained["footer_html"], public["footer_html"]);
+    let mut config = app.config.clone();
+    config.database = directory.path().join("db").to_string_lossy().into_owned();
+    let restarted = App::new(config).unwrap();
+    assert_eq!(
+        call(&restarted, "/site", None, "", origin).await.2,
+        retained
+    );
+}
+
+#[tokio::test]
 async fn image_policy_is_admin_only_persisted_and_applied_to_profile_uploads() {
     let (_dir, app) = setup();
     let pw = "image policy fixture password";
@@ -190,7 +298,14 @@ async fn page_links_support_direct_navigation_without_masking_missing_assets() {
     let index = "<!doctype html><title>WebTS</title>";
     std::fs::write(web.join("index.html"), index).unwrap();
     std::sync::Arc::get_mut(&mut app).unwrap().config.web_dir = web.to_string_lossy().into_owned();
-    for path in ["/", "/login", "/app", "/assets/missing.js"] {
+    for path in [
+        "/",
+        "/login",
+        "/app",
+        "/privacy",
+        "/terms",
+        "/assets/missing.js",
+    ] {
         let response = router(app.clone())
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await

@@ -9,7 +9,7 @@
 - 许可：MIT OR Apache-2.0，本项目复用按MIT条款，保留vendor中的完整版权与许可文件。
 - 本地修改：patches/raw-audio.patch，开放原始Opus包，禁止网关模式启动不可取消的自动身份等级计算，让网关检查后拒绝未加密音频，并修复导入ASN.1身份时丢失私钥前导零的问题；不修改加密算法。
 
-其声明子模块同样保留来源与许可。锁文件内各平台依赖的版本及包作者许可声明见[依赖清单](docs/DEPENDENCIES.md)，共414个包（包含本项目）。发布二进制前仍需复核实际打包许可文本与NOTICE。
+其声明子模块同样保留来源与许可。锁文件内各平台依赖的版本及包作者许可声明见[依赖清单](docs/DEPENDENCIES.md)，共434个包（包含本项目）。发布二进制前仍需复核实际打包许可文本与NOTICE。
 
 本项目为第三方兼容客户端，不代表TeamSpeak官方产品、授权或背书。
 
@@ -25,3 +25,7 @@ tsclientlib额外补丁限制头像TCP只访问已验证TS服务器IP、仅处�
 ## 音乐机器人发送端临时兼容
 
 scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（HoneyBBQ / teamspeak-js，MIT）的有界语音发送修补片段；不是 WebTS 运行依赖。原始许可保存在 licenses/teamspeak-js/LICENSE，并进入发布包。源码：https://github.com/HoneyBBQ/teamspeak-js 。仅对已验证版本和摘要提供显式应用工具。
+
+## 页脚 HTML 清理
+
+固定 ammonia 4.2.1（MIT OR Apache-2.0），使用 HTML5 解析器进行白名单清理。依赖及许可表达式见上述锁定清单；发布流程收集原始许可文本。来源：https://github.com/rust-ammonia/ammonia 。

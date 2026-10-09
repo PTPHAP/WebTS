@@ -127,3 +127,5 @@ Windows 工具链、测试与配置细节见 [部署指南](docs/DEPLOYMENT.md)�
 
 </div>
 
+
+站点外观、图标、站内隐私政策/免责声明和安全HTML页脚见[自定义教程](docs/SITE-CUSTOMIZATION.md)；与原生客户端的差距和验收门槛见[适配清单](docs/CLIENT-COMPATIBILITY.md)。

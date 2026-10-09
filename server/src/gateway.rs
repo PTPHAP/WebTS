@@ -16,7 +16,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -511,10 +511,17 @@ fn enforce(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
+fn channel_limit(value: Option<&tsproto_types::MaxClients>) -> Option<i32> {
+    value.map(|v| match v {
+        tsproto_types::MaxClients::Unlimited => -1,
+        tsproto_types::MaxClients::Inherited => -2,
+        tsproto_types::MaxClients::Limited(n) => i32::from(*n),
+    })
+}
 fn snapshot(conn: &Connection) -> Result<Value> {
     let state = conn.get_state()?;
     Ok(
-        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
+        json!({"type":"state","server":state.server.name,"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"codec":c.codec as u8,"quality":c.codec_quality,"kind":match c.channel_type {tsproto_types::ChannelType::Temporary=>"temporary",tsproto_types::ChannelType::SemiPermanent=>"semi",tsproto_types::ChannelType::Permanent=>"permanent"},"maxClients":channel_limit(c.max_clients.as_ref()),"maxFamilyClients":channel_limit(c.max_family_clients.as_ref()),"neededTalkPower":c.needed_talk_power,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
     )
 }
 // These borrows belong to a single connection actor; keeping ownership together
@@ -818,6 +825,60 @@ fn channel_creation_options(value: &Value) -> Result<Vec<(&'static str, String)>
     ])
 }
 
+fn channel_edit_options(value: &Value) -> Result<Vec<(&'static str, String)>> {
+    let mut args = channel_creation_options(value)?
+        .into_iter()
+        .filter(|(key, _)| match *key {
+            "channel_flag_permanent" | "channel_flag_semi_permanent" => value.get("kind").is_some(),
+            "channel_codec" => value.get("codec").is_some(),
+            "channel_codec_quality" => value.get("quality").is_some(),
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    for (key, wire, family) in [
+        ("maxClients", "channel_maxclients", false),
+        ("maxFamilyClients", "channel_maxfamilyclients", true),
+    ] {
+        if let Some(limit) = value.get(key) {
+            let n = limit
+                .as_i64()
+                .filter(|n| (*n >= if family { -2 } else { -1 }) && *n <= 65535)
+                .context("人数上限无效")?;
+            if family {
+                args.push((
+                    "channel_flag_maxfamilyclients_inherited",
+                    (if n == -2 { "1" } else { "0" }).into(),
+                ));
+            }
+            args.push((
+                if family {
+                    "channel_flag_maxfamilyclients_unlimited"
+                } else {
+                    "channel_flag_maxclients_unlimited"
+                },
+                (if n == -1 { "1" } else { "0" }).into(),
+            ));
+            args.push((wire, n.max(0).to_string()));
+        }
+    }
+    if let Some(power) = value.get("neededTalkPower") {
+        args.push((
+            "channel_needed_talk_power",
+            power
+                .as_u64()
+                .filter(|p| *p <= i32::MAX as u64)
+                .context("所需发言权无效")?
+                .to_string(),
+        ));
+    }
+    if value
+        .get("name")
+        .is_some_and(|v| v.as_str().is_none_or(|s| s.trim().is_empty()))
+    {
+        bail!("频道名称不能为空");
+    }
+    Ok(args)
+}
 fn command(name: &str, args: &[(&str, String)]) -> OutCommand {
     let mut out = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, name);
     for (key, value) in args {
@@ -942,9 +1003,31 @@ fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
             "channelcreate"
         }
         "channel_edit" => {
-            args.push(("cid", number("channel", u64::MAX)?));
+            let id = value["channel"].as_u64().context("频道ID无效")?;
+            let target = conn
+                .get_state()?
+                .channels
+                .get(&tsproto_types::ChannelId(id))
+                .context("频道不可见")?;
+            args.push(("cid", id.to_string()));
+            args.extend(channel_edit_options(value)?);
+            if value.get("order").is_some() {
+                let order = value["order"].as_u64().context("频道顺序无效")?;
+                if order != 0
+                    && (order == id
+                        || !conn
+                            .get_state()?
+                            .channels
+                            .get(&tsproto_types::ChannelId(order))
+                            .is_some_and(|c| c.parent == target.parent))
+                {
+                    bail!("请在同一父频道中选择前置频道");
+                }
+                args.push(("channel_order", order.to_string()));
+            }
             for (key, wire, max) in [
                 ("name", "channel_name", 160),
+                ("topic", "channel_topic", 256),
                 ("description", "channel_description", 4096),
                 ("password", "channel_password", 256),
             ] {
@@ -962,8 +1045,60 @@ fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
             }
             "channeledit"
         }
+        "channel_move" => {
+            let state = conn.get_state()?;
+            let id = value["channel"].as_u64().context("频道ID无效")?;
+            let parent = value["parent"].as_u64().context("父频道无效")?;
+            let order = value["order"].as_u64().context("频道顺序无效")?;
+            if !state.channels.contains_key(&tsproto_types::ChannelId(id)) {
+                bail!("频道不可见");
+            }
+            let mut cursor = parent;
+            let mut seen = HashSet::new();
+            while cursor != 0 {
+                if cursor == id || !seen.insert(cursor) {
+                    bail!("不能移动到自己或子频道");
+                }
+                cursor = state
+                    .channels
+                    .get(&tsproto_types::ChannelId(cursor))
+                    .context("父频道不可见")?
+                    .parent
+                    .0;
+            }
+            if order != 0
+                && (order == id
+                    || !state
+                        .channels
+                        .get(&tsproto_types::ChannelId(order))
+                        .is_some_and(|c| c.parent.0 == parent))
+            {
+                bail!("前置频道无效");
+            }
+            args.extend([
+                ("cid", id.to_string()),
+                ("cpid", parent.to_string()),
+                ("order", order.to_string()),
+            ]);
+            "channelmove"
+        }
         "channel_delete" => {
             let channel = value["channel"].as_u64().context("频道ID无效")?;
+            if !conn
+                .get_state()?
+                .channels
+                .contains_key(&tsproto_types::ChannelId(channel))
+            {
+                bail!("频道不可见");
+            }
+            if conn
+                .get_state()?
+                .channels
+                .values()
+                .any(|c| c.parent.0 == channel)
+            {
+                bail!("请先移动或删除子频道");
+            }
             if conn
                 .get_state()?
                 .clients
@@ -990,6 +1125,31 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn editing_does_not_reset_unmentioned_attributes_and_rejects_invalid_values() {
+        use serde_json::json;
+        assert!(
+            super::channel_edit_options(&json!({"topic":"Only topic"}))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            super::channel_edit_options(&json!({"quality":8})).unwrap(),
+            vec![("channel_codec_quality", "8".into())]
+        );
+        let family = super::channel_edit_options(&json!({"maxFamilyClients":-2})).unwrap();
+        assert!(family.contains(&("channel_flag_maxfamilyclients_inherited", "1".into())));
+        for value in [
+            json!({"quality":1.5}),
+            json!({"maxClients":-2}),
+            json!({"maxClients":65536}),
+            json!({"neededTalkPower":-1}),
+            json!({"name":" "}),
+            json!({"codec":"plaintext"}),
+        ] {
+            assert!(super::channel_edit_options(&value).is_err());
+        }
+    }
     #[test]
     fn channel_creation_options_allow_only_supported_types_codecs_and_quality() {
         for (kind, permanent, semi) in [

@@ -9,7 +9,7 @@ import type {ImageLimits} from './image-limits';
 
 export function AdminPanel({onSaved,currentEmail,onHomeSaved}:{onSaved:()=>Promise<void>;currentEmail:string;onHomeSaved:(home:Home)=>void}){
   const[tab,setTab]=useState('accounts');
-  return <><div className="admin-tabs" role="tablist" aria-label="站点管理分类"><button role="tab" aria-selected={tab==='accounts'} onClick={()=>setTab('accounts')}>账号管理</button><button role="tab" aria-selected={tab==='settings'} onClick={()=>setTab('settings')}>基础配置</button><button role="tab" aria-selected={tab==='home'} onClick={()=>setTab('home')}>首页与公告</button></div><div role="tabpanel">{tab==='accounts'?<AdminAccounts currentEmail={currentEmail}/>:tab==='home'?<AdminHome onSaved={onHomeSaved}/>:<AdminSettings onSaved={onSaved}/>}</div></>;
+  return <><div className="admin-tabs" role="tablist" aria-label="站点管理分类"><button role="tab" aria-selected={tab==='accounts'} onClick={()=>setTab('accounts')}>账号管理</button><button role="tab" aria-selected={tab==='settings'} onClick={()=>setTab('settings')}>基础配置</button><button role="tab" aria-selected={tab==='home'} onClick={()=>setTab('home')}>外观、协议与公告</button></div><div role="tabpanel">{tab==='accounts'?<AdminAccounts currentEmail={currentEmail}/>:tab==='home'?<AdminHome onSaved={onHomeSaved}/>:<AdminSettings onSaved={onSaved}/>}</div></>;
 }
 
 type Target={id:string;name:string;address:string};

@@ -10,6 +10,7 @@
 | [aes](https://crates.io/crates/aes/0.8.4) | 0.8.4 | MIT OR Apache-2.0 |
 | [aes-gcm](https://crates.io/crates/aes-gcm/0.10.3) | 0.10.3 | Apache-2.0 OR MIT |
 | [aho-corasick](https://crates.io/crates/aho-corasick/1.1.5) | 1.1.5 | Unlicense OR MIT |
+| [ammonia](https://crates.io/crates/ammonia/4.2.1) | 4.2.1 | MIT OR Apache-2.0 |
 | [anyhow](https://crates.io/crates/anyhow/1.0.104) | 1.0.104 | MIT OR Apache-2.0 |
 | [argon2](https://crates.io/crates/argon2/0.5.3) | 0.5.3 | MIT OR Apache-2.0 |
 | [asn1-rs](https://crates.io/crates/asn1-rs/0.6.2) | 0.6.2 | MIT OR Apache-2.0 |
@@ -66,6 +67,7 @@
 | [crossbeam-utils](https://crates.io/crates/crossbeam-utils/0.8.23) | 0.8.23 | MIT OR Apache-2.0 |
 | [crypto-bigint](https://crates.io/crates/crypto-bigint/0.5.5) | 0.5.5 | Apache-2.0 OR MIT |
 | [crypto-common](https://crates.io/crates/crypto-common/0.1.7) | 0.1.7 | MIT OR Apache-2.0 |
+| [cssparser](https://crates.io/crates/cssparser/0.38.0) | 0.38.0 | MPL-2.0 |
 | [csv](https://crates.io/crates/csv/1.4.0) | 1.4.0 | Unlicense/MIT |
 | [csv-core](https://crates.io/crates/csv-core/0.1.13) | 0.1.13 | Unlicense/MIT |
 | [ctr](https://crates.io/crates/ctr/0.9.2) | 0.9.2 | MIT OR Apache-2.0 |
@@ -79,6 +81,8 @@
 | [digest](https://crates.io/crates/digest/0.10.7) | 0.10.7 | MIT OR Apache-2.0 |
 | [digest](https://crates.io/crates/digest/0.9.0) | 0.9.0 | MIT OR Apache-2.0 |
 | [displaydoc](https://crates.io/crates/displaydoc/0.2.7) | 0.2.7 | MIT OR Apache-2.0 |
+| [dtoa](https://crates.io/crates/dtoa/1.0.11) | 1.0.11 | MIT OR Apache-2.0 |
+| [dtoa-short](https://crates.io/crates/dtoa-short/0.3.5) | 0.3.5 | MPL-2.0 |
 | [eax](https://crates.io/crates/eax/0.5.0) | 0.5.0 | Apache-2.0 OR MIT |
 | [ecdsa](https://crates.io/crates/ecdsa/0.16.9) | 0.16.9 | Apache-2.0 OR MIT |
 | [either](https://crates.io/crates/either/1.19.0) | 1.19.0 | MIT OR Apache-2.0 |
@@ -126,6 +130,7 @@
 | [hickory-resolver](https://crates.io/crates/hickory-resolver/0.26.3) | 0.26.3 | MIT OR Apache-2.0 |
 | [hkdf](https://crates.io/crates/hkdf/0.12.4) | 0.12.4 | MIT OR Apache-2.0 |
 | [hmac](https://crates.io/crates/hmac/0.12.1) | 0.12.1 | MIT OR Apache-2.0 |
+| [html5ever](https://crates.io/crates/html5ever/0.40.1) | 0.40.1 | MIT OR Apache-2.0 |
 | [http](https://crates.io/crates/http/1.5.0) | 1.5.0 | MIT OR Apache-2.0 |
 | [http-body](https://crates.io/crates/http-body/1.1.0) | 1.1.0 | MIT |
 | [http-body-util](https://crates.io/crates/http-body-util/0.1.5) | 0.1.5 | MIT |
@@ -144,6 +149,7 @@
 | [idna](https://crates.io/crates/idna/1.1.0) | 1.1.0 | MIT OR Apache-2.0 |
 | [idna_adapter](https://crates.io/crates/idna_adapter/1.2.2) | 1.2.2 | Apache-2.0 OR MIT |
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 |
+| [image-webp](https://crates.io/crates/image-webp/0.2.4) | 0.2.4 | MIT OR Apache-2.0 |
 | [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT |
 | [inout](https://crates.io/crates/inout/0.1.4) | 0.1.4 | MIT OR Apache-2.0 |
 | [ipconfig](https://crates.io/crates/ipconfig/0.3.4) | 0.3.4 | MIT/Apache-2.0 |
@@ -163,6 +169,8 @@
 | [litemap](https://crates.io/crates/litemap/0.8.3) | 0.8.3 | Unicode-3.0 |
 | [lock_api](https://crates.io/crates/lock_api/0.4.14) | 0.4.14 | MIT OR Apache-2.0 |
 | [log](https://crates.io/crates/log/0.4.34) | 0.4.34 | MIT OR Apache-2.0 |
+| [maplit](https://crates.io/crates/maplit/1.0.2) | 1.0.2 | MIT/Apache-2.0 |
+| [markup5ever](https://crates.io/crates/markup5ever/0.40.0) | 0.40.0 | MIT OR Apache-2.0 |
 | [matchers](https://crates.io/crates/matchers/0.2.0) | 0.2.0 | MIT |
 | [matchit](https://crates.io/crates/matchit/0.8.4) | 0.8.4 | MIT AND BSD-3-Clause |
 | [md-5](https://crates.io/crates/md-5/0.10.6) | 0.10.6 | MIT OR Apache-2.0 |
@@ -179,6 +187,7 @@
 | [munge](https://crates.io/crates/munge/0.4.7) | 0.4.7 | MIT |
 | [munge_macro](https://crates.io/crates/munge_macro/0.4.7) | 0.4.7 | MIT |
 | [ndk-context](https://crates.io/crates/ndk-context/0.1.1) | 0.1.1 | MIT OR Apache-2.0 |
+| [new_debug_unreachable](https://crates.io/crates/new_debug_unreachable/1.0.6) | 1.0.6 | MIT |
 | [nix](https://crates.io/crates/nix/0.31.3) | 0.31.3 | MIT |
 | [nom](https://crates.io/crates/nom/7.1.3) | 7.1.3 | MIT |
 | [nom](https://crates.io/crates/nom/8.0.0) | 8.0.0 | MIT |
@@ -202,6 +211,10 @@
 | [pem](https://crates.io/crates/pem/4.0.0) | 4.0.0 | MIT |
 | [pem-rfc7468](https://crates.io/crates/pem-rfc7468/0.7.0) | 0.7.0 | Apache-2.0 OR MIT |
 | [percent-encoding](https://crates.io/crates/percent-encoding/2.3.2) | 2.3.2 | MIT OR Apache-2.0 |
+| [phf](https://crates.io/crates/phf/0.14.0) | 0.14.0 | MIT |
+| [phf_codegen](https://crates.io/crates/phf_codegen/0.14.0) | 0.14.0 | MIT |
+| [phf_generator](https://crates.io/crates/phf_generator/0.14.0) | 0.14.0 | MIT |
+| [phf_shared](https://crates.io/crates/phf_shared/0.14.0) | 0.14.0 | MIT |
 | [pin-project-lite](https://crates.io/crates/pin-project-lite/0.2.17) | 0.2.17 | Apache-2.0 OR MIT |
 | [pin-utils](https://crates.io/crates/pin-utils/0.1.1) | 0.1.1 | MIT OR Apache-2.0 |
 | [pkcs8](https://crates.io/crates/pkcs8/0.10.2) | 0.10.2 | Apache-2.0 OR MIT |
@@ -212,12 +225,14 @@
 | [potential_utf](https://crates.io/crates/potential_utf/0.1.6) | 0.1.6 | Unicode-3.0 |
 | [powerfmt](https://crates.io/crates/powerfmt/0.2.1) | 0.2.1 | MIT OR Apache-2.0 |
 | [ppv-lite86](https://crates.io/crates/ppv-lite86/0.2.21) | 0.2.21 | MIT OR Apache-2.0 |
+| [precomputed-hash](https://crates.io/crates/precomputed-hash/0.1.1) | 0.1.1 | MIT |
 | [prefix-trie](https://crates.io/crates/prefix-trie/0.8.4) | 0.8.4 | MIT OR Apache-2.0 |
 | [primeorder](https://crates.io/crates/primeorder/0.13.6) | 0.13.6 | Apache-2.0 OR MIT |
 | [proc-macro2](https://crates.io/crates/proc-macro2/1.0.107) | 1.0.107 | MIT OR Apache-2.0 |
 | [ptr_meta](https://crates.io/crates/ptr_meta/0.3.2) | 0.3.2 | MIT |
 | [ptr_meta_derive](https://crates.io/crates/ptr_meta_derive/0.3.2) | 0.3.2 | MIT |
 | [pxfm](https://crates.io/crates/pxfm/0.1.30) | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
+| [quick-error](https://crates.io/crates/quick-error/2.0.1) | 2.0.1 | MIT/Apache-2.0 |
 | [quicklz](https://crates.io/crates/quicklz/0.3.1) | 0.3.1 | MIT/Apache-2.0 |
 | [quinn-udp](https://crates.io/crates/quinn-udp/0.6.3) | 0.6.3 | MIT OR Apache-2.0 |
 | [quote](https://crates.io/crates/quote/1.0.47) | 1.0.47 | MIT OR Apache-2.0 |
@@ -296,11 +311,14 @@
 | [simd_cesu8](https://crates.io/crates/simd_cesu8/1.2.0) | 1.2.0 | Apache-2.0 OR MIT |
 | [simdutf8](https://crates.io/crates/simdutf8/0.1.5) | 0.1.5 | MIT OR Apache-2.0 |
 | [simple_asn1](https://crates.io/crates/simple_asn1/0.6.4) | 0.6.4 | ISC |
+| [siphasher](https://crates.io/crates/siphasher/1.0.4) | 1.0.4 | MIT OR Apache-2.0 |
 | [slab](https://crates.io/crates/slab/0.4.12) | 0.4.12 | MIT |
 | [smallvec](https://crates.io/crates/smallvec/1.16.2) | 1.16.2 | MIT OR Apache-2.0 |
 | [socket2](https://crates.io/crates/socket2/0.6.5) | 0.6.5 | MIT OR Apache-2.0 |
 | [spki](https://crates.io/crates/spki/0.7.3) | 0.7.3 | Apache-2.0 OR MIT |
 | [stable_deref_trait](https://crates.io/crates/stable_deref_trait/1.2.1) | 1.2.1 | MIT OR Apache-2.0 |
+| [string_cache](https://crates.io/crates/string_cache/0.11.0) | 0.11.0 | MIT OR Apache-2.0 |
+| [string_cache_codegen](https://crates.io/crates/string_cache_codegen/0.11.2) | 0.11.2 | MIT OR Apache-2.0 |
 | [substring](https://crates.io/crates/substring/1.4.5) | 1.4.5 | MIT OR Apache-2.0 |
 | [subtle](https://crates.io/crates/subtle/2.6.1) | 2.6.1 | BSD-3-Clause |
 | [subtle-ng](https://crates.io/crates/subtle-ng/2.5.0) | 2.5.0 | BSD-3-Clause |
@@ -314,6 +332,7 @@
 | [t4rust-derive](https://crates.io/crates/t4rust-derive/0.3.1) | 0.3.1 | MIT/Apache-2.0 |
 | [tagptr](https://crates.io/crates/tagptr/0.2.0) | 0.2.0 | MIT/Apache-2.0 |
 | [tempfile](https://crates.io/crates/tempfile/3.27.0) | 3.27.0 | MIT OR Apache-2.0 |
+| [tendril](https://crates.io/crates/tendril/0.5.1) | 0.5.1 | MIT OR Apache-2.0 |
 | [thiserror](https://crates.io/crates/thiserror/1.0.69) | 1.0.69 | MIT OR Apache-2.0 |
 | [thiserror](https://crates.io/crates/thiserror/2.0.21) | 2.0.21 | MIT OR Apache-2.0 |
 | [thiserror-impl](https://crates.io/crates/thiserror-impl/1.0.69) | 1.0.69 | MIT OR Apache-2.0 |
@@ -375,6 +394,7 @@
 | [wasm-bindgen-shared](https://crates.io/crates/wasm-bindgen-shared/0.2.129) | 0.2.129 | MIT OR Apache-2.0 |
 | [web-sys](https://crates.io/crates/web-sys/0.3.106) | 0.3.106 | MIT OR Apache-2.0 |
 | web-ts | 0.1.0 | MIT |
+| [web_atoms](https://crates.io/crates/web_atoms/0.3.0) | 0.3.0 | MIT OR Apache-2.0 |
 | [webpki-roots](https://crates.io/crates/webpki-roots/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
 | [webrtc](https://crates.io/crates/webrtc/0.21.0) | 0.21.0 | MIT/Apache-2.0 |
 | [weezl](https://crates.io/crates/weezl/0.1.12) | 0.1.12 | MIT OR Apache-2.0 |

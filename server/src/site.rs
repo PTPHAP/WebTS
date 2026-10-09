@@ -266,12 +266,16 @@ mod tests {
     use super::*;
     #[test]
     fn partial_commit_preserves_intervening_settings_and_checks_combined_image_budget() {
-        let mut stale = Home::default();
-        stale.title = "Legacy title".into();
+        let mut stale = Home {
+            title: "Legacy title".into(),
+            ..Home::default()
+        };
         assert!(stale.normalize().is_ok());
-        let mut latest = Home::default();
-        latest.site_name = "New branding".into();
-        latest.privacy_policy = "New policy".into();
+        let mut latest = Home {
+            site_name: "New branding".into(),
+            privacy_policy: "New policy".into(),
+            ..Home::default()
+        };
         let fields = serde_json::json!({"title":"Legacy title"});
         let committed = apply_patch(&latest, stale.clone(), fields.as_object().unwrap())
             .ok()

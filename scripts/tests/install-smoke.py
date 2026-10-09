@@ -5,6 +5,8 @@ import pty
 import select
 import subprocess
 import time
+import json
+import urllib.request
 
 if os.environ.get('GITHUB_ACTIONS')!='true' or os.geteuid()!=0:
     raise SystemExit('Only an isolated root GitHub Actions runner may run this fixture')
@@ -47,13 +49,23 @@ interactive(['bash','-c','f=$(mktemp) && curl -fsSL https://raw.githubuserconten
     ('SMTP 登录邮箱','mailer@example.com'),('发件邮箱','mailer@example.com'),
     ('SMTP 授权码/密码','installer-dummy-password'),
 ])
+def public_site():
+    with urllib.request.urlopen('http://127.0.0.1:18080/api/site',timeout=10) as response:
+        return json.load(response)
+
+site=public_site()
+assert site['site_name']=='安装验收站点' and site['operator']=='合成测试运营者'
+assert site['contact']=='privacy@example.com' and '{{site_name}}' in site['privacy_policy'] and '{{site_name}}' in site['terms']
+assert 'smtp' not in site and 'admin_email' not in site
 key=Path('/opt/webts/secrets/master.key').read_bytes()
 subprocess.run(['webts','status'],check=True)
 subprocess.run(['webts'],input='0\n',text=True,check=True)
 interactive(['webts','server'],[('默认 TS 公网地址','ts.changed.example.com:9988'),('允许已登录用户','1')],timeout=120)
 interactive(['webts','site'],[('站点名称','更新验收站点'),('公开运营者名称','合成运营者'),('公开隐私联系','privacy@example.com'),('公开部署地区','独立验收环境')],timeout=120)
+assert public_site()['site_name']=='更新验收站点'
 subprocess.run(['webts','backup'],check=True)
 subprocess.run(['webts','update'],check=True,timeout=900)
 assert Path('/opt/webts/secrets/master.key').read_bytes()==key
+assert public_site()['site_name']=='更新验收站点'
 subprocess.run(['webts','stop'],check=True)
 print('Real installer download/build/start, Chinese menu, backend server config, backup and data-preserving update passed.')

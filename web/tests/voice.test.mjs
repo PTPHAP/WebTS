@@ -383,3 +383,10 @@ test('recovering capture retains active receivers and processor failure cannot l
   node.onerror();assert.equal(voice.sendTrack.enabled,false);assert.equal(voice.processingBlocked,true);
   voice.inputDevice('replacement');await voice.microphoneTask;assert.equal(voice.sendTrack.enabled,false);assert.equal(destroyed,false);voice.close();assert.equal(destroyed,true);
 });
+
+test('manual recovery reacquires a microphone that remains hardware-muted without disconnecting',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  const socket=voice.socket;env.captured[0].muted=true;env.captured[0].onmute();assert.equal(voice.sendTrack.enabled,false);
+  voice.resume();await voice.microphoneTask;
+  assert.equal(env.requests(),2);assert.equal(voice.socket,socket);assert.equal(voice.sendTrack.enabled,true);voice.close();
+});

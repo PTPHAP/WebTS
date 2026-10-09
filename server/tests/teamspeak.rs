@@ -103,6 +103,17 @@ async fn afk_state_interoperates_and_site_ban_stops_active_connection() {
             m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();assert_ne!(m["type"],"error","{m}");if m["type"]=="state"{web_seen=m["members"].as_array().unwrap().iter().find(|c|c["id"]==own).unwrap()["away"]==enabled;}else if m["type"]=="result"&&m["id"]=="afk-check"{assert_eq!(m["ok"],true,"{m}");result=true;}}
         }}}}).await.unwrap_or_else(|_|panic!("AFK not propagated enabled={enabled} peer={peer_seen} web={web_seen} result={result}"));
     }
+    socket.send(Message::Text(json!({"type":"command","action":"profile","id":"profile-check","text":"公开资料互通测试"}).to_string().into())).await.unwrap();
+    let (mut profile_seen, mut profile_ok) = (false, false);
+    tokio::time::timeout(Duration::from_secs(10),async{while !(profile_seen&&profile_ok){tokio::select!{e=async{native.events().next().await}=>{e.unwrap().unwrap();},m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();if m["type"]=="state"{profile_seen=m["members"].as_array().unwrap().iter().any(|c|c["id"]==own&&c["description"]=="公开资料互通测试");}else if m["type"]=="result"&&m["id"]=="profile-check"{assert_eq!(m["ok"],true,"{m}");profile_ok=true;}}}}}}).await.expect("profile description not propagated");
+    let mut picture = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(32, 32)
+        .write_to(&mut picture, image::ImageFormat::Png)
+        .unwrap();
+    use base64::Engine;
+    socket.send(Message::Text(json!({"type":"avatar_upload","id":"avatar:profile-check","data":base64::engine::general_purpose::STANDARD.encode(picture.into_inner())}).to_string().into())).await.unwrap();
+    let (mut avatar_ok, mut avatar_seen) = (false, false);
+    tokio::time::timeout(Duration::from_secs(20),async{while !(avatar_ok&&avatar_seen){tokio::select!{e=async{native.events().next().await}=>{e.unwrap().unwrap();avatar_seen=native.get_state().unwrap().clients.get(&tsproto_types::ClientId(own)).is_some_and(|c|!c.avatar_hash.is_empty());},m=socket.next()=>{if let Some(Ok(Message::Text(t)))=m{let m:Value=serde_json::from_str(&t).unwrap();if m["type"]=="result"&&m["id"]=="avatar:profile-check"{assert_eq!(m["ok"],true,"{m}");avatar_ok=true;}}}}}}).await.expect("avatar not propagated to native protocol peer");
     let native_id = native.get_state().unwrap().own_client.0;
     let mut away_command = tsproto_packets::packets::OutCommand::new(
         tsproto_packets::packets::Direction::C2S,

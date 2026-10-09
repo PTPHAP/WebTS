@@ -91,6 +91,7 @@ impl App {
             serde_json::from_slice(&plaintext)?
         } else {
             crate::settings::Settings {
+                home: Default::default(),
                 servers: config.servers.clone(),
                 default_server: config
                     .servers
@@ -262,6 +263,19 @@ pub fn router(app: Arc<App>) -> Router {
             get(crate::settings::get_settings).post(crate::settings::save_settings),
         )
         .route("/me", get(me))
+        .route("/site", get(crate::site::public))
+        .route(
+            "/admin/home",
+            get(crate::site::get)
+                .post(crate::site::save)
+                .layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route(
+            "/profile",
+            get(crate::profile::get)
+                .post(crate::profile::save)
+                .layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .route("/admin/accounts", get(crate::accounts::list))
         .route(
             "/admin/accounts/{id}",
@@ -341,7 +355,9 @@ async fn guard(
         peer
     };
     let auth = request.uri().path().contains("/auth/")
-        || (mutation && request.uri().path().contains("/admin/"));
+        || (mutation
+            && (request.uri().path().contains("/admin/")
+                || request.uri().path().ends_with("/profile")));
     let window = if auth { 600 } else { 60 };
     let cap = if auth { 30 } else { 240 };
     let limited = {

@@ -294,3 +294,19 @@ test('speech changes during a slow TS handshake never flood queued control reque
   assert.equal(env.sent.filter(e=>e.type==='transmit').length,1);
   await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});assert.equal(env.sent.filter(e=>e.type==='transmit').at(-1).enabled,false);voice.close();
 });
+
+test('AFK confirmation emits one sound per accepted transition, never for rejection or reconnect',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+  const state={type:'state',own:1,members:[{id:1,channel:1,away:false}],channels:[{id:1}]};await env.message(state);
+  voice.setAway(true,'休息');assert.equal(events.filter(e=>e.type==='afk_sound').length,0);
+  let request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:true});
+  assert.deepEqual(events.filter(e=>e.type==='afk_sound').map(e=>e.enabled),[true]);
+  await env.message({...state,members:[{id:1,channel:1,away:true}]});
+  await env.message({type:'disconnected',retryable:true});await env.wait();await env.message(state);
+  request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:true});
+  assert.equal(events.filter(e=>e.type==='afk_sound').length,1);
+  voice.setAway(false);request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:false});
+  assert.equal(events.filter(e=>e.type==='afk_sound').length,1);
+  voice.setAway(false);request=env.sent.findLast(e=>e.action==='away');await env.message({type:'result',id:request.id,ok:true});
+  assert.deepEqual(events.filter(e=>e.type==='afk_sound').map(e=>e.enabled),[true,false]);voice.close();
+});

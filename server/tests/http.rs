@@ -42,12 +42,172 @@ async fn call(
     let response = router(app.clone()).oneshot(request).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = to_bytes(response.into_body(), 32768).await.unwrap();
+    let bytes = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
     (
         status,
         headers,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+#[tokio::test]
+async fn profiles_and_public_home_keep_ownership_and_admin_boundaries() {
+    let (_dir, app) = setup();
+    let pw = "profile fixture password";
+    let hash = password::hash(pw).unwrap();
+    let mut cookies = Vec::new();
+    for email in ["home-admin@example.com", "profile-member@example.com"] {
+        let (id, _, token) = app.db.register(email, &hash).unwrap();
+        app.db.consume_email_token(&token, "verify", None).unwrap();
+        cookies.push(format!(
+            "__Host-webts={}",
+            app.db.create_session(id, true, &hash).unwrap()
+        ));
+    }
+    app.db.grant_admin("home-admin@example.com").unwrap();
+    let origin = "https://webts.example";
+    assert_eq!(
+        call(&app, "/profile", None, "", origin).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "/admin/home", None, &cookies[1], origin).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let profile = json!({"display_name":"WebTS测试", "about":"<script>纯文本</script>", "avatar":"", "sync_avatar":true,"sync_about":true});
+    assert_eq!(
+        call(
+            &app,
+            "/profile",
+            Some(profile.clone()),
+            &cookies[1],
+            "https://evil.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&app, "/profile", Some(profile.clone()), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/profile", None, &cookies[1], origin).await.2,
+        profile
+    );
+    assert_eq!(
+        call(&app, "/profile", None, &cookies[0], origin).await.2["about"],
+        ""
+    );
+    let mut forged = profile.clone();
+    forged["user_id"] = json!(1);
+    assert_eq!(
+        call(&app, "/profile", Some(forged), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // A real raster larger than the normal 32KiB API limit exercises the dedicated upload route.
+    let mut pixels = image::RgbImage::new(256, 256);
+    let mut seed = 42_u32;
+    for pixel in pixels.pixels_mut() {
+        for byte in &mut pixel.0 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            *byte = (seed >> 24) as u8;
+        }
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 75)
+        .encode_image(&pixels)
+        .unwrap();
+    use base64::Engine;
+    let picture = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    );
+    assert!(picture.len() > 32768);
+    let home = json!({"title":"新首页", "subtitle":"公开介绍", "image":picture,"announcements":[{"id":"visible","title":"公告","text":"<img src=x onerror=alert(1)>","image":"","enabled":true},{"id":"hidden","title":"未发布内容","text":"draft","image":"","enabled":false}]});
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(json!({"password":pw,"home":home})),
+            &cookies[1],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(json!({"password":"wrong","home":home})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(json!({"password":pw,"home":home})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let published = call(&app, "/site", None, "", origin).await.2;
+    assert_eq!(published["announcements"].as_array().unwrap().len(), 1);
+    assert_eq!(published["title"], "新首页");
+    assert!(!published.to_string().contains("smtp"));
+    let basic = app.runtime.read().unwrap().settings.admin_view();
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":pw,"settings":basic})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/site", None, "", origin).await.2["title"],
+        "新首页"
+    );
+    let ciphertext = app.db.settings().unwrap().unwrap();
+    let saved: web_ts::settings::Settings = serde_json::from_slice(
+        &app.vault
+            .open(0, "site-settings", "v1", &ciphertext)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved.home.title, "新首页");
+    assert_eq!(
+        call(&app, "/auth/logout", Some(json!({})), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/profile", Some(profile), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
 }
 #[tokio::test]
 async fn account_admin_bans_are_persistent_revoke_sessions_and_preserve_identities() {

@@ -1,6 +1,6 @@
 export type SoundSettings={enabled:boolean;volume:number};
-export type Sound='connect'|'disconnect'|'join'|'leave'|'message'|'poke'|'on'|'off'|'error';
-const tones:Record<Sound,number[]>={connect:[440,660],disconnect:[440,300],join:[620,780],leave:[520,390],message:[740],poke:[660,880,660],on:[550,700],off:[550,400],error:[240,190]};
+export type Sound='connect'|'disconnect'|'join'|'leave'|'message'|'poke'|'on'|'off'|'error'|'away'|'back';
+const tones:Record<Sound,number[]>={away:[660,520,390],back:[390,520,780],connect:[440,660],disconnect:[440,300],join:[620,780],leave:[520,390],message:[740],poke:[660,880,660],on:[550,700],off:[550,400],error:[240,190]};
 export function readSoundSettings():SoundSettings {
   try{const v=JSON.parse(localStorage.getItem('webts-sounds')??'{}');return {enabled:v.enabled!==false,volume:Number.isFinite(v.volume)?Math.max(0,Math.min(1,v.volume)):.15};}catch{return {enabled:true,volume:.15};}
 }

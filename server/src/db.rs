@@ -83,7 +83,7 @@ impl Db {
             }
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
-        connection.execute_batch("CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS profiles(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
         Ok(Self {
             connection: Mutex::new(connection),
         })

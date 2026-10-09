@@ -791,6 +791,11 @@ fn user_command(conn: &Connection, value: &Value) -> Result<OutCommand> {
     };
     let mut args = Vec::new();
     let name = match value["action"].as_str().unwrap_or("") {
+        "profile" => {
+            args.push(("clid", conn.get_state()?.own_client.0.to_string()));
+            args.push(("client_description", text("text", 512)?));
+            "clientedit"
+        }
         "away" => {
             if !conn
                 .get_state()?

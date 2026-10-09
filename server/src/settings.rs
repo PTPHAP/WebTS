@@ -18,6 +18,8 @@ use zeroize::{Zeroize, Zeroizing};
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
+    #[serde(default)]
+    pub home: crate::site::Home,
     pub servers: Vec<Server>,
     pub default_server: String,
     pub allow_custom: bool,
@@ -186,6 +188,7 @@ pub async fn save_settings(
             }
             smtp.password = old.password.clone();
         }
+        body.settings.home = current.settings.home.clone();
         let updated = Runtime::new(body.settings)
             .map_err(|_| Error::bad("配置无效，请检查服务器、默认项和邮箱参数"))?;
         let plaintext =

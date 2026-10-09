@@ -134,7 +134,7 @@ export class Voice {
         }else{this.restoreChannel=undefined;this.restoring=false;}
         if(this.restoreChannel===undefined)this.lastChannel=channel;
       }
-      if(message.type==='result'&&message.id===this.pendingAway){this.pendingAway=undefined;if(!message.ok){this.away=this.confirmedAway.enabled;this.awayMessage=this.confirmedAway.text;}else this.confirmedAway={enabled:this.away,text:this.awayMessage};this.update();this.event({type:'away',enabled:this.away,text:this.awayMessage});}
+      if(message.type==='result'&&message.id===this.pendingAway){this.pendingAway=undefined;if(!message.ok){this.away=this.confirmedAway.enabled;this.awayMessage=this.confirmedAway.text;}else {if(this.confirmedAway.enabled!==this.away)this.event({type:'afk_sound',enabled:this.away});this.confirmedAway={enabled:this.away,text:this.awayMessage};}this.update();this.event({type:'away',enabled:this.away,text:this.awayMessage});}
       const peer=this.peer; if(!peer)return;
       if(message.type==='offer'){await peer.setRemoteDescription(message.description);if(generation!==this.generation)return;for(const c of this.candidates)await peer.addIceCandidate(c);if(generation!==this.generation)return;this.candidates=[];const answer=await peer.createAnswer();if(generation!==this.generation)return;await peer.setLocalDescription(answer);if(generation!==this.generation)return;this.send({type:'answer',description:answer});}
       else if(message.type==='ice'){if(peer.remoteDescription)await peer.addIceCandidate(message.candidate);else this.candidates.push(message.candidate);}
@@ -162,7 +162,7 @@ export class Voice {
   private sendTransmit(){this.send({type:'transmit',enabled:this.active,pre_roll:this.mode==='open'&&this.gated&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&!this.away});}
   private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&!this.away&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(this.mode==='ptt'||!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.sendTransmit();this.event({type:'transmit',enabled:active});this.applyAudio();}}
   private sendAway(){const id=`away:${this.generation}:${Date.now()}:${Math.random()}`;this.pendingAway=id;this.send({type:'command',action:'away',id,enabled:this.away,text:this.awayMessage});}
-  setAway(enabled:boolean,text=''){this.away=enabled;this.awayMessage=enabled?text:'';this.pressed=false;this.update();if(this.ready){this.sendTransmit();this.sendAway();}this.event({type:'away',enabled,text:this.awayMessage});}
+  setAway(enabled:boolean,text=''){if(this.pendingAway)return;this.away=enabled;this.awayMessage=enabled?text:'';this.pressed=false;this.update();if(this.ready){this.sendTransmit();this.sendAway();}this.event({type:'away',enabled,text:this.awayMessage});}
   press(value:boolean){this.pressed=value;this.update();}
   setMode(mode:'ptt'|'open'){this.mode=mode;this.pressed=false;this.update();if(this.ready)this.sendTransmit();}
   configure(settings:AudioSettings){this.settings={...defaultAudioSettings,...settings};this.applyAudio();}

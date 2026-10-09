@@ -159,6 +159,9 @@ impl Home {
             }
             image(&mut row.image)?;
         }
+        self.check_image_budget()
+    }
+    fn check_image_budget(&self) -> Api<()> {
         if self.image.len()
             + self
                 .announcements
@@ -171,6 +174,24 @@ impl Home {
         }
         Ok(())
     }
+}
+// Commit only explicitly submitted, already normalized fields against the latest settings.
+fn apply_patch(
+    latest: &Home,
+    normalized: Home,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Api<Home> {
+    let mut merged = serde_json::to_value(latest).map_err(anyhow::Error::from)?;
+    let normalized = serde_json::to_value(normalized).map_err(anyhow::Error::from)?;
+    for key in fields.keys() {
+        merged
+            .as_object_mut()
+            .unwrap()
+            .insert(key.clone(), normalized[key].clone());
+    }
+    let home: Home = serde_json::from_value(merged).map_err(anyhow::Error::from)?;
+    home.check_image_budget()?;
+    Ok(home)
 }
 // Only passive markup: no scripts, CSS, media, forms or automatically loaded third-party resources.
 fn clean_footer(html: &str) -> String {
@@ -230,7 +251,7 @@ pub async fn save(
         home.normalize()?;
         let mut current = a.runtime.write().unwrap();
         let mut updated = current.settings.clone();
-        updated.home = home;
+        updated.home = apply_patch(&current.settings.home, home, fields)?;
         let plaintext = Zeroizing::new(serde_json::to_vec(&updated).map_err(anyhow::Error::from)?);
         let ciphertext = a.vault.seal(0, "site-settings", "v1", &plaintext)?;
         a.db.save_settings(session.user.id, &session.hash, &ciphertext)
@@ -243,6 +264,32 @@ pub async fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partial_commit_preserves_intervening_settings_and_checks_combined_image_budget() {
+        let mut stale = Home::default();
+        stale.title = "Legacy title".into();
+        assert!(stale.normalize().is_ok());
+        let mut latest = Home::default();
+        latest.site_name = "New branding".into();
+        latest.privacy_policy = "New policy".into();
+        let fields = serde_json::json!({"title":"Legacy title"});
+        let committed = apply_patch(&latest, stale.clone(), fields.as_object().unwrap())
+            .ok()
+            .unwrap();
+        assert_eq!(committed.site_name, "New branding");
+        assert_eq!(committed.privacy_policy, "New policy");
+        assert_eq!(committed.title, "Legacy title");
+        latest.image = "x".repeat(700000);
+        stale.announcements = vec![Announcement {
+            id: "one".into(),
+            title: "One".into(),
+            text: String::new(),
+            image: "x".into(),
+            enabled: true,
+        }];
+        let fields = serde_json::json!({"announcements":[]});
+        assert!(apply_patch(&latest, stale, fields.as_object().unwrap()).is_err());
+    }
     #[test]
     fn footer_preserves_passive_links_but_removes_scripts_tracking_and_dangerous_attributes() {
         let output = clean_footer(

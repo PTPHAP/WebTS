@@ -1,4 +1,7 @@
-use crate::app::{App, Error};
+use crate::{
+    app::{App, Error},
+    settings::ImageLimits,
+};
 use anyhow::{Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageFormat, ImageReader, Limits};
@@ -17,6 +20,7 @@ use tsclientlib::{Connection, FileDownloadResult, FileUploadResult};
 use tsproto_types::{ChannelId, ClientId};
 
 pub const MAX_UPLOAD: usize = 64 * 1024;
+#[cfg(test)]
 const MAX_DOWNLOAD: usize = 128 * 1024;
 #[derive(Clone)]
 pub struct Target {
@@ -83,17 +87,20 @@ impl Avatars {
     }
     pub fn prepare_upload(&mut self, app: Arc<App>, request: String, data: &str) -> Result<()> {
         self.available()?;
-        if data.len() > MAX_UPLOAD.div_ceil(3) * 4 {
-            bail!("头像最大64KiB");
+        let limits = app.runtime.read().unwrap().settings.image_limits;
+        let max_upload = limits.avatar_upload_kib as usize * 1024;
+        if data.len() > max_upload.div_ceil(3) * 4 {
+            bail!("头像超过站点限制（{}KiB）", limits.avatar_upload_kib);
         }
         let bytes = STANDARD
             .decode(data)
             .map_err(|_| anyhow::anyhow!("头像编码无效"))?;
-        if bytes.len() > MAX_UPLOAD {
-            bail!("头像最大64KiB");
+        if bytes.len() > max_upload {
+            bail!("头像超过站点限制（{}KiB）", limits.avatar_upload_kib);
         }
-        self.tasks
-            .spawn(async move { Completed::UploadReady(request, normalize(&app, bytes).await) });
+        self.tasks.spawn(async move {
+            Completed::UploadReady(request, normalize(&app, bytes, limits).await)
+        });
         Ok(())
     }
     pub fn upload(&mut self, conn: &mut Connection, request: String, bytes: Vec<u8>) -> Result<()> {
@@ -114,9 +121,12 @@ impl Avatars {
     }
     pub fn downloaded(&mut self, handle: u16, result: FileDownloadResult, app: Arc<App>) {
         if let Some((Pending::Download(target), _)) = self.pending.remove(&handle) {
+            let limits = app.runtime.read().unwrap().settings.image_limits;
             self.tasks.spawn(async move {
                 let data = async {
-                    if result.size == 0 || result.size > MAX_DOWNLOAD as u64 {
+                    if result.size == 0
+                        || result.size > u64::from(limits.avatar_download_kib) * 1024
+                    {
                         bail!("服务器头像过大或为空");
                     }
                     let mut stream = result.stream;
@@ -125,7 +135,7 @@ impl Avatars {
                     if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(&target.hash) {
                         bail!("头像版本已变化，请重新加载");
                     }
-                    normalize(&app, bytes).await
+                    normalize(&app, bytes, limits).await
                 };
                 let result = tokio::time::timeout(Duration::from_secs(5), data)
                     .await
@@ -184,15 +194,22 @@ fn failure(pending: Pending, message: &'static str) -> Completed {
         }
     }
 }
-async fn normalize(app: &Arc<App>, bytes: Vec<u8>) -> Result<Vec<u8>> {
+async fn normalize(app: &Arc<App>, bytes: Vec<u8>, limits: ImageLimits) -> Result<Vec<u8>> {
     app.work(move |_| {
-        sanitize(&bytes).map_err(|_| Error::bad("头像必须是有效PNG/JPEG/GIF，最大512×512及128KiB"))
+        sanitize_with_limits(&bytes, limits)
+            .map_err(|_| Error::bad("头像格式、尺寸或体积不符合站点图片限制"))
     })
     .await
     .map_err(|e| anyhow::anyhow!(e.1))
 }
 pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
-    if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD {
+    sanitize_with_limits(bytes, ImageLimits::default())
+}
+pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>> {
+    limits.validate()?;
+    if bytes.is_empty()
+        || bytes.len() > limits.avatar_download_kib.max(limits.avatar_upload_kib) as usize * 1024
+    {
         bail!("invalid avatar size");
     }
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
@@ -202,20 +219,22 @@ pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
     ) {
         bail!("unsupported avatar format");
     }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(512);
-    limits.max_image_height = Some(512);
-    limits.max_alloc = Some(8 * 1024 * 1024);
-    reader.limits(limits);
+    let mut decode_limits = Limits::default();
+    decode_limits.max_image_width = Some(limits.avatar_dimension);
+    decode_limits.max_image_height = Some(limits.avatar_dimension);
+    decode_limits.max_alloc = Some(16 * 1024 * 1024);
+    reader.limits(decode_limits);
     let image = reader.decode()?;
     for size in [256, 128, 96] {
-        let size = size.min(image.width().max(image.height()));
+        let size = size
+            .min(limits.avatar_dimension)
+            .min(image.width().max(image.height()));
         let mut output = Cursor::new(Vec::new());
         image
             .thumbnail(size, size)
             .write_to(&mut output, ImageFormat::Png)?;
         let output = output.into_inner();
-        if output.len() <= MAX_UPLOAD {
+        if output.len() <= limits.avatar_upload_kib as usize * 1024 {
             return Ok(output);
         }
     }
@@ -225,6 +244,33 @@ pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configurable_avatar_dimensions_preserve_reencoding_and_hard_caps() {
+        let image = image::RgbImage::from_pixel(700, 1, image::Rgb([30, 70, 120]));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        assert!(sanitize(encoded.get_ref()).is_err());
+        let limits = ImageLimits {
+            avatar_dimension: 1024,
+            avatar_upload_kib: 128,
+            ..Default::default()
+        };
+        assert!(
+            sanitize_with_limits(encoded.get_ref(), limits)
+                .unwrap()
+                .starts_with(b"\x89PNG")
+        );
+        assert!(
+            sanitize_with_limits(
+                encoded.get_ref(),
+                ImageLimits {
+                    avatar_dimension: 100000,
+                    ..limits
+                }
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn native_gif_avatar_is_shown_as_safe_static_png() {
         let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([50, 80, 130, 255]));

@@ -1,5 +1,8 @@
 //! Channel pictures use the current identity's native file permission, never an HTTP proxy.
-use crate::app::{App, Error};
+use crate::{
+    app::{App, Error},
+    settings::ImageLimits,
+};
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageFormat, ImageReader, Limits};
@@ -13,6 +16,7 @@ use tokio::{io::AsyncReadExt, task::JoinSet};
 use tsclientlib::{Connection, FileDownloadResult};
 use tsproto_types::ChannelId;
 
+#[cfg(test)]
 const MAX_DOWNLOAD: usize = 2 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImagePath {
@@ -76,10 +80,15 @@ pub fn image_path(value: &str) -> Result<ImagePath> {
         server_uid: fields.get("serverUID").cloned(),
     })
 }
-pub fn description_image(description: &str, url: &str) -> bool {
+pub fn description_image(description: &str, url: &str, max_images: u32) -> bool {
     let lower = description.to_ascii_lowercase();
     let mut offset = 0;
+    let mut count = 0;
     while let Some(start) = lower[offset..].find("[img]") {
+        count += 1;
+        if count > max_images {
+            return false;
+        }
         let start = offset + start + 5;
         let Some(end) = lower[start..].find("[/img]") else {
             break;
@@ -96,6 +105,7 @@ struct Request {
     id: String,
     url: String,
     source: u64,
+    limits: ImageLimits,
 }
 pub struct Completed {
     request: Request,
@@ -125,6 +135,7 @@ impl Images {
         id: String,
         source: u64,
         url: String,
+        limits: ImageLimits,
     ) -> Result<()> {
         if id.len() > 64 || self.pending.len() + self.tasks.len() >= 2 {
             bail!("图片传输正忙，请稍后重试");
@@ -133,7 +144,7 @@ impl Images {
             self.rate = (Instant::now(), 0);
         }
         self.rate.1 = self.rate.1.saturating_add(1);
-        if self.rate.1 > 8 {
+        if u32::from(self.rate.1) > limits.channel_requests {
             bail!("图片读取过于频繁，请稍后重试");
         }
         let state = conn.get_state()?;
@@ -142,7 +153,7 @@ impl Images {
             .get(&ChannelId(source))
             .and_then(|c| c.optional_data.as_ref())
             .context("频道介绍不可见")?;
-        if !description_image(&description.description, &url) {
+        if !description_image(&description.description, &url, limits.channel_images) {
             bail!("图片未出现在当前可见频道介绍中");
         }
         let target = image_path(&url)?;
@@ -155,22 +166,46 @@ impl Images {
             bail!("图片属于其他服务器");
         }
         let handle = conn.download_file(ChannelId(target.channel), &target.path, None, None)?;
-        self.pending
-            .insert(handle.0, (Request { id, url, source }, Instant::now()));
+        self.pending.insert(
+            handle.0,
+            (
+                Request {
+                    id,
+                    url,
+                    source,
+                    limits,
+                },
+                Instant::now(),
+            ),
+        );
         Ok(())
     }
     pub fn downloaded(&mut self, handle: u16, result: FileDownloadResult, app: Arc<App>) {
         if let Some((request, _)) = self.pending.remove(&handle) {
             self.tasks.spawn(async move {
                 let read = async {
-                    if result.size == 0 || result.size > MAX_DOWNLOAD as u64 {
-                        bail!("频道图片最大2MiB");
+                    if result.size == 0
+                        || result.size > u64::from(request.limits.channel_download_kib) * 1024
+                    {
+                        bail!(
+                            "频道图片超过站点限制（{}KiB）",
+                            request.limits.channel_download_kib
+                        );
                     }
+                    // Units are KiB; hold the global buffer budget through decoding.
+                    let permit = app
+                        .image_bytes
+                        .clone()
+                        .try_acquire_many_owned(result.size.div_ceil(1024) as u32)
+                        .context("图片读取内存预算正忙，请稍后重试")?;
                     let mut bytes = vec![0; result.size as usize];
                     let mut stream = result.stream;
                     stream.read_exact(&mut bytes).await?;
+                    let limits = request.limits;
                     app.work(move |_| {
-                        sanitize(&bytes).map_err(|_| Error::bad("图片格式、尺寸或内容无效"))
+                        let _permit = permit;
+                        sanitize_with_limits(&bytes, limits)
+                            .map_err(|_| Error::bad("图片格式、尺寸或内容无效"))
                     })
                     .await
                     .map_err(|e| anyhow::anyhow!(e.1))
@@ -210,7 +245,9 @@ pub fn event(conn: &Connection, completed: Completed) -> serde_json::Value {
         .ok()
         .and_then(|s| s.channels.get(&ChannelId(request.source)))
         .and_then(|c| c.optional_data.as_ref())
-        .is_some_and(|d| description_image(&d.description, &request.url))
+        .is_some_and(|d| {
+            description_image(&d.description, &request.url, request.limits.channel_images)
+        })
         && image_path(&request.url).ok().is_some_and(|target| {
             conn.get_state()
                 .is_ok_and(|state| state.channels.contains_key(&ChannelId(target.channel)))
@@ -226,7 +263,11 @@ pub fn event(conn: &Connection, completed: Completed) -> serde_json::Value {
     serde_json::json!({"type":"ts_image","id":request.id,"url":request.url,"source_channel":request.source,"data":data,"error":error})
 }
 pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
-    if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD {
+    sanitize_with_limits(bytes, ImageLimits::default())
+}
+pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>> {
+    limits.validate()?;
+    if bytes.is_empty() || bytes.len() > limits.channel_download_kib as usize * 1024 {
         bail!("invalid image size");
     }
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
@@ -236,18 +277,21 @@ pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
     ) {
         bail!("unsupported image");
     }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(2048);
-    limits.max_image_height = Some(2048);
-    limits.max_alloc = Some(24 * 1024 * 1024);
-    reader.limits(limits);
+    let mut decode_limits = Limits::default();
+    decode_limits.max_image_width = Some(limits.channel_dimension);
+    decode_limits.max_image_height = Some(limits.channel_dimension);
+    decode_limits.max_alloc = Some(80 * 1024 * 1024);
+    reader.limits(decode_limits);
     let image = reader.decode()?;
     for size in [1280, 960, 640, 320] {
         let mut output = Cursor::new(Vec::new());
         image
-            .thumbnail(size, size)
+            .thumbnail(
+                size.min(image.width().max(image.height())),
+                size.min(image.width().max(image.height())),
+            )
             .write_to(&mut output, ImageFormat::Png)?;
-        if output.get_ref().len() <= 192 * 1024 {
+        if output.get_ref().len() <= limits.channel_output_kib as usize * 1024 {
             return Ok(output.into_inner());
         }
     }
@@ -256,6 +300,31 @@ pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admin_limits_change_decoding_size_and_description_image_budget() {
+        let image = image::RgbImage::from_pixel(2500, 1, image::Rgb([50, 80, 130]));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        assert!(sanitize(encoded.get_ref()).is_err());
+        let limits = ImageLimits {
+            channel_dimension: 4096,
+            ..Default::default()
+        };
+        assert!(sanitize_with_limits(encoded.get_ref(), limits).is_ok());
+        let text = "[img]ts3image://a?channel=1[/img][img]ts3image://b?channel=1[/img]";
+        assert!(!description_image(text, "ts3image://b?channel=1", 1));
+        assert!(description_image(text, "ts3image://b?channel=1", 2));
+        assert!(
+            sanitize_with_limits(
+                &vec![0; 65537],
+                ImageLimits {
+                    channel_download_kib: 64,
+                    ..limits
+                }
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn paths_bind_to_channel_and_reject_traversal_and_ambiguous_parameters() {
         assert_eq!(
@@ -286,11 +355,13 @@ mod tests {
         }
         assert!(description_image(
             "[center][IMG]ts3image://x?channel=1[/IMG][/center]",
-            "ts3image://x?channel=1"
+            "ts3image://x?channel=1",
+            8
         ));
         assert!(!description_image(
             "[url]ts3image://x?channel=1[/url]",
-            "ts3image://x?channel=1"
+            "ts3image://x?channel=1",
+            8
         ));
     }
     #[test]

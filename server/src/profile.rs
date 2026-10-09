@@ -22,7 +22,7 @@ pub struct Profile {
     pub sync_about: bool,
 }
 impl Profile {
-    fn normalize(&mut self) -> Api<()> {
+    fn normalize(&mut self, limits: crate::settings::ImageLimits) -> Api<()> {
         self.display_name = self.display_name.trim().to_owned();
         if (!self.display_name.is_empty() && !(3..=30).contains(&self.display_name.chars().count()))
             || self.display_name.chars().any(char::is_control)
@@ -34,17 +34,19 @@ impl Profile {
             ));
         }
         if !self.avatar.is_empty() {
-            if self.avatar.len() > 87384 {
-                return Err(Error::bad("头像最大64KiB"));
+            if self.avatar.len() > (limits.avatar_upload_kib as usize * 1024).div_ceil(3) * 4 {
+                return Err(Error::bad("头像超过站点上传限制"));
             }
             let bytes = STANDARD
                 .decode(&self.avatar)
                 .map_err(|_| Error::bad("头像编码无效"))?;
-            if bytes.len() > crate::avatar::MAX_UPLOAD {
-                return Err(Error::bad("头像最大64KiB"));
+            if bytes.len() > limits.avatar_upload_kib as usize * 1024 {
+                return Err(Error::bad("头像超过站点上传限制"));
             }
-            self.avatar = STANDARD
-                .encode(crate::avatar::sanitize(&bytes).map_err(|_| Error::bad("头像图片无效"))?);
+            self.avatar = STANDARD.encode(
+                crate::avatar::sanitize_with_limits(&bytes, limits)
+                    .map_err(|_| Error::bad("头像图片无效"))?,
+            );
         }
         Ok(())
     }
@@ -79,7 +81,8 @@ pub async fn save(
 ) -> Api<Json<Profile>> {
     app.work(move |a| {
         let session = a.session(&headers)?;
-        body.normalize()?;
+        let limits = a.runtime.read().unwrap().settings.image_limits;
+        body.normalize(limits)?;
         let data = serde_json::to_string(&body).map_err(anyhow::Error::from)?;
         let changed = a.db.connection.lock().unwrap().execute(
             "INSERT INTO profiles(user_id,data) SELECT ?,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND u.id=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
@@ -100,13 +103,13 @@ mod tests {
             avatar: STANDARD.encode(b"<svg onload='alert(1)'/>"),
             ..Default::default()
         };
-        assert!(profile.normalize().is_err());
+        assert!(profile.normalize(Default::default()).is_err());
         profile.avatar.clear();
         profile.about = "inject\0command".into();
-        assert!(profile.normalize().is_err());
+        assert!(profile.normalize(Default::default()).is_err());
         profile.about = "好".repeat(171);
-        assert!(profile.normalize().is_err());
+        assert!(profile.normalize(Default::default()).is_err());
         profile.about = "个人介绍\n第二行".into();
-        assert!(profile.normalize().is_ok());
+        assert!(profile.normalize(Default::default()).is_ok());
     }
 }

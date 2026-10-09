@@ -3,17 +3,18 @@ import type {KeyboardEvent,PointerEvent} from 'react';
 import {createPortal} from 'react-dom';
 import {adjustCrop,croppedImage,initialCrop,loadCropImage,zoomCrop} from './avatar';
 import type {Crop,ImagePurpose} from './avatar';
+import type {ImageLimits} from './image-limits';
 
-export function ImageCropper({file,purpose,onComplete,onCancel}:{file:File;purpose:ImagePurpose;onComplete:(image:string)=>void;onCancel:()=>void}){
+export function ImageCropper({file,purpose,onComplete,onCancel,limits}:{file:File;purpose:ImagePurpose;limits?:ImageLimits;onComplete:(image:string)=>void;onCancel:()=>void}){
   const dialog=useRef<HTMLDialogElement>(null),canvas=useRef<HTMLCanvasElement>(null),image=useRef<ImageBitmap|null>(null);
   const[dimensions,setDimensions]=useState<[number,number]>([0,0]),[crop,setCrop]=useState<Crop|null>(null),[zoom,setZoom]=useState(1),[message,setMessage]=useState('正在读取图片…');
   const drag=useRef<{id:number;x:number;y:number;crop:Crop;handle:string;scale:[number,number]}|null>(null);
   const square=purpose==='avatar';
   useEffect(()=>{
     let cancelled=false;dialog.current?.showModal();
-    loadCropImage(file,purpose).then(bitmap=>{if(cancelled){bitmap.close();return;}image.current=bitmap;setDimensions([bitmap.width,bitmap.height]);setCrop(initialCrop(bitmap.width,bitmap.height,square));setMessage('');}).catch(e=>{if(!cancelled)setMessage(e instanceof Error?e.message:'读取图片失败');});
+    loadCropImage(file,purpose,limits).then(bitmap=>{if(cancelled){bitmap.close();return;}image.current=bitmap;setDimensions([bitmap.width,bitmap.height]);setCrop(initialCrop(bitmap.width,bitmap.height,square));setMessage('');}).catch(e=>{if(!cancelled)setMessage(e instanceof Error?e.message:'读取图片失败');});
     return()=>{cancelled=true;image.current?.close();image.current=null;dialog.current?.close();};
-  },[file,purpose,square]);
+  },[file,purpose,square,limits]);
   const[width,height]=dimensions,scale=Math.min(600/(width||1),360/(height||1),1);
   const previewWidth=Math.max(1,Math.round(width*scale)),previewHeight=Math.max(1,Math.round(height*scale));
   useEffect(()=>{if(!image.current||!canvas.current)return;const context=canvas.current.getContext('2d');context?.drawImage(image.current,0,0,canvas.current.width,canvas.current.height);},[width,height]);
@@ -31,7 +32,7 @@ export function ImageCropper({file,purpose,onComplete,onCancel}:{file:File;purpo
     setCrop(adjustCrop(crop,width,height,e.key==='ArrowLeft'?-step:e.key==='ArrowRight'?step:0,e.key==='ArrowUp'?-step:e.key==='ArrowDown'?step:0,handle,square));
   }
   function changeZoom(value:number){if(!crop)return;setZoom(value);setCrop(zoomCrop(crop,width,height,zoom/value));}
-  function confirm(){if(!crop||!image.current)return;try{onComplete(croppedImage(image.current,crop,purpose));}catch(e){setMessage(e instanceof Error?e.message:'裁剪失败');}}
+  function confirm(){if(!crop||!image.current)return;try{onComplete(croppedImage(image.current,crop,purpose,limits));}catch(e){setMessage(e instanceof Error?e.message:'裁剪失败');}}
   return createPortal(<dialog ref={dialog} className="image-cropper" aria-labelledby="crop-title" onCancel={e=>{e.preventDefault();e.stopPropagation();onCancel();}}>
     <div className="dialog-head"><h2 id="crop-title">{square?'裁剪头像':'裁剪图片'}</h2><button type="button" className="icon-button" aria-label="取消裁剪" onClick={onCancel}>×</button></div>
     <p className="muted">拖动图片移动选区，拖动四角调整范围。{square?'头像保持正方形。':'图片可自由调整宽高。'}键盘方向键微调，Shift 加速。</p>

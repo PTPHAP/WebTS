@@ -555,6 +555,10 @@ async fn connected(
     let mut negotiated = Instant::now();
     let mut avatars = crate::avatar::Avatars::default();
     let mut images = crate::channel_images::Images::default();
+    emit(
+        tx,
+        json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}),
+    )?;
     let mut unsafe_notice = Instant::now() - Duration::from_secs(5);
     let mut described_channel = None;
     loop {
@@ -569,7 +573,7 @@ async fn connected(
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 for completed in images.expire(){emit(tx,crate::channel_images::event(conn,completed))?;}
                 if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
-                if network_check.elapsed()>=Duration::from_secs(2){if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
+                if network_check.elapsed()>=Duration::from_secs(2){emit(tx,json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}))?;if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
                 if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();let mut away_timeout=false;pending.retain(|handle,(id,start)|{if start.elapsed()>Duration::from_secs(15){away_timeout|=away_handles.remove(handle);let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});if away_timeout{bail!("离开状态更新超时，连接已停止；请重新连接以确认状态");}}
@@ -593,7 +597,7 @@ async fn connected(
                 if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
                 let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
                 match value["type"].as_str().unwrap_or(""){
-                    "ts_image_get"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();let url=value["url"].as_str().unwrap_or("").to_owned();let source=value["source_channel"].as_u64().unwrap_or(0);if let Err(error)=images.download(conn,id.clone(),source,url.clone()){emit(tx,json!({"type":"ts_image","id":id,"url":url,"source_channel":source,"data":null,"error":error.to_string()}))?;}},
+                    "ts_image_get"=>{let id=value["id"].as_str().filter(|s|s.len()<=64).unwrap_or("").to_owned();let url=value["url"].as_str().unwrap_or("").to_owned();let source=value["source_channel"].as_u64().unwrap_or(0);if let Err(error)=images.download(conn,id.clone(),source,url.clone(),app.runtime.read().unwrap().settings.image_limits){emit(tx,json!({"type":"ts_image","id":id,"url":url,"source_channel":source,"data":null,"error":error.to_string()}))?;}},
                     "avatar_get"=>{let client=value["client"].as_u64().filter(|id|*id<=u16::MAX as u64).context("头像成员无效")? as u16;if let Err(error)=avatars.download(conn,client){emit(tx,json!({"type":"avatar","client":client,"uid":conn.get_state()?.clients.get(&tsproto_types::ClientId(client)).and_then(|c|c.uid.as_ref()).map(|u|u.to_string()),"hash":value["hash"].as_str().filter(|s|s.len()==32&&s.bytes().all(|b|b.is_ascii_hexdigit())).unwrap_or(""),"data":null,"error":error.to_string()}))?;}},
                     "avatar_upload"=>{let id=value["id"].as_str().filter(|id|id.starts_with("avatar:")&&id.len()<=64).context("头像操作ID无效")?.to_owned();let result=avatars.prepare_upload(app.clone(),id.clone(),value["data"].as_str().unwrap_or(""));if let Err(error)=result{emit(tx,json!({"type":"result","id":id,"ok":false,"message":error.to_string()}))?;}},
                     "channel_info"=>{let id=value["channel"].as_u64().context("频道无效")?;if conn.get_state()?.channels.contains_key(&tsproto_types::ChannelId(id)){command("channelgetdescription",&[("cid",id.to_string())]).send(conn)?;}},

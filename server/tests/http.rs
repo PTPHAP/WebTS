@@ -53,6 +53,136 @@ async fn call(
 }
 
 #[tokio::test]
+async fn image_policy_is_admin_only_persisted_and_applied_to_profile_uploads() {
+    let (_dir, app) = setup();
+    let pw = "image policy fixture password";
+    let hash = password::hash(pw).unwrap();
+    let mut cookies = Vec::new();
+    for email in ["image-admin@example.com", "image-member@example.com"] {
+        let (id, _, token) = app.db.register(email, &hash).unwrap();
+        app.db.consume_email_token(&token, "verify", None).unwrap();
+        cookies.push(format!(
+            "__Host-webts={}",
+            app.db.create_session(id, false, &hash).unwrap()
+        ));
+    }
+    app.db.grant_admin("image-admin@example.com").unwrap();
+    let origin = "https://webts.example";
+    let mut settings = call(&app, "/admin/settings", None, &cookies[0], origin)
+        .await
+        .2;
+    settings["image_limits"]["avatar_upload_kib"] = json!(128);
+    settings["image_limits"]["channel_images"] = json!(2);
+    let update = json!({"password":pw,"settings":settings});
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(update.clone()),
+            &cookies[1],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut wrong = update.clone();
+    wrong["password"] = json!("wrong password");
+    assert_eq!(
+        call(&app, "/admin/settings", Some(wrong), &cookies[0], origin)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut unsafe_update = update.clone();
+    unsafe_update["settings"]["image_limits"]["channel_download_kib"] = json!(8193);
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(unsafe_update),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        app.runtime
+            .read()
+            .unwrap()
+            .settings
+            .image_limits
+            .avatar_upload_kib,
+        64
+    );
+    assert_eq!(
+        call(&app, "/admin/settings", Some(update), &cookies[0], origin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/servers", None, &cookies[1], origin).await.2["image_limits"]["channel_images"],
+        2
+    );
+    let reloaded = App::new(app.config.clone()).unwrap();
+    assert_eq!(
+        reloaded
+            .runtime
+            .read()
+            .unwrap()
+            .settings
+            .image_limits
+            .avatar_upload_kib,
+        128
+    );
+    let mut image = image::RgbImage::new(128, 256);
+    let mut seed = 123_u32;
+    for pixel in image.pixels_mut() {
+        for byte in &mut pixel.0 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            *byte = (seed >> 24) as u8;
+        }
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    use base64::Engine;
+    let avatar = base64::engine::general_purpose::STANDARD.encode(bytes.into_inner());
+    let profile = json!({"display_name":"fixture","about":"","avatar":avatar,"sync_avatar":false,"sync_about":false});
+    assert!(profile.to_string().len() > 128 * 1024);
+    assert_eq!(
+        call(&app, "/profile", Some(profile.clone()), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let mut settings = call(&app, "/admin/settings", None, &cookies[0], origin)
+        .await
+        .2;
+    settings["image_limits"]["avatar_upload_kib"] = json!(8);
+    assert_eq!(
+        call(
+            &app,
+            "/admin/settings",
+            Some(json!({"password":pw,"settings":settings})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/profile", Some(profile), &cookies[1], origin)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
 async fn page_links_support_direct_navigation_without_masking_missing_assets() {
     let (directory, mut app) = setup();
     let web = directory.path().join("web");

@@ -79,6 +79,19 @@ test('decoded image dimensions are checked again and rejected bitmap is released
   await assert.rejects(loadCropImage({type:'image/png',size:24,arrayBuffer:async()=>header.buffer},'content'),/尺寸过大/);assert.equal(closed,true);
 });
 
+test('avatar selection and crop export honor the administrator limits',async()=>{
+  const header=new Uint8Array(24);header.set([137,80,78,71]);new DataView(header.buffer).setUint32(16,10);new DataView(header.buffer).setUint32(20,10);
+  const file={type:'image/png',size:3*1024*1024,arrayBuffer:async()=>header.buffer};
+  globalThis.createImageBitmap=async()=>({width:10,height:10,close(){}});
+  await assert.rejects(loadCropImage(file,'avatar'),/2MiB/);
+  await loadCropImage(file,'avatar',{avatar_source_mib:4});
+  let canvas;globalThis.document={createElement:()=>canvas={getContext:()=>({drawImage(){}}),toDataURL:()=>`data:image/png;base64,${Buffer.alloc(9000).toString('base64')}`}};
+  const image={width:200,height:200},crop={x:0,y:0,width:200,height:200};
+  assert.throws(()=>croppedImage(image,crop,'avatar',{avatar_upload_kib:8,avatar_dimension:96}),/压缩后仍过大/);
+  assert.equal(canvas.width,96);
+  assert.ok(croppedImage(image,crop,'avatar',{avatar_upload_kib:128,avatar_dimension:512}));
+});
+
 const {chatVisible}=await load('chat.ts');
 test('private conversation filters both sent and received messages by selected peer',()=>{
  const sentA={scope:'private',from:1,target:2},replyA={scope:'client',from:2,target:1},sentB={scope:'private',from:1,target:3};

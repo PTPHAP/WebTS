@@ -20,10 +20,63 @@ use zeroize::{Zeroize, Zeroizing};
 pub struct Settings {
     #[serde(default)]
     pub home: crate::site::Home,
+    #[serde(default)]
+    pub image_limits: ImageLimits,
     pub servers: Vec<Server>,
     pub default_server: String,
     pub allow_custom: bool,
     pub smtp: Option<SmtpSettings>,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImageLimits {
+    pub channel_download_kib: u32,
+    pub channel_dimension: u32,
+    pub channel_output_kib: u32,
+    pub channel_images: u32,
+    pub channel_cache: u32,
+    pub channel_requests: u32,
+    pub avatar_download_kib: u32,
+    pub avatar_upload_kib: u32,
+    pub avatar_dimension: u32,
+    pub avatar_source_mib: u32,
+}
+impl Default for ImageLimits {
+    fn default() -> Self {
+        Self {
+            channel_download_kib: 2048,
+            channel_dimension: 2048,
+            channel_output_kib: 192,
+            channel_images: 8,
+            channel_cache: 32,
+            channel_requests: 8,
+            avatar_download_kib: 128,
+            avatar_upload_kib: 64,
+            avatar_dimension: 512,
+            avatar_source_mib: 2,
+        }
+    }
+}
+impl ImageLimits {
+    pub fn validate(&self) -> Result<()> {
+        for (value, min, max) in [
+            (self.channel_download_kib, 64, 8192),
+            (self.channel_dimension, 128, 4096),
+            (self.channel_output_kib, 16, 192),
+            (self.channel_images, 1, 32),
+            (self.channel_cache, 1, 128),
+            (self.channel_requests, 1, 32),
+            (self.avatar_download_kib, 16, 512),
+            (self.avatar_upload_kib, 8, 128),
+            (self.avatar_dimension, 96, 1024),
+            (self.avatar_source_mib, 1, 8),
+        ] {
+            if !(min..=max).contains(&value) {
+                bail!("图片限制超出安全范围");
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +140,7 @@ impl Runtime {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        self.image_limits.validate()?;
         let mut ids = HashSet::new();
         if self.servers.len() > 32 {
             bail!("最多32个服务器");
@@ -113,10 +167,10 @@ impl Settings {
         Ok(())
     }
     pub fn public(&self) -> Value {
-        json!({"servers":self.servers.iter().map(|s|json!({"id":s.id,"name":s.name})).collect::<Vec<_>>(),"default_server":self.default_server,"allow_custom":self.allow_custom})
+        json!({"servers":self.servers.iter().map(|s|json!({"id":s.id,"name":s.name})).collect::<Vec<_>>(),"default_server":self.default_server,"allow_custom":self.allow_custom,"image_limits":self.image_limits})
     }
     pub fn admin_view(&self) -> Value {
-        json!({"servers":self.servers,"default_server":self.default_server,"allow_custom":self.allow_custom,"smtp":self.smtp.as_ref().map(|s|json!({"host":s.host,"port":s.port,"username":s.username,"from":s.from,"password_set":!s.password.is_empty()}))})
+        json!({"servers":self.servers,"default_server":self.default_server,"allow_custom":self.allow_custom,"image_limits":self.image_limits,"smtp":self.smtp.as_ref().map(|s|json!({"host":s.host,"port":s.port,"username":s.username,"from":s.from,"password_set":!s.password.is_empty()}))})
     }
 }
 // Custom addresses always have an explicit port: no nickname HTTP or TSDNS probing.
@@ -189,6 +243,10 @@ pub async fn save_settings(
             smtp.password = old.password.clone();
         }
         body.settings.home = current.settings.home.clone();
+        body.settings
+            .image_limits
+            .validate()
+            .map_err(|_| Error::bad("图片限制超出安全范围，请检查标注的最小值和最大值"))?;
         let updated = Runtime::new(body.settings)
             .map_err(|_| Error::bad("配置无效，请检查服务器、默认项和邮箱参数"))?;
         let plaintext =
@@ -209,6 +267,40 @@ pub async fn save_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_limits_keep_old_settings_compatible_and_reject_unsafe_values() {
+        let settings: Settings = serde_json::from_value(
+            json!({"servers":[],"default_server":"","allow_custom":false,"smtp":null}),
+        )
+        .unwrap();
+        assert_eq!(settings.image_limits, ImageLimits::default());
+        for field in [
+            "channel_download_kib",
+            "channel_dimension",
+            "channel_output_kib",
+            "channel_images",
+            "channel_cache",
+            "channel_requests",
+            "avatar_download_kib",
+            "avatar_upload_kib",
+            "avatar_dimension",
+            "avatar_source_mib",
+        ] {
+            for value in [0, 100000] {
+                let mut limits = serde_json::to_value(ImageLimits::default()).unwrap();
+                limits[field] = json!(value);
+                assert!(
+                    serde_json::from_value::<ImageLimits>(limits)
+                        .unwrap()
+                        .validate()
+                        .is_err()
+                );
+            }
+        }
+        let mut limits = serde_json::to_value(ImageLimits::default()).unwrap();
+        limits["avatar_upload_kib"] = json!(64.5);
+        assert!(serde_json::from_value::<ImageLimits>(limits).is_err());
+    }
     #[test]
     fn custom_targets_reject_local_and_metadata_addresses() {
         for address in [

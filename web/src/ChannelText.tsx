@@ -11,7 +11,7 @@ function TsImage({url,state,load}:{url:string;state?:TsImageState;load?:()=>void
   if(!url.startsWith('ts3image://'))return href?<a href={href} target="_blank" rel="noreferrer noopener">打开外部图片（外部站点可见你的 IP）</a>:<span>[img]{url}[/img]</span>;
   return <span className="ts-image-placeholder">{state?.error|| (failed?'图片无法显示':state?.loading?'正在读取频道图片…':'TeamSpeak 频道图片')}<button className="text-button" disabled={!load||state?.loading} onClick={load}>{state?.error?'重试':'加载图片'}</button></span>;
 }
-export function ChannelText({text,images={},loadImage,simple=false}:{text:string;images?:Record<string,TsImageState>;loadImage?:(url:string)=>void;simple?:boolean}) {
+export function ChannelText({text,images={},loadImage,simple=false,imageLimit=8}:{text:string;images?:Record<string,TsImageState>;loadImage?:(url:string)=>void;simple?:boolean;imageLimit?:number}) {
   let imageCount=0;
   const render=(nodes:TsNode[],interactive=true):ReactNode=>nodes.map((node,i)=>{
     if('text'in node)return <span key={i}>{node.text}</span>;
@@ -23,7 +23,7 @@ export function ChannelText({text,images={},loadImage,simple=false}:{text:string
       case 'size':return <span key={i} style={{fontSize:safeSize(param)}}>{content}</span>;
       case 'left':case 'center':case 'right':return <span key={i} className="ts-align" style={{textAlign:tag}}>{content}</span>;
       case 'url':{const href=safeHref(param??plainTsText(children));return href&&interactive?<a key={i} href={href} target="_blank" rel="noreferrer noopener">{render(children,false)}</a>:<span key={i}>{render(children,false)}</span>;}
-      case 'img':{const url=plainTsText(children).trim();return interactive&&++imageCount<=8?<TsImage key={url+':'+i} url={url} state={images[url]} load={loadImage?()=>loadImage(url):undefined}/>:<span key={i}>[img]{url}[/img]</span>;}
+      case 'img':{const url=plainTsText(children).trim();return interactive&&++imageCount<=Math.min(32,Math.max(1,imageLimit))?<TsImage key={url+':'+i} url={url} state={images[url]} load={loadImage?()=>loadImage(url):undefined}/>:<span key={i}>图片数量超过站点限制</span>;}
       case 'hr':return <hr key={i}/>;
       case 'list':return <span key={i} className={`ts-list ${param?'ordered':''}`} style={{listStyleType:param==='A'?'upper-alpha':param==='a'?'lower-alpha':param?'decimal':'disc'}}>{content}</span>;
       case 'li':return <span key={i} className="ts-list-item">{content}</span>;

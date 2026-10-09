@@ -4,6 +4,8 @@ import {api} from './api';
 import {AdminHome} from './SiteHome';
 import type {Home} from './SiteHome';
 import {AdminAccounts} from './AdminAccounts';
+import {defaultImageLimits,imageLimitFields,readImageLimits} from './image-limits';
+import type {ImageLimits} from './image-limits';
 
 export function AdminPanel({onSaved,currentEmail,onHomeSaved}:{onSaved:()=>Promise<void>;currentEmail:string;onHomeSaved:(home:Home)=>void}){
   const[tab,setTab]=useState('accounts');
@@ -12,11 +14,11 @@ export function AdminPanel({onSaved,currentEmail,onHomeSaved}:{onSaved:()=>Promi
 
 type Target={id:string;name:string;address:string};
 type Smtp={host:string;port:number;username:string;from:string;password?:string;password_set?:boolean};
-type Settings={servers:Target[];default_server:string;allow_custom:boolean;smtp:Smtp|null};
+type Settings={servers:Target[];default_server:string;allow_custom:boolean;smtp:Smtp|null;image_limits:ImageLimits};
 const emptySmtp:Smtp={host:'',port:465,username:'',from:''};
 export function AdminSettings({onSaved}:{onSaved:()=>Promise<void>}){
   const[settings,setSettings]=useState<Settings|null>(null);const[smtp,setSmtp]=useState<Smtp>(emptySmtp);const[enabled,setEnabled]=useState(false);const[password,setPassword]=useState('');const[secret,setSecret]=useState('');const[busy,setBusy]=useState(false);const[message,setMessage]=useState('');const[failed,setFailed]=useState(false);
-  useEffect(()=>{api<Settings>('/admin/settings').then(s=>{setSettings(s);setSmtp(s.smtp??emptySmtp);setEnabled(s.smtp!==null);}).catch(e=>{setFailed(true);setMessage(e.message);});},[]);
+  useEffect(()=>{api<Settings>('/admin/settings').then(s=>{setSettings({...s,image_limits:readImageLimits(s.image_limits)});setSmtp(s.smtp??emptySmtp);setEnabled(s.smtp!==null);}).catch(e=>{setFailed(true);setMessage(e.message);});},[]);
   async function save(e:FormEvent){e.preventDefault();if(!settings)return;setBusy(true);setMessage('');try{const mail=enabled?{host:smtp.host,port:smtp.port,username:smtp.username,from:smtp.from,password:secret}:null;const result=await api<{message:string}>('/admin/settings',{password,settings:{...settings,smtp:mail}});setMessage(result.message);setFailed(false);setSmtp({...smtp,password_set:enabled});setSecret('');await onSaved();}catch(e){setFailed(true);setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);setPassword('');}}
   if(!settings)return <p role="status">{message||'正在读取站点设置…'}</p>;
   function target(index:number,field:'name'|'address',value:string){setSettings(s=>s&&({...s,servers:s.servers.map((row,i)=>i===index?{...row,[field]:value}:row)}));}
@@ -29,6 +31,12 @@ export function AdminSettings({onSaved}:{onSaved:()=>Promise<void>}){
       <label>默认连接服务器<select value={settings.default_server} onChange={e=>setSettings({...settings,default_server:e.target.value})}><option value="">不指定</option>{settings.servers.map(row=><option value={row.id} key={row.id}>{row.name||'未命名服务器'}</option>)}</select></label>
       <label className="checkbox"><input type="checkbox" checked={settings.allow_custom} onChange={e=>setSettings({...settings,allow_custom:e.target.checked})}/>允许已登录用户连接自定义公网地址</label>
       <small>关闭自定义连接、移除服务器或更改其地址时，对应的活动连接会断开。自定义目标仍必须强制加密并使用 Opus。</small>
+    </fieldset>
+    <fieldset disabled={busy}><legend>图片与头像</legend>
+      <p className="muted">1KiB = 1024字节，1MiB = 1024KiB。保存后热加载，新传输使用新限制；已开始的传输按开始时配置完成。频道图片缓存会重新读取。</p>
+      {imageLimitFields.map(({key,label,min,max})=><label key={key}>{label}<input type="number" min={min} max={max} step={1} required value={settings.image_limits[key]} onChange={e=>setSettings({...settings,image_limits:{...settings.image_limits,[key]:Number(e.target.value)}})}/><small>允许范围：{min}–{max}</small></label>)}
+      <button className="secondary full" type="button" onClick={()=>setSettings({...settings,image_limits:{...defaultImageLimits}})}>恢复图片与头像默认限制</button>
+      <small>头像裁剪后最长256px；频道图片显示最长1280px。TS服务器仍可施加更小的头像上传限制。现有账号头像保留；文件类型、权限、路径检查、解码内存与传输并发安全上限无法关闭。外部图片保持点击打开。</small>
     </fieldset>
     <fieldset disabled={busy}><legend>发信邮箱</legend>
       <label className="checkbox"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>启用验证与找回邮件</label>

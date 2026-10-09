@@ -33,6 +33,7 @@ pub struct App {
     pub vault: Vault,
     pub connections: Arc<Connections>,
     pub sockets: Arc<Semaphore>,
+    pub image_bytes: Arc<Semaphore>,
     workers: Arc<Semaphore>,
     limits: Mutex<HashMap<(IpAddr, bool), (Instant, u32)>>,
     mail: mpsc::Sender<Mail>,
@@ -92,6 +93,7 @@ impl App {
         } else {
             crate::settings::Settings {
                 home: Default::default(),
+                image_limits: Default::default(),
                 servers: config.servers.clone(),
                 default_server: config
                     .servers
@@ -154,6 +156,7 @@ impl App {
         Ok(Arc::new(Self {
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
+            image_bytes: Arc::new(Semaphore::new(128 * 1024)),
             config,
             db,
             vault,
@@ -274,7 +277,7 @@ pub fn router(app: Arc<App>) -> Router {
             "/profile",
             get(crate::profile::get)
                 .post(crate::profile::save)
-                .layer(DefaultBodyLimit::max(128 * 1024)),
+                .layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route("/admin/accounts", get(crate::accounts::list))
         .route(

@@ -1,3 +1,4 @@
+import type {ImageLimits} from './image-limits';
 export function imageDimensions(bytes:Uint8Array):[number,number] {
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   if(bytes.length>=24&&bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71)return [view.getUint32(16),view.getUint32(20)];
@@ -20,8 +21,8 @@ export function imageDimensions(bytes:Uint8Array):[number,number] {
 }
 export type Crop={x:number;y:number;width:number;height:number};
 export type ImagePurpose='avatar'|'content';
-export async function loadCropImage(file:File,purpose:ImagePurpose):Promise<ImageBitmap> {
-  const limit=purpose==='avatar'?2:4;
+export async function loadCropImage(file:File,purpose:ImagePurpose,limits?:ImageLimits):Promise<ImageBitmap> {
+  const limit=purpose==='avatar'?(limits?.avatar_source_mib??2):4;
   if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>limit*1024*1024)throw new Error(`请选择${limit}MiB以内的PNG、JPEG或WebP图片。`);
   const [width,height]=imageDimensions(new Uint8Array(await file.arrayBuffer()));
   if(!width||!height||width>4096||height>4096||width*height>8*1024*1024)throw new Error('图片尺寸过大，请先缩小图片。');
@@ -48,11 +49,11 @@ export function zoomCrop(crop:Crop,width:number,height:number,factor:number):Cro
   const w=crop.width*scale,h=crop.height*scale;
   return {x:Math.max(0,Math.min(width-w,crop.x+crop.width/2-w/2)),y:Math.max(0,Math.min(height-h,crop.y+crop.height/2-h/2)),width:w,height:h};
 }
-export function croppedImage(image:ImageBitmap,crop:Crop,purpose:ImagePurpose):string {
+export function croppedImage(image:ImageBitmap,crop:Crop,purpose:ImagePurpose,limits?:ImageLimits):string {
   if(!Object.values(crop).every(Number.isFinite)||crop.x<0||crop.y<0||crop.width<1||crop.height<1||crop.x+crop.width>image.width+.001||crop.y+crop.height>image.height+.001)throw new Error('裁剪范围无效，请重置后再试。');
   if(purpose==='avatar'&&Math.abs(crop.width-crop.height)>.001)throw new Error('头像需要正方形裁剪。');
   const canvas=document.createElement('canvas');
-  for(const size of purpose==='avatar'?[256,128,96]:[1280,960,640]){
+  for(const size of purpose==='avatar'?[Math.min(256,limits?.avatar_dimension??512),Math.min(128,limits?.avatar_dimension??512),96]:[1280,960,640]){
     const scale=purpose==='avatar'?size/crop.width:Math.min(1,size/crop.width,960/crop.height);
     canvas.width=Math.max(1,Math.round(crop.width*scale));canvas.height=Math.max(1,Math.round(crop.height*scale));
     const context=canvas.getContext('2d');if(!context)throw new Error('浏览器无法处理图片');
@@ -60,7 +61,8 @@ export function croppedImage(image:ImageBitmap,crop:Crop,purpose:ImagePurpose):s
     context.drawImage(image,crop.x,crop.y,crop.width,crop.height,0,0,canvas.width,canvas.height);
     const result=canvas.toDataURL(purpose==='avatar'?'image/png':'image/jpeg',.75);
     const data=purpose==='avatar'?result.split(',')[1]:result;
-    if(data.length<=(purpose==='avatar'?Math.ceil(65536/3)*4:170000))return data;
+    const bytes=data.length/4*3-(data.endsWith('==')?2:data.endsWith('=')?1:0);
+    if(purpose==='avatar'?bytes<=(limits?.avatar_upload_kib??64)*1024:data.length<=170000)return data;
   }
   throw new Error('图片压缩后仍过大，请缩小裁剪范围或更换图片。');
 }

@@ -22,3 +22,9 @@ test('native images render only normalized bytes; remote images remain explicit 
   assert.match(html,/<img[^>]+data:image\/png/);assert.equal((html.match(/<img /g)||[]).length,1);assert.match(html,/外部站点可见你的 IP/);
   const nested=renderToStaticMarkup(createElement(ChannelText,{text:'[url=https://example.com]'.repeat(24)+'末尾'+'[/url]'.repeat(24)}));assert.equal((nested.match(/<a /g)||[]).length,1);
 });
+
+test('actual channel rendering uses the configured per-description picture count',()=>{
+  const urls=['a','b','c'].map(name=>`ts3image://${name}.png?channel=1&path=/`);
+  const html=renderToStaticMarkup(createElement(ChannelText,{text:urls.map(url=>`[img]${url}[/img]`).join(''),imageLimit:1,images:Object.fromEntries(urls.map(url=>[url,{data:'data:image/png;base64,AA=='}]))}));
+  assert.equal((html.match(/<img /g)||[]).length,1);assert.match(html,/图片数量超过站点限制/);
+});

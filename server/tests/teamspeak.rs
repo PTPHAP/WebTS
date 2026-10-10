@@ -535,7 +535,7 @@ async fn run() {
                         socket.send(Message::Text(json!({"type":"command","id":"denied","action":"kick","client":native_id,"scope":"server","text":"permission test"}).to_string().into())).await.unwrap();
                         socket.send(Message::Text(json!({"type":"command","id":"chat","action":"chat","scope":"channel","text":"WebTS live channel chat"}).to_string().into())).await.unwrap();
                     },
-                    "state"=>{if own_id==0 {
+                    "state"=>{let (_,locations)=app.connections.activity(owner);assert_eq!(locations.len(),1);assert_eq!(locations[0].1["location"]["server_uid"],value["serverInfo"]["uid"]);assert!(locations[0].1["address"].is_string());if own_id==0 {
                         own_id=value["own"].as_u64().unwrap() as u16;
                         socket.send(Message::Text(json!({"type":"avatar_upload","id":"avatar:live","data":STANDARD.encode(&avatar)}).to_string().into())).await.unwrap();
                         native.get_state().unwrap().send_message(MessageTarget::Channel,"WebTS peer reply").send_with_result(&mut native).unwrap();
@@ -554,7 +554,7 @@ async fn run() {
                     "result" if value["id"]=="avatar:live"=>{assert_eq!(value["ok"],true,"avatar upload: {}",value["message"]);avatar_uploaded=true;},
                     "chat" if value["text"]=="WebTS peer reply"=>browser_chat=true,
                     "poke" if value["text"]=="WebTS poke"=>browser_poke=true,
-                    "result" if value["id"]=="denied"=>{assert_eq!(value["ok"],false);assert!(value["message"].as_str().unwrap().to_lowercase().contains("permission"));denied=true;},
+                    "result" if value["id"]=="denied"=>{assert_eq!(value["ok"],false);assert_eq!(value["code"],2568);assert!(value["missing_permission"].as_u64().is_some());denied=true;},
                     "error" if !revoked=>panic!("gateway rejected live test: {}",value["message"]),
                     "disconnected"=>{assert!(revoked);assert_eq!(value["retryable"],false);break;},
                     _=>{}

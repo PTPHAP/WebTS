@@ -443,12 +443,12 @@
 | [wasm-bindgen-shared](https://crates.io/crates/wasm-bindgen-shared/0.2.129) | 0.2.129 | MIT OR Apache-2.0 |
 | [wasm-streams](https://crates.io/crates/wasm-streams/0.5.0) | 0.5.0 | MIT OR Apache-2.0 |
 | [web-sys](https://crates.io/crates/web-sys/0.3.106) | 0.3.106 | MIT OR Apache-2.0 |
-| web-ts | 0.1.0 | MIT |
+| web-ts | 1.0.0 | MIT |
 | [web_atoms](https://crates.io/crates/web_atoms/0.3.0) | 0.3.0 | MIT OR Apache-2.0 |
 | [webpki-root-certs](https://crates.io/crates/webpki-root-certs/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
 | [webpki-roots](https://crates.io/crates/webpki-roots/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
 | [webrtc](https://crates.io/crates/webrtc/0.21.0) | 0.21.0 | MIT/Apache-2.0 |
-| webts-crypto | 0.1.0 | MIT |
+| webts-crypto | 1.0.0 | MIT |
 | [weezl](https://crates.io/crates/weezl/0.1.12) | 0.1.12 | MIT OR Apache-2.0 |
 | [widestring](https://crates.io/crates/widestring/1.2.1) | 1.2.1 | MIT OR Apache-2.0 |
 | [winapi](https://crates.io/crates/winapi/0.3.9) | 0.3.9 | MIT/Apache-2.0 |

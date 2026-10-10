@@ -19,12 +19,12 @@ WebTS 0.1为可启动的预览版。先在独立环境小规模验证，再向�
 
 ## Linux构建包
 
-从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载 `webts-0.1.0-linux-x64`。解压ZIP后计算tar包SHA-256，与SHA256SUMS对应行比较；只有构建通过才生成包。
+从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载 `webts-1.0.0-linux-x64`。解压ZIP后计算tar包SHA-256，与SHA256SUMS对应行比较；只有构建通过才生成包。
 
 ```sh
-sha256sum webts-0.1.0-linux-x64.tar.gz
-tar -xzf webts-0.1.0-linux-x64.tar.gz
-cd webts-0.1.0-linux-x64
+sha256sum webts-1.0.0-linux-x64.tar.gz
+tar -xzf webts-1.0.0-linux-x64.tar.gz
+cd webts-1.0.0-linux-x64
 umask 077
 mkdir -p data secrets
 ./web-ts init-key secrets/master.key
@@ -51,7 +51,7 @@ cp deploy/config.production.toml config.local.toml
 # WEBTS_DOMAIN与public_url必须对应；填写真实TS与SMTP。
 sudo install -d -m 700 -o 10001 -g 10001 data secrets
 docker compose build webts
-docker run --rm -v "$PWD/secrets:/app/secrets" webts:0.1.0 init-key /app/secrets/master.key
+docker run --rm -v "$PWD/secrets:/app/secrets" webts:1.0.0 init-key /app/secrets/master.key
 # 填写SMTP密码文件，让UID10001可读；文件权限0600。
 docker compose up -d webts caddy
 docker compose logs --tail 50 webts

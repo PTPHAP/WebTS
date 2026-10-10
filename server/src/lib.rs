@@ -10,6 +10,7 @@ pub mod identity;
 pub mod media;
 pub mod notices;
 pub mod password;
+pub mod preferences;
 pub mod probe;
 pub mod profile;
 pub mod settings;

@@ -110,6 +110,7 @@ impl Home {
             "8b2e9978b6ddbf3bfcdc48e48486058fe3d2bac392d35d791f1a03b79ad7aea8",
             "e9e58f5a01abfabccc3f3ac83e31be649dbee6a3df639e52292c9a4959be2719",
             "e1665607675a56b87f4d761307d29bfb48574e264a1c1a78bd1469a3b44d974d",
+            "2c292bf3affd8375396a60509446a8010e74d656fb0fe146e022ff2193e76a32",
         ]
         .contains(&hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n"))).as_str())
         {
@@ -121,6 +122,7 @@ impl Home {
             "38786738d19090abfbb13643be1a36c1219d4ac2792c5a3a0f47dc8b2410f1db",
             "0bea1750e2e76f979bcf4633cb6b60c94f15ce8292b4e46ce4426b25192fd596",
             "3c9694acf55fc03f692c72f6bd83fbf668b43065539a15ac53fc0b25311c39eb",
+            "6f0a4943c5fe6b230ea2c0de239572e420be575c8732bb470cb5b9e8bd0a36d1",
         ]
         .contains(&hex::encode(Sha256::digest(self.terms.replace("\r\n", "\n"))).as_str())
         {

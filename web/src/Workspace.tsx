@@ -1,10 +1,11 @@
+import {useAccountPreference} from './account-preferences';
 import {Children,useRef,useState} from 'react';
 import type {CSSProperties,ReactNode} from 'react';
 import {defaultLayout,panelIds,readLayout,reorderPanels,resizePanels} from './workspace-layout';
 import type {Layout,PanelId} from './workspace-layout';
 const labels={channels:'频道树',chat:'聊天与语音',members:'频道与成员资料'};
 export function Workspace({mobile,children}:{mobile:string;children:ReactNode}) {
-  const [layout,setLayout]=useState(()=>{try{return readLayout(JSON.parse(localStorage.getItem('webts-layout')??'null'));}catch{return readLayout(null);}});
+  const [layout,setLayout]=useAccountPreference('layout',()=>{try{return readLayout(JSON.parse(localStorage.getItem('webts-layout')??'null'));}catch{return readLayout(null);}});
   const [editing,setEditing]=useState(false),[saved,setSaved]=useState(true);
   const dragged=useRef<PanelId|null>(null),resizing=useRef<{index:number;x:number;width:number;layout:Layout}|null>(null);
   const root=useRef<HTMLElement>(null);

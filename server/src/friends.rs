@@ -123,7 +123,7 @@ pub async fn activate(
         if !old_device.is_empty()&&old_device!=body.device {
             // A backup-based device lacks old ratchets. Do not deliver late old-device
             // packets into a new session for the same public identity.
-            tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE sender=? OR recipient=?",params![now(),s.user.id,s.user.id]).map_err(db_error)?;
+            tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE mode='e2ee' AND (sender=? OR recipient=?)",params![now(),s.user.id,s.user.id]).map_err(db_error)?;
         }
         tx.execute("UPDATE friend_keys SET device=?,lease_hash=? WHERE user_id=?",params![body.device,crate::db::digest(&body.lease),s.user.id]).map_err(db_error)?;
         tx.execute("DELETE FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id]).map_err(db_error)?;
@@ -229,8 +229,8 @@ pub async fn encryption(
         return Err(Error::bad("必须明确确认本站可以读取此会话的后续消息"));
     }
     app.work(move |a| {
-        let s = if body.server_decrypt { a.reauthenticate(&headers,&Zeroizing::new(body.password))? } else { current(a,&headers)? };
-        let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;session_valid(&tx,&s)?;device(&tx,&s,&headers)?;accepted(&tx,s.user.id,peer)?;
+        let s = if !body.password.is_empty() { a.reauthenticate(&headers,&Zeroizing::new(body.password))? } else { current(a,&headers)? };
+        let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;session_valid(&tx,&s)?;accepted(&tx,s.user.id,peer)?;
         let (lo,hi)=pair(s.user.id,peer);let (own,other,epoch)=encryption_state(&tx,s.user.id,peer)?;
         if own!=body.server_decrypt {
             tx.execute("INSERT OR IGNORE INTO friend_modes(lo,hi) VALUES(?,?)",params![lo,hi]).map_err(db_error)?;
@@ -247,9 +247,9 @@ pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Val
     app.work(move |a| {
         let s=current(a,&headers)?; let storage=a.runtime.read().unwrap().settings.storage.clone(); let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         db.execute("INSERT OR IGNORE INTO friend_keys(user_id,code,public_key) VALUES(?,?,'')",params![s.user.id,&token()?[..24]]).map_err(db_error)?;
-        let (code,key):(String,String)=db.query_row("SELECT code,public_key FROM friend_keys WHERE user_id=?",[s.user.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+        let (code,key,share):(String,String,bool)=db.query_row("SELECT code,public_key,share_presence FROM friend_keys WHERE user_id=?",[s.user.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;a.connections.touch(s.user.id,&s.hash);
         let left:i64=db.query_row("SELECT count(*) FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id],|r|r.get(0)).map_err(db_error)?;
-        Ok(Json(json!({"id":s.user.id,"code":code,"public_key":key,"prekeys_left":left,"storage_enabled":storage.enabled,"retention_days":if storage.retention_days==0{7}else{storage.retention_days}})))
+        Ok(Json(json!({"id":s.user.id,"code":code,"public_key":key,"share_presence":share,"prekeys_left":left,"storage_enabled":storage.enabled,"retention_days":if storage.retention_days==0{7}else{storage.retention_days}})))
     }).await
 }
 #[derive(Deserialize)]
@@ -280,11 +280,108 @@ pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<V
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,0) ELSE COALESCE(m.allow_hi,0) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,0) ELSE COALESCE(m.allow_lo,0) END,COALESCE(m.epoch,0),COALESCE(p.avatar_hash,''),COALESCE(json_extract(p.data,'$.about'),'') FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
-        let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?,"avatar_hash":r.get::<_,String>(10)?,"about":r.get::<_,String>(11)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?,"avatar_hash":r.get::<_,String>(10)?,"about":r.get::<_,String>(11)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        for row in &mut rows {if row["status"]==1 {let (online,locations)=friend_activity(a,&db,row["id"].as_i64().unwrap())?;row["online"]=json!(online);row["locations"]=json!(locations);}}
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
         let latest:i64=db.query_row("SELECT friend_revision FROM users WHERE id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
         Ok(Json(json!({"friends":rows,"unread":unread,"latest_message":latest})))
     }).await
+}
+fn friend_activity(a: &App, db: &rusqlite::Connection, peer: i64) -> Api<(bool, Vec<Value>)> {
+    let share = db
+        .query_row(
+            "SELECT share_presence FROM friend_keys WHERE user_id=?",
+            [peer],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(db_error)?
+        .unwrap_or(false);
+    if !share {
+        return Ok((false, Vec::new()));
+    }
+    let (sessions, locations) = a.connections.activity(peer);
+    let valid = |hash: &str| -> Api<bool> {
+        db.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.user_id=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?)",params![hash,peer,now(),now()],|r|r.get(0)).map_err(db_error)
+    };
+    let mut online = false;
+    for session in sessions {
+        online |= valid(&session)?;
+    }
+    let runtime = a.runtime.read().unwrap();
+    let mut shared = Vec::new();
+    for (session, location) in locations {
+        let server = location["server"].as_str().unwrap_or("");
+        let permitted = if server.is_empty() {
+            runtime.settings.allow_custom
+        } else {
+            runtime
+                .settings
+                .servers
+                .iter()
+                .any(|s| s.id == server && s.address == location["address"])
+        };
+        if permitted && valid(&session)? {
+            online = true;
+            shared.push(location);
+        }
+    }
+    shared.sort_by(|a, b| a["connection"].as_str().cmp(&b["connection"].as_str()));
+    Ok((online, shared))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Presence {
+    share: bool,
+}
+pub async fn presence(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(body): Json<Presence>,
+) -> Api<Json<Value>> {
+    app.work(move |a| {
+        let s = current(a, &headers)?;
+        let db = a.db.connection.lock().unwrap();
+        session_valid(&db, &s)?;
+        db.execute(
+            "UPDATE friend_keys SET share_presence=? WHERE user_id=?",
+            params![body.share, s.user.id],
+        )
+        .map_err(db_error)?;
+        Ok(Json(json!({"share_presence":body.share})))
+    })
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    connection: String,
+}
+pub async fn join(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(peer): Path<i64>,
+    Json(body): Json<Join>,
+) -> Api<Json<Value>> {
+    if body.connection.len() > 128 {
+        return Err(Error::bad("连接引用无效"));
+    }
+    app.work(move |a| {
+        let s = current(a, &headers)?;
+        let db = a.db.connection.lock().unwrap();
+        session_valid(&db, &s)?;
+        accepted(&db, s.user.id, peer)?;
+        let (_, locations) = friend_activity(a, &db, peer)?;
+        let location = locations
+            .into_iter()
+            .find(|v| v["connection"] == body.connection)
+            .ok_or(Error(
+                StatusCode::NOT_FOUND,
+                "好友已离线、隐藏位置或连接设置已变化",
+            ))?;
+        Ok(Json(location))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -379,9 +476,9 @@ pub async fn messages(
     Query(page): Query<Page>,
 ) -> Api<Json<Value>> {
     app.work(move |a| {
-        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?; device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
-        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch,burn_seconds FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
-        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?,"burn_seconds":r.get::<_,Option<i64>>(10)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;accepted(&db,s.user.id,peer)?;let unlocked=device(&db,&s,&headers).is_ok();let (own,other,_)=encryption_state(&db,s.user.id,peer)?;if !unlocked&&!(own&&other){device(&db,&s,&headers)?;}
+        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch,burn_seconds FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=1 OR mode='server') AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
+        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),unlocked,page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?,"burn_seconds":r.get::<_,Option<i64>>(10)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         Ok(Json(json!({"messages":rows})))
     }).await
 }
@@ -453,7 +550,7 @@ pub async fn send(
     });
     let (owner,key,duplicate,storage)=app.work(move |a| {
         let s=current(a,&check_headers)?;let runtime=a.runtime.read().unwrap();
-        let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&check_headers)?; accepted(&db,s.user.id,peer)?;
+        let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;if mode=="e2ee" {device(&db,&s,&check_headers)?;} accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&mode,epoch)?;
         if mode=="server" {crate::friend_content::validate(&validation,&a.config.origin(),&id,s.user.id,peer,(burn,burn_seconds),epoch)?;}
         if !storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"管理员尚未启用私有对象存储，私信不会降级为明文"));}
@@ -493,7 +590,7 @@ pub async fn send(
             })?;
     }
     app.work(move|a| {
-        let s=current(a,&headers)?;let mut connection=a.db.connection.lock().unwrap();let db=connection.transaction().map_err(db_error)?;session_valid(&db,&s)?;device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
+        let s=current(a,&headers)?;let mut connection=a.db.connection.lock().unwrap();let db=connection.transaction().map_err(db_error)?;session_valid(&db,&s)?;if body.mode=="e2ee" {device(&db,&s,&headers)?;}accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&body.mode,epoch)?;
         if body.mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=target_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备已变化，消息未送达"));}}
         let ready:Option<bool>=db.query_row("SELECT ready FROM friend_messages WHERE id=? AND sender=? AND recipient=? AND expires>?",params![body.id,s.user.id,peer,now()],|r|r.get(0)).optional().map_err(db_error)?;
@@ -516,9 +613,9 @@ pub async fn content(
     let h = headers.clone();
     let mid = id.clone();
     let (sender,recipient,key,mode,epoch)=app.work(move|a| {
-        let s=current(a,&h)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&h)?;
+        let s=current(a,&h)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let row:Option<(i64,i64,String,String,i64)>=db.query_row("SELECT sender,recipient,object_key,mode,mode_epoch FROM friend_messages WHERE id=? AND (sender=? OR recipient=?) AND ready=1 AND expires>?",params![mid,s.user.id,s.user.id,now()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(db_error)?;
-        let (sender,recipient,key,mode,epoch)=row.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在或已过期"))?;
+        let (sender,recipient,key,mode,epoch)=row.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在或已过期"))?;if mode=="e2ee" {device(&db,&s,&h)?;}
         accepted(&db,s.user.id,if sender==s.user.id{recipient}else{sender})?;Ok((sender,recipient,key,mode,epoch))
     }).await?;
     let storage = app.runtime.read().unwrap().settings.storage.clone();
@@ -533,7 +630,10 @@ pub async fn content(
     app.work(move |a| {
         let s = current(a, &headers)?;
         let db = a.db.connection.lock().unwrap();
-        device(&db, &s, &headers)?;
+        session_valid(&db, &s)?;
+        if mode == "e2ee" {
+            device(&db, &s, &headers)?;
+        }
         accepted(
             &db,
             s.user.id,
@@ -570,9 +670,9 @@ pub async fn read(
     Path(id): Path<String>,
 ) -> Api<Json<Value>> {
     app.work(move|a| {
-        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;
+        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let peer:Option<i64>=db.query_row("SELECT sender FROM friend_messages WHERE id=? AND recipient=? AND ready=1 AND (expires>? OR (burn=1 AND read_at IS NOT NULL))",params![id,s.user.id,now()],|r|r.get(0)).optional().map_err(db_error)?;
-        accepted(&db,s.user.id,peer.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在"))?)?;
+        accepted(&db,s.user.id,peer.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在"))?)?;let mode:String=db.query_row("SELECT mode FROM friend_messages WHERE id=?",[&id],|r|r.get(0)).map_err(db_error)?;if mode=="e2ee" {device(&db,&s,&headers)?;}
         db.execute("UPDATE friend_messages SET read_at=COALESCE(read_at,?),expires=CASE WHEN burn=1 AND read_at IS NULL THEN min(expires,?+COALESCE(burn_seconds,0)) ELSE expires END WHERE id=? AND recipient=?",params![now(),now(),id,s.user.id]).map_err(db_error)?;
         let (read_at,expires):(i64,i64)=db.query_row("SELECT read_at,expires FROM friend_messages WHERE id=? AND recipient=?",params![id,s.user.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
         Ok(Json(json!({"message":"已读","read_at":read_at,"expires":expires})))

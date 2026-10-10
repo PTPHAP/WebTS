@@ -63,6 +63,17 @@ async fn call(
 }
 
 #[tokio::test]
+async fn screen_capture_policy_blocks_this_origin_without_disabling_voice() {
+    let (_directory, app) = setup();
+    let (status, headers, _) = call(&app, "/health", None, "", "https://webts.example").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers["permissions-policy"],
+        "display-capture=(), camera=(), microphone=(self)"
+    );
+    assert_eq!(headers["x-frame-options"], "DENY");
+}
+#[tokio::test]
 async fn site_branding_policies_and_footer_are_admin_only_sanitized_and_preserved() {
     let (directory, app) = setup();
     let pw = "synthetic site admin password";

@@ -43,19 +43,19 @@ jobs:
       - name: Linux release package
         run: |
           cargo build --release --package web-ts --locked
-          mkdir -p .cache/package/webts-0.1.0-linux-x64/web
-          cp target/release/web-ts .cache/package/webts-0.1.0-linux-x64/
-          cp -r web/dist .cache/package/webts-0.1.0-linux-x64/web/
-          cp -r deploy docs scripts README.md PRIVACY.md TERMS.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-0.1.0-linux-x64/
-          sh scripts/collect-licenses.sh .cache/package/webts-0.1.0-linux-x64/licenses
-          chmod +x .cache/package/webts-0.1.0-linux-x64/scripts/run.sh
-          tar -czf .cache/webts-0.1.0-linux-x64.tar.gz -C .cache/package webts-0.1.0-linux-x64
-          sha256sum .cache/webts-0.1.0-linux-x64.tar.gz > .cache/SHA256SUMS
+          mkdir -p .cache/package/webts-1.0.0-linux-x64/web
+          cp target/release/web-ts .cache/package/webts-1.0.0-linux-x64/
+          cp -r web/dist .cache/package/webts-1.0.0-linux-x64/web/
+          cp -r deploy docs scripts README.md CHANGELOG.md PRIVACY.md TERMS.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-1.0.0-linux-x64/
+          sh scripts/collect-licenses.sh .cache/package/webts-1.0.0-linux-x64/licenses
+          chmod +x .cache/package/webts-1.0.0-linux-x64/scripts/run.sh
+          tar -czf .cache/webts-1.0.0-linux-x64.tar.gz -C .cache/package webts-1.0.0-linux-x64
+          sha256sum .cache/webts-1.0.0-linux-x64.tar.gz > .cache/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: webts-0.1.0-linux-x64
+          name: webts-1.0.0-linux-x64
           path: |
-            .cache/webts-0.1.0-linux-x64.tar.gz
+            .cache/webts-1.0.0-linux-x64.tar.gz
             .cache/SHA256SUMS
   docker:
     runs-on: ubuntu-24.04
@@ -78,13 +78,13 @@ jobs:
       - name: Verify complete source archive deployment
         run: |
           python3 scripts/package-source.py
-          unzip -q .cache/source-release/webts-0.1.0-preview.1-source.zip -d /tmp/webts-source-check
-          cd /tmp/webts-source-check/webts-0.1.0-preview.1-source
+          unzip -q .cache/source-release/webts-1.0.0-source.zip -d /tmp/webts-source-check
+          cd /tmp/webts-source-check/webts-1.0.0-source
           docker build -t webts:source-ci .
           docker run --rm webts:source-ci init-key /tmp/master.key
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: webts-source
           path: |
-            .cache/source-release/webts-0.1.0-preview.1-source.zip
+            .cache/source-release/webts-1.0.0-source.zip
             .cache/source-release/SHA256SUMS_SOURCE

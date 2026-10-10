@@ -138,7 +138,7 @@ export class Voice {
         const channel=message.members.find((member:{id:number})=>member.id===message.own)?.channel;
         this.currentChannel=channel;
         if(this.restoreChannel!==undefined&&channel!==this.restoreChannel){
-          if(!this.restoring){this.restoring=true;const target=message.channels.find((c:{id:number})=>c.id===this.restoreChannel);if(target)this.event({type:'restore_channel',channel:target.id,name:target.name});else{this.restoreChannel=undefined;this.event({type:'notice',message:'断线前的频道已不存在，已留在服务器默认频道。'});}}
+          if(!this.restoring){this.restoring=true;const target=message.channels.find((c:{id:number})=>c.id===this.restoreChannel);if(target)this.event({type:'restore_channel',channel:target.id,name:target.name,server_uid:message.serverInfo?.uid,destination:message.destination});else{this.restoreChannel=undefined;this.event({type:'notice',message:'断线前的频道已不存在，已留在服务器默认频道。'});}}
         }else{this.restoreChannel=undefined;this.restoring=false;}
         if(this.restoreChannel===undefined)this.lastChannel=channel;
       }

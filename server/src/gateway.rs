@@ -39,6 +39,8 @@ struct Entry {
     identity: String,
     uid: String,
     target: String,
+    address: String,
+    location: Option<Value>,
     server: String,
     page: String,
     port: u16,
@@ -48,6 +50,7 @@ pub struct Connections {
     max: usize,
     shutting_down: AtomicBool,
     entries: Mutex<HashMap<String, Entry>>,
+    presence: Mutex<HashMap<i64, HashMap<String, Instant>>>,
 }
 struct Lease {
     registry: Arc<Connections>,
@@ -67,6 +70,7 @@ impl Connections {
             max,
             shutting_down: AtomicBool::new(false),
             entries: Mutex::new(HashMap::new()),
+            presence: Mutex::new(HashMap::new()),
         }
     }
     pub fn cancel(&self, owner: i64, session: Option<&str>, identity: Option<&str>) {
@@ -86,6 +90,60 @@ impl Connections {
             .values()
             .filter(|e| e.owner == owner)
             .count()
+    }
+    pub fn touch(&self, owner: i64, session: &str) {
+        let mut users = self.presence.lock().unwrap();
+        if users.len() >= 5000 {
+            users.retain(|_, sessions| {
+                sessions.retain(|_, at| at.elapsed() < Duration::from_secs(45));
+                !sessions.is_empty()
+            });
+            if users.len() >= 5000 && !users.contains_key(&owner) {
+                return;
+            }
+        }
+        let sessions = users.entry(owner).or_default();
+        sessions.retain(|_, at| at.elapsed() < Duration::from_secs(45));
+        if sessions.len() >= 4
+            && !sessions.contains_key(session)
+            && let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(s, _)| s.clone())
+        {
+            sessions.remove(&oldest);
+        }
+        sessions.insert(session.into(), Instant::now());
+    }
+    pub fn activity(&self, owner: i64) -> (Vec<String>, Vec<(String, Value)>) {
+        let sessions = self
+            .presence
+            .lock()
+            .unwrap()
+            .get(&owner)
+            .map(|s| {
+                s.iter()
+                    .filter(|(_, at)| at.elapsed() < Duration::from_secs(45))
+                    .map(|(s, _)| s.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let locations = self.entries.lock().unwrap().iter().filter(|(_, e)| e.owner == owner && !e.cancel.is_cancelled()).filter_map(|(id, e)| e.location.as_ref().map(|location| (e.session.clone(), json!({"connection":id,"server":e.server,"address":e.address,"location":location})))).collect();
+        (sessions, locations)
+    }
+    fn update_location(&self, id: &str, state: &mut Value) {
+        let own = state["members"]
+            .as_array()
+            .and_then(|members| members.iter().find(|m| m["id"] == state["own"]));
+        let channel = own.and_then(|own| {
+            state["channels"]
+                .as_array()
+                .and_then(|channels| channels.iter().find(|c| c["id"] == own["channel"]))
+        });
+        if let Some(e) = self.entries.lock().unwrap().get_mut(id) {
+            e.location = channel.map(|c| json!({"server_name":state["server"],"server_uid":state["serverInfo"]["uid"],"channel":c["id"],"channel_name":c["name"],"password":c["password"]}));
+            state["destination"] = json!(e.address);
+        }
     }
     fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
         if self.shutting_down.load(Ordering::Acquire) {
@@ -330,6 +388,8 @@ async fn bridge(
                 identity: request.identity.clone(),
                 uid,
                 target: target.to_string(),
+                address: source.clone(),
+                location: None,
                 server: request.server.clone(),
                 page: request.page,
                 port: 0,
@@ -382,6 +442,7 @@ async fn bridge(
         &media_cancel,
         done,
         &mut audio_rx,
+        &lease.id,
     )
     .await;
     media.close().await;
@@ -538,6 +599,7 @@ async fn connected(
     media_cancel: &CancellationToken,
     done: &CancellationToken,
     audio: &mut mpsc::Receiver<rtc::rtp::Packet>,
+    connection_id: &str,
 ) -> Result<()> {
     let mut timer = tokio::time::interval(Duration::from_millis(100));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -579,7 +641,7 @@ async fn connected(
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 for completed in images.expire(){emit(tx,crate::channel_images::event(conn,completed))?;}
-                if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;emit(tx,snapshot(conn)?)?;changed=false;}
+                if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;let mut state=snapshot(conn)?;app.connections.update_location(connection_id,&mut state);emit(tx,state)?;changed=false;}
                 if network_check.elapsed()>=Duration::from_secs(2){emit(tx,json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}))?;if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
@@ -1125,6 +1187,57 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presence_reports_only_live_owned_leases_and_authoritative_channel_metadata() {
+        use super::*;
+        let registry = Arc::new(Connections::new(2));
+        registry.touch(7, "session-seven");
+        let lease = registry
+            .reserve(
+                Entry {
+                    owner: 7,
+                    session: "session-seven".into(),
+                    identity: "private identity id".into(),
+                    uid: "private client uid".into(),
+                    target: "203.0.113.4:9987".into(),
+                    address: "ts.example.invalid:9987".into(),
+                    location: None,
+                    server: String::new(),
+                    page: "page".into(),
+                    port: 0,
+                    cancel: CancellationToken::new(),
+                },
+                40000,
+                40001,
+            )
+            .unwrap();
+        let mut state = json!({"own":4,"server":"Music server","serverInfo":{"uid":"public server uid","welcome":"not shared"},"members":[{"id":4,"channel":9}],"channels":[{"id":9,"name":"Game room","password":true,"description":"not shared"}]});
+        registry.update_location(&lease.id, &mut state);
+        let (sessions, locations) = registry.activity(7);
+        assert_eq!(sessions, vec!["session-seven"]);
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].1["location"]["channel"], 9);
+        assert_eq!(state["destination"], "ts.example.invalid:9987");
+        let visible = locations[0].1.to_string();
+        assert!(!visible.contains("private"));
+        assert!(!visible.contains("not shared"));
+        assert!(registry.activity(8).1.is_empty());
+        registry.cancel(7, None, None);
+        assert!(registry.activity(7).1.is_empty());
+        drop(lease);
+        assert_eq!(registry.count(7), 0);
+        registry
+            .presence
+            .lock()
+            .unwrap()
+            .get_mut(&7)
+            .unwrap()
+            .insert(
+                "session-seven".into(),
+                Instant::now() - Duration::from_secs(46),
+            );
+        assert!(registry.activity(7).0.is_empty());
+    }
     #[test]
     fn editing_does_not_reset_unmentioned_attributes_and_rejects_invalid_values() {
         use serde_json::json;

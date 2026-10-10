@@ -270,6 +270,12 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route("/me", get(me))
         .route("/friends/me", get(crate::friends::me))
+        .route(
+            "/preferences",
+            get(crate::preferences::get).patch(crate::preferences::update),
+        )
+        .route("/friends/presence", post(crate::friends::presence))
+        .route("/friends/{peer}/join", post(crate::friends::join))
         .route("/friends/key", post(crate::friends::set_key))
         .route("/friends/device", post(crate::friends::activate))
         .route("/friends/{peer}/prekey", post(crate::friends::claim))
@@ -382,6 +388,10 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
     );
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert(
+        "permissions-policy",
+        HeaderValue::from_static("display-capture=(), camera=(), microphone=(self)"),
+    );
     h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"));
     if api {
         h.insert("cache-control", HeaderValue::from_static("no-store"));

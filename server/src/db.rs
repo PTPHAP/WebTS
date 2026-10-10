@@ -123,7 +123,11 @@ impl Db {
           CREATE TABLE IF NOT EXISTS friend_request_limits(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,window INTEGER NOT NULL,count INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS friend_prekeys(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,key TEXT NOT NULL,device TEXT NOT NULL,bundle TEXT NOT NULL,used INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,key));")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS friend_modes(lo INTEGER NOT NULL,hi INTEGER NOT NULL,allow_lo INTEGER NOT NULL DEFAULT 0 CHECK(allow_lo IN(0,1)),allow_hi INTEGER NOT NULL DEFAULT 0 CHECK(allow_hi IN(0,1)),epoch INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(lo,hi),FOREIGN KEY(lo,hi) REFERENCES friendships(lo,hi) ON DELETE CASCADE);")?;
+        if !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('friend_keys') WHERE name='share_presence')", [], |r| r.get::<_, bool>(0))? {
+            connection.execute("ALTER TABLE friend_keys ADD COLUMN share_presence INTEGER NOT NULL DEFAULT 1 CHECK(share_presence IN(0,1))", [])?;
+        }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS storage_probes(object_key TEXT PRIMARY KEY,created_at INTEGER NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS account_preferences(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,data TEXT NOT NULL CHECK(length(data)<=4096))")?;
         for (column, definition) in [
             ("mode", "TEXT NOT NULL DEFAULT 'e2ee'"),
             ("mode_epoch", "INTEGER NOT NULL DEFAULT 0"),

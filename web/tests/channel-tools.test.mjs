@@ -6,7 +6,7 @@ import {createRequire} from 'node:module';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import ts from 'typescript';
-async function module(name){const context=vm.createContext({require:createRequire(import.meta.url),exports:{}});vm.runInContext(ts.transpileModule(await readFile(new URL(`../src/${name}`,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,context);return context.exports;}
+async function module(name){const context=vm.createContext({require:name=>name==='./account-preferences'?{useAccountPreference:()=>{throw Error('helper test must not mount preference hook');}}:createRequire(import.meta.url)(name),exports:{}});vm.runInContext(ts.transpileModule(await readFile(new URL(`../src/${name}`,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,context);return context.exports;}
 const {channelPatch}=await module('ChannelEditor.tsx');
 const {previewHeight}=await module('ChannelPreview.tsx');
 const {Legal}=await module('Legal.tsx');

@@ -13,6 +13,354 @@ use web_ts::{
 const ORIGIN: &str = "https://friends.example";
 const PASSWORD: &str = "synthetic friends fixture password only";
 #[tokio::test]
+async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_account_writes() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "settings-a@example.invalid");
+    let (bi, b) = user(&app, "settings-b@example.invalid");
+    assert_eq!(
+        call(&app, "/preferences", None, &a, "", ORIGIN).await.1["initialized"],
+        false
+    );
+    let change = |account, patch| json!({"account":account,"patch":patch});
+    assert_eq!(
+        call(
+            &app,
+            "/preferences",
+            Some(change(ai, json!({"burn":true,"burnSeconds":600}))),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let patch = |cookie: &str, body: Value| {
+        Request::builder()
+            .method("PATCH")
+            .uri("/api/preferences")
+            .header("cookie", cookie)
+            .header("origin", ORIGIN)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    assert_eq!(
+        router(app.clone())
+            .oneshot(patch(
+                &a,
+                change(ai, json!({"burn":true,"burnSeconds":600}))
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let (_, second) = {
+        let hash = app
+            .db
+            .password("settings-a@example.invalid")
+            .unwrap()
+            .unwrap()
+            .1;
+        (
+            ai,
+            format!(
+                "__Host-webts={}",
+                app.db.create_session(ai, false, &hash).unwrap()
+            ),
+        )
+    };
+    assert_eq!(
+        call(&app, "/preferences", None, &second, "", ORIGIN)
+            .await
+            .1["preferences"]["burnSeconds"],
+        600
+    );
+    assert_eq!(
+        router(app.clone())
+            .oneshot(patch(&second, change(ai, json!({"theme":"light"}))))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let values = call(&app, "/preferences", None, &a, "", ORIGIN).await.1["preferences"].clone();
+    assert_eq!(values["burn"], true);
+    assert_eq!(values["theme"], "light");
+    assert_eq!(
+        call(&app, "/preferences", None, &b, "", ORIGIN).await.1["preferences"],
+        json!({})
+    );
+    for invalid in [
+        change(bi, json!({"burn":false})),
+        change(ai, json!({"password":"secret"})),
+        change(ai, json!({"audio":{"input":"private-device-id"}})),
+        change(ai, json!({"burnSeconds":604801})),
+        change(ai, json!({"__proto__":{"polluted":true}})),
+    ] {
+        assert_eq!(
+            router(app.clone())
+                .oneshot(patch(&a, invalid))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        router(app.clone())
+            .oneshot(patch(
+                &second,
+                json!({"account":ai,"patch":{"burn":false},"initialize":true})
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/preferences", None, &a, "", ORIGIN).await.1["preferences"]["burn"],
+        true,
+        "other browser initialization never overwrites saved preferences"
+    );
+    call(&app, "/auth/logout", Some(json!({})), &a, "", ORIGIN).await;
+    assert_eq!(
+        router(app.clone())
+            .oneshot(patch(&a, change(ai, json!({"burn":false}))))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+#[tokio::test]
+async fn ordinary_chat_needs_account_consent_but_no_private_identity_and_cannot_read_e2ee() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "ordinary-a@example.invalid");
+    let (bi, b) = user(&app, "ordinary-b@example.invalid");
+    let (_, outsider) = user(&app, "ordinary-outsider@example.invalid");
+    for cookie in [&a, &b] {
+        assert_eq!(
+            call(&app, "/friends/me", None, cookie, "", ORIGIN).await.0,
+            StatusCode::OK
+        );
+    }
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO friendships VALUES(?,?,?,1,0,0)",
+            rusqlite::params![ai, bi, ai],
+        )
+        .unwrap();
+    let consent = json!({"server_decrypt":true,"acknowledge":true});
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}/encryption"),
+            Some(consent.clone()),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .1["mode"],
+        "e2ee"
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{ai}/encryption"),
+            Some(consent),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .1["mode"],
+        "server"
+    );
+    let mid = "f041b157-319f-4bf3-970e-7a04e30bd070";
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,2),"mode":"server","epoch":2})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE,"passes identity and content checks; storage remains mandatory");
+    {
+        let db = app.db.connection.lock().unwrap();
+        for (id, mode) in [("normal-history", "server"), ("e2ee-history", "e2ee")] {
+            db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,mode,mode_epoch,burn,burn_seconds) VALUES(?,?,?,?,?,0,?,1,?,2,1,60)",rusqlite::params![id,ai,bi,id,"hash",web_ts::db::now()+3600,mode]).unwrap();
+        }
+    }
+    let rows = call(
+        &app,
+        &format!("/friends/{ai}/messages"),
+        None,
+        &b,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(rows.0, StatusCode::OK);
+    assert_eq!(rows.1["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(rows.1["messages"][0]["id"], "normal-history");
+    assert_eq!(
+        call(&app, "/friends/messages/e2ee-history", None, &b, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let read = call(
+        &app,
+        "/friends/messages/normal-history/read",
+        Some(json!({})),
+        &b,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(read.0, StatusCode::OK);
+    assert!(read.1["expires"].as_i64().unwrap() <= web_ts::db::now() + 60);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages/normal-history/read",
+            Some(json!({})),
+            &outsider,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages/e2ee-history/read",
+            Some(json!({})),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{ai}/encryption"),
+            Some(json!({"server_decrypt":false})),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,2),"mode":"server","epoch":2})),&a,"",ORIGIN).await.0,StatusCode::CONFLICT);
+}
+#[tokio::test]
+async fn presence_is_friends_only_hidden_on_request_and_revoked_with_session() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "presence-a@example.invalid");
+    let (bi, b) = user(&app, "presence-b@example.invalid");
+    let (_, outsider) = user(&app, "presence-outsider@example.invalid");
+    for cookie in [&a, &b] {
+        call(&app, "/friends/me", None, cookie, "", ORIGIN).await;
+    }
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO friendships VALUES(?,?,?,0,0,0)",
+            rusqlite::params![ai, bi, ai],
+        )
+        .unwrap();
+    assert!(
+        call(&app, "/friends", None, &a, "", ORIGIN).await.1["friends"][0]
+            .get("online")
+            .is_none()
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE friendships SET status=1", [])
+        .unwrap();
+    assert_eq!(
+        call(&app, "/friends", None, &a, "", ORIGIN).await.1["friends"][0]["online"],
+        true
+    );
+    assert_eq!(
+        call(&app, "/friends", None, &outsider, "", ORIGIN).await.1["friends"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}/join"),
+            Some(json!({"connection":"arbitrary"})),
+            &outsider,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/presence",
+            Some(json!({"share":false})),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/friends", None, &a, "", ORIGIN).await.1["friends"][0]["online"],
+        false
+    );
+    call(
+        &app,
+        "/friends/presence",
+        Some(json!({"share":true})),
+        &b,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        call(&app, "/auth/logout", Some(json!({})), &b, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/friends", None, &a, "", ORIGIN).await.1["friends"][0]["online"],
+        false
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}/join"),
+            Some(json!({"connection":"arbitrary"})),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+}
+#[tokio::test]
 async fn account_friends_share_updated_profiles_without_exposing_email_or_needing_chat_keys() {
     let (_root, app) = setup();
     let (alice, ac) = user(&app, "community-alice@example.invalid");
@@ -716,7 +1064,7 @@ async fn expired_objects_burn_ack_and_account_isolation_are_enforced_before_buck
         )
         .await
         .0,
-        StatusCode::CONFLICT
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         call(
@@ -998,7 +1346,7 @@ async fn removing_requests_does_not_reset_account_rate_limits() {
 }
 
 #[tokio::test]
-async fn encryption_requires_paired_password_consent_and_invalidates_inflight_uploads() {
+async fn encryption_requires_paired_explicit_consent_and_invalidates_inflight_uploads() {
     let (_root, app) = setup();
     let (ai, a) = user(&app, "alice@example.invalid");
     let (bi, b) = user(&app, "bob@example.invalid");
@@ -1089,7 +1437,7 @@ async fn encryption_requires_paired_password_consent_and_invalidates_inflight_up
         call(&app, &pa, Some(consent.clone()), &a, &lb, ORIGIN)
             .await
             .0,
-        StatusCode::CONFLICT
+        StatusCode::OK
     );
     let first = call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN).await;
     assert_eq!(first.0, StatusCode::OK);

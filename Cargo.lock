@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "web-ts"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -4658,7 +4658,7 @@ dependencies = [
 
 [[package]]
 name = "webts-crypto"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde",
  "serde_json",

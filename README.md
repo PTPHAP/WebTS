@@ -20,7 +20,7 @@
 
 WebTS 是独立开源的 **TeamSpeak 网页客户端与协议网关**。成员通过邮箱登录、创建或导入 TeamSpeak 身份，在浏览器里加入已有频道；网站以该身份连接目标服务器，继承它原有的权限。部署者掌握自己的账号数据库、密钥、邮件服务和默认服务器配置。
 
-> **1.0.1 正式源码版本。** 核心发布范围是自托管账号、TS3 网关与网页工作区；好友 E2EE、TS6 和移动语音继续标为实验支持。 已有真实 TS3 协议联调、浏览器双向语音及 Linux 安装/更新检查。TS6、移动语音、各浏览器完整兼容、TURN 长连接及容量指标仍在验收中。[查看支持与验证范围](docs/SUPPORT.md)。
+> **1.0.2 正式源码版本。** 核心发布范围是自托管账号、TS3 网关与网页工作区；好友 E2EE、TS6 和移动语音继续标为实验支持。 已有真实 TS3 协议联调、浏览器双向语音及 Linux 安装/更新检查。TS6、移动语音、各浏览器完整兼容、TURN 长连接及容量指标仍在验收中。[查看支持与验证范围](docs/SUPPORT.md)。
 
 ## 界面预览
 
@@ -54,7 +54,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 发布维护通知与更新邮件 | [信件与通知](docs/NOTIFICATIONS.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
-完整导航见 [文档中心](docs/README.md)。[正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.0.1)提供完整源码 ZIP 和 SHA256 校验，含固定协议子模块；GitHub 自动生成的 Source code 归档不含子模块，请优先使用完整源码包。
+完整导航见 [文档中心](docs/README.md)。[正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.0.2)提供完整源码 ZIP 和 SHA256 校验，含固定协议子模块；GitHub 自动生成的 Source code 归档不含子模块，请优先使用完整源码包。
 
 ## 已提供的功能
 

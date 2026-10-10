@@ -39,7 +39,7 @@ export function Friends({open,inline,close,onUnread,onNew}:{open:boolean;inline:
       if(create){if(passphrase!==confirm)throw new Error('两次密钥口令不同');identity=await createIdentity(me.id,passphrase);await saveLocal('keys',`identity:${me.id}`,identity);setBackup(identity);await api('/friends/key',{password,public_key:identity.publicKey});download(identity);}
       if(!identity)throw new Error('请先导入私信身份备份');const own=await api<Me>('/friends/me');setMe(own);
       if(!own.public_key){await api('/friends/key',{password,public_key:identity.publicKey});own.public_key=identity.publicKey;}
-      const local=await loadLocal<Encrypted>('keys',`state:${me.id}`);state=await unlockState(identity,local,me.id,own.public_key,passphrase);
+      const local=await loadLocal<Encrypted>('keys',`state:${me.id}`);state=await unlockState(identity,local,me.id,own.public_key,passphrase);state.saved.lease=Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
       const pre=JSON.parse(state.engine.prekeys());await persist(state);
       await api('/friends/device',{password,lease:state.saved.lease,device:state.saved.device,...pre});
       if(!alive.current){state.engine.free();localRelease.current?.();return;}

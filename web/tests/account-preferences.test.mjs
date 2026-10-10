@@ -25,3 +25,6 @@ test('failed saves retain the newest field value and retry with bounded delay',a
 test('private-screen mask follows background and focus changes and unregisters handlers',async()=>{
   const f=await fixture('private-screen.ts');assert.equal(f.module.usePrivateScreen(),false);f.document.hasFocus=()=>false;f.events.get('blur')();assert.equal(f.states[0].value,true);f.document.hasFocus=()=>true;f.events.get('focus')();assert.equal(f.states[0].value,false);f.document.hidden=true;f.events.get('visibilitychange')();assert.equal(f.states[0].value,true);f.cleanups.forEach(fn=>fn?.());assert.equal(f.events.size,0);
 });
+test('initial preference saturation retries in five seconds and does not discard a user edit before initialization',async()=>{
+  let count=0;const f=await fixture('account-preferences.ts',async(path,body)=>{if(++count===1)throw Error('busy');return {account:1,initialized:true,preferences:{burn:false,...body?.patch}};});const [,burn]=f.module.useAccountPreference('burn',false);const stop=f.module.startPreferences(1,()=>{});await f.drain();assert.equal([...f.timers.values()][0].ms,5000);burn(true);await f.tick();await f.drain();if(f.timers.size)await f.tick();assert.equal(f.states[0].value,true);assert.equal(count,3);stop();
+});

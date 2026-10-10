@@ -26,7 +26,7 @@ export function OrdinaryChat({account,peer,name,epoch,active,enabled,days,refres
       }catch(e){next.error=e instanceof Error?e.message:'读取失败';result.push(next);}
     }
     // Bound decoded memory, including pictures, independently of bucket quotas.
-    let bytes=0;const bounded:Message[]=[];for(const row of result.reverse()){bytes+=JSON.stringify(row.value??{}).length*2;if(bytes>2*1024*1024)break;bounded.unshift(row);}if(alive.current){setRows(bounded);await refresh();}
+    let bytes=0;const bounded:Message[]=[];for(const row of result.reverse()){bytes+=JSON.stringify(row.value??{}).length*2;if(bytes>2*1024*1024)break;bounded.unshift(row);}if(alive.current)setRows(bounded);
   }catch(e){if(alive.current)setStatus(e instanceof Error?e.message:'读取失败');}finally{working.current=false;}}
   useEffect(()=>{alive.current=true;void receive();const poll=setInterval(()=>{if(document.visibilityState==='visible')void receive();},5000);const expire=setInterval(()=>setRows(v=>{const next=v.filter(r=>r.expires>Date.now()/1000);return next.length===v.length?v:next;}),1000);return()=>{alive.current=false;clearInterval(poll);clearInterval(expire);};},[]);
   useEffect(()=>{if(active)void receive();},[active]);
@@ -34,7 +34,7 @@ export function OrdinaryChat({account,peer,name,epoch,active,enabled,days,refres
   useEffect(()=>{const warn=(e:BeforeUnloadEvent)=>{if(pending){e.preventDefault();}};window.addEventListener('beforeunload',warn);return()=>{window.removeEventListener('beforeunload',warn);};},[pending]);
   async function send(sticker?:string){if(working.current||busy||!enabled)return;if(!pending&&!draft.trim()&&!image&&!sticker)return;working.current=true;setBusy(true);let outgoing=pending;
     try{if(!outgoing){const value:Envelope={version:1,site:location.origin,id:crypto.randomUUID(),sender:account,recipient:peer,expires:Math.floor(Date.now()/1000)+days*86400,text:draft,image:image||undefined,sticker,burn,burn_seconds:burn?seconds:undefined};outgoing={peer,id:value.id,ciphertext:await sealServerMessage(value,epoch),burn,burn_seconds:value.burn_seconds,mode:'server',epoch};if(!alive.current)return;setPending(outgoing);}
-      await api('/friends/messages',outgoing);if(alive.current){setPending(undefined);setDraft('');setImage('');setStatus('私信已送达 · 本站可解密');}
+      await api('/friends/messages',outgoing);if(alive.current){setPending(undefined);setDraft('');setImage('');setStatus('私信已送达 · 本站可解密');void refresh().catch(()=>{});}
     }catch(e){if(alive.current)setStatus(`${e instanceof Error?e.message:'发送失败'}；可重试同一份密文。`);}finally{working.current=false;if(alive.current){setBusy(false);void receive();}}
   }
   return <><p className="friend-status">普通聊天 · HTTPS 传输与 AES-256-GCM 加密存储。本站可以解密；只有双方账号可通过接口读取，不需要私信身份或口令。</p>{!enabled&&<p role="alert">管理员尚未启用私有对象存储，暂不能发送；不会降级为明文保存。</p>}{status&&<p role="status" className="friend-status">{status}</p>}

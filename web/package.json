@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "node scripts/audio-assets.mjs",
+    "predev": "node scripts/audio-assets.mjs && node scripts/crypto-assets.mjs",
     "dev": "vite --host 127.0.0.1",
-    "pretest": "node scripts/audio-assets.mjs",
+    "pretest": "node scripts/audio-assets.mjs && node scripts/crypto-assets.mjs",
     "test": "node --test tests/*.test.mjs",
-    "prebuild": "node scripts/audio-assets.mjs",
+    "prebuild": "node scripts/audio-assets.mjs && node scripts/crypto-assets.mjs",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false"
   },
@@ -21,6 +21,6 @@
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "typescript": "5.9.3",
-    "vite": "7.1.7"
+    "vite": "7.3.7"
   }
 }

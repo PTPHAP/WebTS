@@ -19,7 +19,7 @@ jobs:
       - name: Apply protocol patch
         run: sh scripts/prepare-vendor.sh
       - name: Format
-        run: cargo fmt --package web-ts -- --check
+        run: cargo fmt --package web-ts --package webts-crypto -- --check
       - name: Check
         run: cargo check --workspace --locked
       - name: Safety tests
@@ -27,10 +27,16 @@ jobs:
       - name: Protocol file transfer boundary tests
         run: rustc --test vendor/tsclientlib/tsclientlib/src/filetransfer_security.rs -o /tmp/webts-ft-tests && /tmp/webts-ft-tests
       - name: Lint project code
-        run: cargo clippy --package web-ts --no-deps --locked -- -D warnings
+        run: cargo clippy --package web-ts --package webts-crypto --no-deps --locked -- -D warnings
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.20.0
+      - name: Build pinned Olm WASM
+        run: sh scripts/build-crypto.sh
+      - name: Verify Olm feature boundary
+        run: |
+          cargo tree --invert vodozemac -e features | tee .cache/olm-features.txt
+          if grep -E 'vodozemac feature "(fuzzing|experimental-session-config)"' .cache/olm-features.txt; then exit 1; fi
       - name: Frontend
         working-directory: web
         run: npm ci --no-audit --no-fund && npm test && npm run build

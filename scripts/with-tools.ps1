@@ -26,6 +26,7 @@ $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = Join-Path $taskRoot 'scripts\li
 # LLVM handles Unicode paths in response files; GNU ld interprets them through
 # the Windows ANSI code page. Encoded flags preserve paths containing spaces.
 $env:CARGO_ENCODED_RUSTFLAGS = @('-Clinker-flavor=ld', '-Clink-self-contained=yes', ('-Lnative=' + (Join-Path $sysroot 'lib\rustlib\x86_64-pc-windows-gnu\lib\self-contained'))) -join [char]31
+if ($Command -contains 'wasm32-unknown-unknown') { $env:CARGO_ENCODED_RUSTFLAGS = '' }
 if ($Command.Count -gt 0) {
     $tool = $Command[0]
     [string[]]$toolArguments = if ($Command.Count -gt 1) { $Command[1..($Command.Count-1)] } else { @() }

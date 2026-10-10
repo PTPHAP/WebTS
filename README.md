@@ -12,7 +12,7 @@
 [![React](https://img.shields.io/badge/UI-React-61dafb?style=flat-square&logo=react&logoColor=white)](web)
 [![Checks](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml/badge.svg)](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)
 
-[安装教程](docs/INSTALL.md) · [配置教程](docs/CONFIGURATION.md) · [使用说明](docs/CLIENT.md) · [支持范围](docs/SUPPORT.md) · [隐私政策](PRIVACY.md)
+[安装教程](docs/INSTALL.md) · [配置教程](docs/CONFIGURATION.md) · [使用说明](docs/CLIENT.md) · [支持范围](docs/SUPPORT.md) · [好友加密私信](docs/FRIENDS.md) · [隐私政策](PRIVACY.md)
 
 </div>
 
@@ -49,6 +49,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 单击预览、调整布局与创建频道 | [工作区与频道管理](docs/WORKSPACE.md) |
 | 查看频道格式、图片与音乐机器人兼容 | [TeamSpeak 渲染与音乐](docs/TEAMSPEAK-RENDERING.md) |
 | 设置 AFK、管理网站账号和封禁 | [AFK 与账号管理](docs/ACCOUNT-ADMIN.md) |
+| 好友、双棘轮私信、阅后即焚及私有S3配置 | [好友与加密存储](docs/FRIENDS.md) |
 | 发布维护通知与更新邮件 | [信件与通知](docs/NOTIFICATIONS.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
@@ -61,7 +62,10 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 账号 | 邮箱验证、密码登录与协议主动确认、可选记住登录、单次链接找回、退出当前或全部设备 |
 | 身份 | 导入、创建、命名、默认项、切换、删除、TS3 兼容导出；显示 UID，各身份权限独立 |
 | 频道 | 按服务器实际顺序显示频道树，成员、介绍、密码频道与切换；支持安全的有限 BBCode |
-| 聊天 | 频道/服务器聊天、独立私聊窗口、明显的消息与戳一戳提示音和提醒 |
+| TS 聊天 | 频道/服务器聊天、独立原生私聊窗口、明显的消息与戳一戳提示音和提醒；两段传输加密 |
+| 好友私信（实验） | 好友码/请求/屏蔽、安全码核对、成熟 Olm v1 双棘轮 E2EE、独立密钥口令与备份；与Signal协议不同 |
+| 临时图片与表情 | 内置贴纸、裁剪图片、自定义表情；好友消息密文保存在私有 S3 桶，默认7天和可选阅后即焚 |
+| 手机界面 | 底部导航，频道、语音聊天、资料和好友独立页面；桌面频道树加宽 |
 | 站点信件 | 右上角信箱、未读与已读、HTML/Markdown通知、裁剪图片、管理员专页发布/撤回；可选订阅更新邮件 |
 | 语音 | Opus 双向通话、自由发言与自动静默停发、默认 V 的可自定义按键发言 |
 | 音频处理 | 本地 GTCRN AI 降噪、RNNoise 轻量档、降噪强度、键鼠抑制；设备支持的回声消除/增益及实际状态 |
@@ -131,3 +135,5 @@ Windows 工具链、测试与配置细节见 [部署指南](docs/DEPLOYMENT.md)�
 
 
 站点外观、图标、站内隐私政策/免责声明和安全HTML页脚见[自定义教程](docs/SITE-CUSTOMIZATION.md)；与原生客户端的差距和验收门槛见[适配清单](docs/CLIENT-COMPATIBILITY.md)。
+
+好友私信需站长在后台“加密临时存储”配置私有S3兼容桶，未配置时禁用发送。一次一台活动私信设备，不提供历史同步；详见[加密边界和设置](docs/FRIENDS.md)。本轮不发布稳定正式版。

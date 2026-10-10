@@ -9,7 +9,7 @@ import ts from 'typescript';
 const require=createRequire(import.meta.url);
 async function module(file,mocks={}){const source=await readFile(new URL(`../src/${file}`,import.meta.url),'utf8');const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;const context=vm.createContext({exports:{},crypto:globalThis.crypto,localStorage:{getItem:()=>null},require:name=>mocks[name]??require(name)});vm.runInContext(code,context);return context.exports;}
 const inbox=await module('Inbox.tsx',{'./api':{api(){throw Error('SSR must not fetch');}}});
-const privateChat=await module('PrivateChat.tsx');
+const privateChat=await module('PrivateChat.tsx',{'./Stickers':await module('Stickers.tsx')});
 const preview=await module('ChannelPreview.tsx');
 test('notice external images require explicit navigation and inline sanitized images stay local',()=>{
   const html=inbox.noticeDisplayHtml('<p>内容</p><img src="https://images.example/a.jpg?a=1&amp;b=2" alt="通知"><img src="data:image/jpeg;base64,c2FmZQ==" alt="本地">');assert.doesNotMatch(html,/<img src="https:/);assert.match(html,/查看外部图片/);assert.match(html,/rel="noopener noreferrer nofollow"/);assert.match(html,/data:image\/jpeg/);assert.equal(inbox.noticeDisplayHtml(html),html);

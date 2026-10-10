@@ -1,15 +1,9 @@
-FROM node:22.20.0-bookworm-slim AS web
-WORKDIR /build/web
-COPY web/package*.json ./
-RUN npm ci --no-audit --no-fund
-COPY web/ ./
-RUN npm run build
-RUN mkdir -p /licenses && for name in react react-dom scheduler; do mkdir -p /licenses/npm-$name; cp node_modules/$name/LICENSE /licenses/npm-$name/; done
-
 FROM rust:1.99.0-bookworm AS gateway
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY server/ server/
+COPY crypto-wasm/ crypto-wasm/
+COPY scripts/build-crypto.sh scripts/build-crypto.sh
 COPY vendor/ vendor/
 COPY patches/ patches/
 COPY config.example.toml ./
@@ -18,7 +12,19 @@ COPY licenses/ licenses/
 COPY scripts/collect-licenses.sh scripts/collect-licenses.sh
 RUN git -C vendor/tsclientlib apply --reverse --check ../../patches/raw-audio.patch 2>/dev/null || git -C vendor/tsclientlib apply ../../patches/raw-audio.patch
 RUN cargo build --release --package web-ts --locked
+RUN sh scripts/build-crypto.sh
 RUN sh scripts/collect-licenses.sh /licenses
+
+
+FROM node:22.20.0-bookworm-slim AS web
+WORKDIR /build/web
+COPY web/package*.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+COPY --from=gateway /build/web/public/crypto ./public/crypto
+RUN npm run build
+RUN mkdir -p /licenses && for name in react react-dom scheduler; do mkdir -p /licenses/npm-$name; cp node_modules/$name/LICENSE /licenses/npm-$name/; done
+
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home webts

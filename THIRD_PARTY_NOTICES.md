@@ -9,7 +9,7 @@
 - 许可：MIT OR Apache-2.0，本项目复用按MIT条款，保留vendor中的完整版权与许可文件。
 - 本地修改：patches/raw-audio.patch，开放原始Opus包，禁止网关模式启动不可取消的自动身份等级计算，让网关检查后拒绝未加密音频，并修复导入ASN.1身份时丢失私钥前导零的问题；不修改加密算法。
 
-其声明子模块同样保留来源与许可。锁文件内各平台依赖的版本及包作者许可声明见[依赖清单](docs/DEPENDENCIES.md)，共447个包（包含本项目）。发布二进制前仍需复核实际打包许可文本与NOTICE。
+其声明子模块同样保留来源与许可。锁文件内各平台依赖的版本及包作者许可声明见[依赖清单](docs/DEPENDENCIES.md)，共488个包（包含本项目）。发布二进制前仍需复核实际打包许可文本与NOTICE。
 
 本项目为第三方兼容客户端，不代表TeamSpeak官方产品、授权或背书。
 
@@ -37,3 +37,7 @@ scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（Ho
 ## 通知 Markdown 渲染
 
 固定 pulldown-cmark 0.13.0（MIT）用于通知Markdown转HTML，渲染结果再交给 ammonia 白名单过滤；来源：https://github.com/pulldown-cmark/pulldown-cmark 。相关许可证由发布流程收集，版本和传递依赖见锁文件及依赖清单。
+
+## 好友双棘轮与WASM
+
+固定 vodozemac 0.11.1（Matrix.org Foundation及贡献者，Apache-2.0）提供标准Olm v1双棘轮和身份签名；不启用实验Olm v2或fuzzing。来源：https://github.com/matrix-org/vodozemac 。WebTS的MIT薄绑定不改变其许可，不代表Signal实现或官方背书。固定 wasm-bindgen 0.2.129（MIT OR Apache-2.0）生成浏览器接口；发布构建下载官方CLI并校验摘要，依赖许可证随发布包收集。传递依赖按锁文件许可原文保留。

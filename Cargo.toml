@@ -1,5 +1,5 @@
 [workspace]
-members = ["server"]
+members = ["server", "crypto-wasm"]
 exclude = ["vendor/tsclientlib"]
 resolver = "2"
 

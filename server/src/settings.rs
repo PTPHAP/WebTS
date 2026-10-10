@@ -19,6 +19,8 @@ use zeroize::{Zeroize, Zeroizing};
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
+    pub storage: crate::storage::Storage,
+    #[serde(default)]
     pub home: crate::site::Home,
     #[serde(default)]
     pub image_limits: ImageLimits,
@@ -142,6 +144,7 @@ impl Runtime {
 impl Settings {
     pub fn validate(&self) -> Result<()> {
         self.image_limits.validate()?;
+        self.storage.validate()?;
         let mut ids = HashSet::new();
         if self.servers.len() > 32 {
             bail!("最多32个服务器");
@@ -244,6 +247,7 @@ pub async fn save_settings(
             smtp.password = old.password.clone();
         }
         body.settings.home = current.settings.home.clone();
+        body.settings.storage = current.settings.storage.clone();
         body.settings
             .image_limits
             .validate()

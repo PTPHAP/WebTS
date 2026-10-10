@@ -90,6 +90,15 @@ impl Db {
           CREATE INDEX IF NOT EXISTS notice_inbox ON notice_receipts(user_id,notice_id DESC);
           CREATE INDEX IF NOT EXISTS notice_mail_queue ON notice_receipts(mail_state,notice_id,user_id);
           CREATE TABLE IF NOT EXISTS policy_acceptances(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, version TEXT NOT NULL, accepted_at INTEGER NOT NULL, PRIMARY KEY(user_id,version));")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS friend_keys(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,code TEXT UNIQUE NOT NULL,public_key TEXT NOT NULL,device TEXT NOT NULL DEFAULT '',lease_hash TEXT NOT NULL DEFAULT '');
+          CREATE TABLE IF NOT EXISTS friendships(lo INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,hi INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,requester INTEGER NOT NULL,status INTEGER NOT NULL DEFAULT 0 CHECK(status IN(0,1,2)),blocked_by INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,PRIMARY KEY(lo,hi),CHECK(lo<hi));
+          CREATE TABLE IF NOT EXISTS friend_messages(seq INTEGER PRIMARY KEY,id TEXT UNIQUE NOT NULL,sender INTEGER NOT NULL REFERENCES users(id),recipient INTEGER NOT NULL REFERENCES users(id),object_key TEXT UNIQUE NOT NULL,content_hash TEXT NOT NULL,created_at INTEGER NOT NULL,expires INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0,read_at INTEGER,burn INTEGER NOT NULL DEFAULT 0);
+          CREATE INDEX IF NOT EXISTS friend_message_inbox ON friend_messages(recipient,seq DESC);
+          CREATE INDEX IF NOT EXISTS friend_message_sent ON friend_messages(sender,seq DESC);
+          CREATE INDEX IF NOT EXISTS friend_message_expiry ON friend_messages(expires);
+          CREATE INDEX IF NOT EXISTS friendship_peer ON friendships(hi);
+          CREATE TABLE IF NOT EXISTS friend_request_limits(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,window INTEGER NOT NULL,count INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS friend_prekeys(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,key TEXT NOT NULL,device TEXT NOT NULL,bundle TEXT NOT NULL,used INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,key));")?;
         Ok(Self {
             connection: Mutex::new(connection),
         })

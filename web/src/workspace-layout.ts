@@ -1,7 +1,7 @@
 export const panelIds=['channels','chat','members'] as const;
 export type PanelId=typeof panelIds[number];
 export type Layout={order:PanelId[];widths:Record<PanelId,number>};
-export const defaultLayout:Layout={order:[...panelIds],widths:{channels:22,chat:54,members:24}};
+export const defaultLayout:Layout={order:[...panelIds],widths:{channels:30,chat:48,members:22}};
 export function readLayout(value:unknown):Layout {
   const fallback=()=>({order:[...defaultLayout.order],widths:{...defaultLayout.widths}});
   if(!value||typeof value!=='object')return fallback();
@@ -9,6 +9,7 @@ export function readLayout(value:unknown):Layout {
   if(!Array.isArray(v.order)||v.order.length!==3||new Set(v.order).size!==3||!v.order.every(id=>panelIds.includes(id)))return fallback();
   const widths=v.widths;
   if(!widths||!panelIds.every(id=>Number.isFinite(widths[id])&&widths[id]>=(id==='chat'?30:15)&&widths[id]<=70)||Math.abs(panelIds.reduce((n,id)=>n+widths[id],0)-100)>.01)return fallback();
+  if(v.order.join(',')===panelIds.join(',')&&widths.channels===22&&widths.chat===54&&widths.members===24)return fallback();
   return {order:[...v.order],widths:{...widths}};
 }
 export function reorderPanels(layout:Layout,from:PanelId,to:PanelId):Layout {

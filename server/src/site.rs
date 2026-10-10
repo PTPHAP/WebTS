@@ -103,6 +103,7 @@ impl Home {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
         if [
+            "7136e5253c071db7db92e8109082f8d40dd95b8fba2a1cd8824f872389bd6a4e",
             "f3222ba772448b34efd344229a4c7849e92b626d623bf6c80cb94e813f05c192",
             "8b2e9978b6ddbf3bfcdc48e48486058fe3d2bac392d35d791f1a03b79ad7aea8",
         ]
@@ -111,6 +112,7 @@ impl Home {
             self.privacy_policy = defaults.privacy_policy;
         }
         if [
+            "697b6dfc31c60e952f02081607cd043a6a89e46075666e37454f7feecb074e76",
             "38786738d19090abfbb13643be1a36c1219d4ac2792c5a3a0f47dc8b2410f1db",
             "0bea1750e2e76f979bcf4633cb6b60c94f15ce8292b4e46ce4426b25192fd596",
         ]

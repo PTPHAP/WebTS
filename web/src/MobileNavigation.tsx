@@ -1,0 +1,4 @@
+const pages=[{id:'channels',icon:'☷',title:'频道'},{id:'chat',icon:'◈',title:'语音聊天'},{id:'members',icon:'♙',title:'资料'},{id:'friends',icon:'♡',title:'好友'},{id:'me',icon:'☻',title:'我的'}];
+export function MobileNavigation({active,select,connected,server}:{active:string;select:(id:string)=>void;connected:boolean;server:string}) {
+  return <><div className="mobile-page-title"><div><small>{connected?'正在连接的空间':'WEBTS · 随时相聚'}</small><strong>{active==='friends'?'好友与加密私信':active==='members'?'频道与成员资料':server}</strong></div><span className={`dot ${connected?'online':''}`}/></div><nav className="mobile-tabs mobile-navigation" aria-label="手机主导航">{pages.map(page=><button key={page.id} aria-current={active===page.id?'page':undefined} className={active===page.id?'active':''} onClick={()=>select(page.id)}><span aria-hidden="true">{page.icon}</span><strong>{page.title}</strong></button>)}</nav></>;
+}

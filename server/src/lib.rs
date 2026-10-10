@@ -17,3 +17,6 @@ pub mod site;
 pub mod vault;
 
 mod server_banner;
+
+pub mod friends;
+pub mod storage;

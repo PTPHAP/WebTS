@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
             let app = web_ts::app::App::new(config)?;
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             web_ts::notices::start(app.clone());
+            web_ts::friends::start_cleanup(app.clone());
             tracing::info!(address = %bind, "WebTS 服务已启动");
             let shutdown = app.clone();
             axum::serve(

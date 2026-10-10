@@ -4,6 +4,7 @@ target/
 web/node_modules/
 web/dist/
 web/public/audio/
+web/public/crypto/
 data/
 secrets/
 config.local.toml

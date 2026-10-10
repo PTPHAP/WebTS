@@ -34,6 +34,7 @@ pub struct App {
     pub connections: Arc<Connections>,
     pub sockets: Arc<Semaphore>,
     pub image_bytes: Arc<Semaphore>,
+    pub friend_objects: Arc<Semaphore>,
     workers: Arc<Semaphore>,
     limits: Mutex<HashMap<(IpAddr, bool), (Instant, u32)>>,
     mail: mpsc::Sender<Mail>,
@@ -92,6 +93,7 @@ impl App {
             serde_json::from_slice(&plaintext)?
         } else {
             crate::settings::Settings {
+                storage: Default::default(),
                 home: Default::default(),
                 image_limits: Default::default(),
                 servers: config.servers.clone(),
@@ -157,6 +159,7 @@ impl App {
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
             image_bytes: Arc::new(Semaphore::new(128 * 1024)),
+            friend_objects: Arc::new(Semaphore::new(2)),
             config,
             db,
             vault,
@@ -266,6 +269,24 @@ pub fn router(app: Arc<App>) -> Router {
             get(crate::settings::get_settings).post(crate::settings::save_settings),
         )
         .route("/me", get(me))
+        .route("/friends/me", get(crate::friends::me))
+        .route("/friends/key", post(crate::friends::set_key))
+        .route("/friends/device", post(crate::friends::activate))
+        .route("/friends/{peer}/prekey", post(crate::friends::claim))
+        .route("/friends", get(crate::friends::list))
+        .route("/friends/request", post(crate::friends::request))
+        .route("/friends/{peer}", post(crate::friends::action))
+        .route("/friends/{peer}/messages", get(crate::friends::messages))
+        .route(
+            "/friends/messages",
+            post(crate::friends::send).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
+        .route("/friends/messages/{id}", get(crate::friends::content))
+        .route("/friends/messages/{id}/read", post(crate::friends::read))
+        .route(
+            "/admin/storage",
+            get(crate::storage::get).post(crate::storage::save),
+        )
         .route("/site", get(crate::site::public))
         .route("/policies", get(crate::site::policies))
         .route("/notices", get(crate::notices::list))

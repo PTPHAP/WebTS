@@ -14,7 +14,7 @@ export function AdminStorage(){
     setValue(await api<Storage>('/admin/storage'));
   }catch(e){setMessage(e instanceof Error?e.message:test?'检测失败':'保存失败');}finally{setBusy(false);setPassword('');}}
   return <form className="admin-settings storage-settings" onSubmit={e=>{e.preventDefault();void run(false);}}>
-    <h3>好友私信与临时图片 · 私有对象存储</h3><p className="muted">支持 S3 兼容服务，包括雨云 ROS。两种私信模式均使用 AES-256-GCM 存储密文；默认端到端加密，只有双方明确同意的会话可由本站解密。数据库保存账号、时间、加密模式和对象索引。</p>
+    <h3>好友私信与临时图片 · 私有对象存储</h3><p className="muted">支持 S3 兼容服务，包括雨云 ROS。两种私信模式均使用 AES-256-GCM 存储密文；默认普通聊天，无需额外确认；本站可以解密普通消息，端到端发送需设备验证且由用户选择。数据库保存账号、时间、加密模式和对象索引。</p>
     {message&&<p className="auth-help" role="status">{message}</p>}
     {value.objects&&<div className="storage-summary"><span>临时索引 <strong>{value.objects.total}</strong></span><span>待发送 <strong>{value.objects.pending}</strong></span><span>待过期清理 <strong>{value.objects.expired}</strong></span>{value.objects.probes>0&&<span>待清理检测对象 <strong>{value.objects.probes}</strong></span>}</div>}
     {check&&<section className={`storage-check ${check.ok?'passed':''}`} aria-label="存储检测结果">{check.stages.map(s=><article key={s.stage}><strong>{s.ok?'✓':'!'} {s.stage}{s.status?` · HTTP ${s.status}`:''}{s.code?` · ${s.code}`:''}</strong><p>{s.message??'通过'}</p></article>)}{check.cleanup_pending&&<p>检测文件尚未确认删除，后台会重试；请先修复删除权限。</p>}</section>}

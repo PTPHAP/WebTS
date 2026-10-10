@@ -94,7 +94,7 @@ fn validate_at(text: &str, expected: &Context<'_>, clock: i64) -> Api<()> {
     } = *expected;
     let bad = || Error::bad("服务器可解密消息必须为绑定当前会话的AES-256-GCM密文");
     let packet: Packet = serde_json::from_str(text).map_err(|_| bad())?;
-    if packet.version != 1 || packet.mode != "server" || packet.epoch != epoch || epoch < 1 {
+    if packet.version != 1 || packet.mode != "server" || packet.epoch != epoch || epoch < 0 {
         return Err(bad());
     }
     let key = Zeroizing::new(STANDARD.decode(&packet.key).map_err(|_| bad())?);

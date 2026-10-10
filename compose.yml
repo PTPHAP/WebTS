@@ -2,7 +2,7 @@
 services:
   webts:
     build: .
-    image: webts:1.0.0
+    image: webts:1.0.1
     restart: unless-stopped
     network_mode: host
     volumes:

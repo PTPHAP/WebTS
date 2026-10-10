@@ -135,7 +135,7 @@ async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_
     );
 }
 #[tokio::test]
-async fn ordinary_chat_needs_account_consent_but_no_private_identity_and_cannot_read_e2ee() {
+async fn ordinary_chat_needs_no_peer_consent_or_private_identity_and_cannot_read_e2ee() {
     let (_root, app) = setup();
     let (ai, a) = user(&app, "ordinary-a@example.invalid");
     let (bi, b) = user(&app, "ordinary-b@example.invalid");
@@ -155,35 +155,12 @@ async fn ordinary_chat_needs_account_consent_but_no_private_identity_and_cannot_
             rusqlite::params![ai, bi, ai],
         )
         .unwrap();
-    let consent = json!({"server_decrypt":true,"acknowledge":true});
-    assert_eq!(
-        call(
-            &app,
-            &format!("/friends/{bi}/encryption"),
-            Some(consent.clone()),
-            &a,
-            "",
-            ORIGIN
-        )
-        .await
-        .1["mode"],
-        "e2ee"
-    );
-    assert_eq!(
-        call(
-            &app,
-            &format!("/friends/{ai}/encryption"),
-            Some(consent),
-            &b,
-            "",
-            ORIGIN
-        )
-        .await
-        .1["mode"],
-        "server"
-    );
+    let rows = call(&app, "/friends", None, &a, "", ORIGIN).await.1;
+    assert_eq!(rows["friends"][0]["allow_server"], true);
+    assert_eq!(rows["friends"][0]["mode_epoch"], 0);
+    assert_eq!(rows["friends"][0]["public_key"], "");
     let mid = "f041b157-319f-4bf3-970e-7a04e30bd070";
-    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,2),"mode":"server","epoch":2})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE,"passes identity and content checks; storage remains mandatory");
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,0),"mode":"server","epoch":0})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE,"passes identity and content checks; storage remains mandatory");
     {
         let db = app.db.connection.lock().unwrap();
         for (id, mode) in [("normal-history", "server"), ("e2ee-history", "e2ee")] {
@@ -258,8 +235,40 @@ async fn ordinary_chat_needs_account_consent_but_no_private_identity_and_cannot_
         .0,
         StatusCode::OK
     );
-    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,2),"mode":"server","epoch":2})),&a,"",ORIGIN).await.0,StatusCode::CONFLICT);
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,0),"mode":"server","epoch":0})),&a,"",ORIGIN).await.0,StatusCode::CONFLICT);
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,1),"mode":"server","epoch":1})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE);
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM sessions WHERE user_id=?", [bi])
+        .unwrap();
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,1),"mode":"server","epoch":1})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE,"recipient offline does not block delivery; enabled bucket still required");
+    let protected = call(
+        &app,
+        &format!("/friends/{bi}/encryption"),
+        Some(json!({"server_decrypt":false})),
+        &a,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(protected.1["epoch"], 2);
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,2),"mode":"server","epoch":2})),&a,"",ORIGIN).await.0,StatusCode::CONFLICT,"an explicit E2EE sender choice cannot silently fall back to ordinary mode");
+    let ordinary = call(
+        &app,
+        &format!("/friends/{bi}/encryption"),
+        Some(json!({"server_decrypt":true})),
+        &a,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(ordinary.1["mode"], "server");
+    assert_eq!(ordinary.1["epoch"], 3);
+    assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":mid,"ciphertext":readable_packet(ai,bi,mid,3),"mode":"server","epoch":3})),&a,"",ORIGIN).await.0,StatusCode::SERVICE_UNAVAILABLE,"no acknowledgement field or peer consent required");
 }
+
 #[tokio::test]
 async fn presence_is_friends_only_hidden_on_request_and_revoked_with_session() {
     let (_root, app) = setup();
@@ -918,7 +927,7 @@ async fn friendships_require_acceptance_and_keys_are_immutable_and_signed() {
         )
         .await
         .0,
-        StatusCode::CONFLICT
+        StatusCode::OK
     );
     let replacement = "d".repeat(64);
     assert_eq!(
@@ -945,7 +954,7 @@ async fn friendships_require_acceptance_and_keys_are_immutable_and_signed() {
         )
         .await
         .0,
-        StatusCode::CONFLICT
+        StatusCode::OK
     );
     assert_eq!(
         call(
@@ -1346,7 +1355,7 @@ async fn removing_requests_does_not_reset_account_rate_limits() {
 }
 
 #[tokio::test]
-async fn encryption_requires_paired_explicit_consent_and_invalidates_inflight_uploads() {
+async fn sender_encryption_choice_is_independent_and_invalidates_inflight_uploads() {
     let (_root, app) = setup();
     let (ai, a) = user(&app, "alice@example.invalid");
     let (bi, b) = user(&app, "bob@example.invalid");
@@ -1390,6 +1399,12 @@ async fn encryption_requires_paired_explicit_consent_and_invalidates_inflight_up
             rusqlite::params![ai, bi, ai],
         )
         .unwrap();
+        // Preserve an explicitly chosen legacy E2EE conversation.
+        db.execute(
+            "INSERT INTO friend_modes(lo,hi,allow_lo,allow_hi) VALUES(?,?,0,0)",
+            rusqlite::params![ai, bi],
+        )
+        .unwrap();
         for (id, ready) in [("pending-mode", 0), ("historical-e2ee", 1)] {
             db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES(?,?,?,?,?,0,?,?)",rusqlite::params![id,ai,bi,id,"hash",web_ts::db::now()+3600,ready]).unwrap();
         }
@@ -1418,7 +1433,7 @@ async fn encryption_requires_paired_explicit_consent_and_invalidates_inflight_up
         )
         .await
         .0,
-        StatusCode::BAD_REQUEST
+        StatusCode::OK
     );
     assert_eq!(
         call(
@@ -1441,7 +1456,7 @@ async fn encryption_requires_paired_explicit_consent_and_invalidates_inflight_up
     );
     let first = call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN).await;
     assert_eq!(first.0, StatusCode::OK);
-    assert_eq!(first.1["mode"], "e2ee");
+    assert_eq!(first.1["mode"], "server");
     assert_eq!(first.1["epoch"], 1);
     assert_eq!(
         call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN)

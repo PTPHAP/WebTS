@@ -1,4 +1,4 @@
-//! Account friendships and expiring encrypted envelopes; server-readable mode requires paired consent.
+//! Account friendships and expiring encrypted envelopes; ordinary messages use encrypted object storage without peer consent.
 use crate::{
     app::{Api, App, Error},
     db::{Session, now},
@@ -184,7 +184,7 @@ fn encryption_state(db: &rusqlite::Connection, owner: i64, peer: i64) -> Api<(bo
         )
         .optional()
         .map_err(db_error)?
-        .unwrap_or((false, false, 0));
+        .unwrap_or((true, true, 0));
     Ok(if owner == lo {
         (a, b, epoch)
     } else {
@@ -198,11 +198,11 @@ fn require_mode(
     mode: &str,
     epoch: i64,
 ) -> Api<()> {
-    let (own, other, current) = encryption_state(db, owner, peer)?;
-    if epoch != current || mode != if own && other { "server" } else { "e2ee" } {
+    let (own, _, current) = encryption_state(db, owner, peer)?;
+    if epoch != current || mode != if own { "server" } else { "e2ee" } {
         return Err(Error(
             StatusCode::CONFLICT,
-            "加密选择已变化；服务器可解密模式需要双方明确同意，请刷新后重试",
+            "发送方式已变化，请刷新后重试；不会自动转换待发消息",
         ));
     }
     Ok(())
@@ -212,7 +212,8 @@ fn require_mode(
 pub struct Encryption {
     server_decrypt: bool,
     #[serde(default)]
-    acknowledge: bool,
+    #[serde(rename = "acknowledge")]
+    _acknowledge: bool,
     #[serde(default)]
     password: String,
 }
@@ -225,22 +226,19 @@ pub async fn encryption(
     if body.password.len() > 128 {
         return Err(Error::bad("密码输入超出限制"));
     }
-    if body.server_decrypt && !body.acknowledge {
-        return Err(Error::bad("必须明确确认本站可以读取此会话的后续消息"));
-    }
     app.work(move |a| {
         let s = if !body.password.is_empty() { a.reauthenticate(&headers,&Zeroizing::new(body.password))? } else { current(a,&headers)? };
         let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;session_valid(&tx,&s)?;accepted(&tx,s.user.id,peer)?;
-        let (lo,hi)=pair(s.user.id,peer);let (own,other,epoch)=encryption_state(&tx,s.user.id,peer)?;
+        let (lo,hi)=pair(s.user.id,peer);let (own,_,epoch)=encryption_state(&tx,s.user.id,peer)?;
         if own!=body.server_decrypt {
-            tx.execute("INSERT OR IGNORE INTO friend_modes(lo,hi) VALUES(?,?)",params![lo,hi]).map_err(db_error)?;
+            tx.execute("INSERT OR IGNORE INTO friend_modes(lo,hi,allow_lo,allow_hi) VALUES(?,?,1,1)",params![lo,hi]).map_err(db_error)?;
             let sql=if s.user.id==lo {"UPDATE friend_modes SET allow_lo=?,epoch=epoch+1 WHERE lo=? AND hi=?"} else {"UPDATE friend_modes SET allow_hi=?,epoch=epoch+1 WHERE lo=? AND hi=?"};
             tx.execute(sql,params![body.server_decrypt,lo,hi]).map_err(db_error)?;
             // A pending upload cannot become visible after either person's choice changes.
             tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE ready=0 AND ((sender=? AND recipient=?) OR (sender=? AND recipient=?))",params![now(),lo,hi,hi,lo]).map_err(db_error)?;
         }
         tx.commit().map_err(db_error)?;
-        Ok(Json(json!({"mode":if body.server_decrypt&&other {"server"}else{"e2ee"},"epoch":epoch+i64::from(own!=body.server_decrypt),"message":"选择已保存。仅双方同意时使用服务器可解密模式，旧消息保护方式保持。"})))
+        Ok(Json(json!({"mode":if body.server_decrypt {"server"}else{"e2ee"},"epoch":epoch+i64::from(own!=body.server_decrypt),"message":"发送方式已保存，无需等待对方确认。旧消息保护方式保持。"})))
     }).await
 }
 pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
@@ -279,7 +277,7 @@ pub async fn set_key(
 pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
-        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,0) ELSE COALESCE(m.allow_hi,0) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,0) ELSE COALESCE(m.allow_lo,0) END,COALESCE(m.epoch,0),COALESCE(p.avatar_hash,''),COALESCE(json_extract(p.data,'$.about'),'') FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
+        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,1) ELSE COALESCE(m.allow_hi,1) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,1) ELSE COALESCE(m.allow_lo,1) END,COALESCE(m.epoch,0),COALESCE(p.avatar_hash,''),COALESCE(json_extract(p.data,'$.about'),'') FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
         let mut rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?,"avatar_hash":r.get::<_,String>(10)?,"about":r.get::<_,String>(11)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         for row in &mut rows {if row["status"]==1 {let (online,locations)=friend_activity(a,&db,row["id"].as_i64().unwrap())?;row["online"]=json!(online);row["locations"]=json!(locations);}}
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
@@ -476,7 +474,7 @@ pub async fn messages(
     Query(page): Query<Page>,
 ) -> Api<Json<Value>> {
     app.work(move |a| {
-        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;accepted(&db,s.user.id,peer)?;let unlocked=device(&db,&s,&headers).is_ok();let (own,other,_)=encryption_state(&db,s.user.id,peer)?;if !unlocked&&!(own&&other){device(&db,&s,&headers)?;}
+        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;accepted(&db,s.user.id,peer)?;let unlocked=device(&db,&s,&headers).is_ok();
         let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch,burn_seconds FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=1 OR mode='server') AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
         let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),unlocked,page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?,"burn_seconds":r.get::<_,Option<i64>>(10)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         Ok(Json(json!({"messages":rows})))

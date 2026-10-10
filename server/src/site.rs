@@ -103,6 +103,7 @@ impl Home {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
         if [
+            "4944c0d46f259b619b7a9a22f2f89c7bd0e7eb1a049df47e2fe159a97660d059",
             "3484f4c8e371823e84ce5b99fb42c0625ae051e7661ba41f4319fd96edfdf19f",
             "7136e5253c071db7db92e8109082f8d40dd95b8fba2a1cd8824f872389bd6a4e",
             "e7d379049476fa440620d52039d861393a21a617a5e87a162abac9bd8a4e05ef",

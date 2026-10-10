@@ -82,5 +82,5 @@ button.server-card{width:100%;text-align:left;color:inherit;cursor:pointer;font:
 .friend-location>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.friend-location strong{overflow-wrap:anywhere}
 .friend-mode-choice{display:flex;gap:8px;padding:12px 20px;flex-wrap:wrap;border-bottom:1px solid var(--border)}.friend-mode-choice small{flex-basis:100%}
 .friend-presence-choice{font-size:.8rem;margin:12px 0}.private-screen-notice{display:none}
-.private-screen-masked .private-screen-notice{display:block;padding:12px 20px;background:var(--surface);margin:0}
+.private-screen-masked .private-screen-notice{display:grid;position:fixed;inset:0;z-index:2147483647;place-items:center;padding:24px;background:#000;color:#fff;margin:0;text-align:center;transition:none}
 .private-screen-masked .friend-messages,.private-screen-masked .friend-attachment,.private-screen-masked .friend-composer,.private-screen-masked .friend-key-setup,.private-screen-masked .friend-safety{visibility:hidden}

@@ -68,7 +68,7 @@ export async function unlockState(identity:Encrypted,local:Encrypted|undefined,a
 }
 export async function persist(state:Unlocked):Promise<void>{
   state.saved.engine=state.engine.save();const now=Date.now()/1000;
-  const entries=Object.entries(state.saved.cache).filter(([,v])=>(!v.value.burn||v.value.burn_seconds!==undefined)&&v.value.expires>now&&(!v.burnAt||v.burnAt>now*1000)).sort((a,b)=>a[1].created_at-b[1].created_at).slice(-60);
+  const entries=Object.entries(state.saved.cache).filter(([,v])=>v.mode!=='server'&&(!v.value.burn||v.value.burn_seconds!==undefined)&&v.value.expires>now&&(!v.burnAt||v.burnAt>now*1000)).sort((a,b)=>a[1].created_at-b[1].created_at).slice(-60);
   let bytes=0;
   state.saved.cache=Object.fromEntries(entries.reverse().filter(([,v])=>{const size=utf8.encode(JSON.stringify(v)).byteLength;if(bytes+size>2*1024*1024)return false;bytes+=size;return true;}));
   state.record=await protect(state.record,state.key,JSON.stringify(state.saved));await saveLocal('keys',`state:${state.record.account}`,state.record);
@@ -103,7 +103,7 @@ export async function openMessage(ciphertext:string,state:Unlocked,curve:string,
 }
 const serverContext=(v:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>,epoch:number)=>utf8.encode(`webts-server-content-v1:${v.site}:${v.id}:${v.sender}:${v.recipient}:${v.burn}:${epoch}`);
 export async function sealServerMessage(value:Envelope,epoch:number):Promise<string>{
-  validEnvelope(value,value);if(!Number.isSafeInteger(epoch)||epoch<1)throw new Error('请先确认双方的私信加密选择。');
+  validEnvelope(value,value);if(!Number.isSafeInteger(epoch)||epoch<0)throw new Error('发送方式版本无效。');
   const bytes=crypto.getRandomValues(new Uint8Array(32)),iv=crypto.getRandomValues(new Uint8Array(12));
   const key=await crypto.subtle.importKey('raw',bytes,'AES-GCM',false,['encrypt']);
   const data=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:serverContext(value,epoch)},key,utf8.encode(JSON.stringify(value)));
@@ -113,7 +113,7 @@ export async function sealServerMessage(value:Envelope,epoch:number):Promise<str
 }
 export async function openServerMessage(ciphertext:string,epoch:number,expected:MessageIdentity):Promise<Envelope>{
   if(ciphertext.length>384*1024)throw new Error('密文超过安全上限');const outer=JSON.parse(ciphertext);
-  if(outer.version!==1||outer.mode!=='server'||outer.epoch!==epoch||typeof outer.key!=='string'||typeof outer.iv!=='string'||typeof outer.content!=='string')throw new Error('服务器可解密消息的模式不匹配');
+  if(!Number.isSafeInteger(epoch)||epoch<0||outer.version!==1||outer.mode!=='server'||outer.epoch!==epoch||typeof outer.key!=='string'||typeof outer.iv!=='string'||typeof outer.content!=='string')throw new Error('服务器可解密消息的模式不匹配');
   const raw=unb64(outer.key),iv=unb64(outer.iv);if(raw.length!==32||iv.length!==12)throw new Error('必须使用AES-256-GCM');
   const key=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);raw.fill(0);
   const data=await crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:serverContext(expected,epoch)},key,unb64(outer.content));

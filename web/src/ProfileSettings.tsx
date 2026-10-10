@@ -8,13 +8,13 @@ export const emptyProfile:Profile={display_name:'',about:'',avatar:'',sync_avata
 export function ProfileSettings({profile,email,onSaved,imageLimits}:{profile:Profile;email:string;imageLimits?:ImageLimits;onSaved:(value:Profile)=>void}){
   const[value,setValue]=useState(profile),[busy,setBusy]=useState(false),[cropFile,setCropFile]=useState<File|null>(null),[message,setMessage]=useState('');
   const revision=useRef(0);useEffect(()=>()=>{revision.current++;},[]);
-  async function save(e:FormEvent){e.preventDefault();const id=++revision.current;setBusy(true);setMessage('');try{const data=await api<Profile>('/profile',value);if(id!==revision.current)return;setValue(data);onSaved(data);setMessage('资料已保存。昵称作为下次连接的默认值；头像和介绍按同步开关尝试应用到当前连接。');}catch(e){if(id===revision.current)setMessage(e instanceof Error?e.message:'保存失败');}finally{if(id===revision.current)setBusy(false);}}
+  async function save(e:FormEvent){e.preventDefault();const id=++revision.current;setBusy(true);setMessage('');try{const data=await api<Profile>('/profile',value);if(id!==revision.current)return;setValue(data);onSaved(data);setMessage('资料已保存。社区昵称、头像和介绍已更新；其他页面和好友列表会同步。TS昵称作为下次连接默认值，头像和介绍按同步开关应用。');}catch(e){if(id===revision.current)setMessage(e instanceof Error?e.message:'保存失败');}finally{if(id===revision.current)setBusy(false);}}
   return <form className="profile-settings" onSubmit={save}>
-    <div className="profile-cover"><span className="avatar large">{value.avatar?<img src={`data:image/png;base64,${value.avatar}`} alt="我的头像"/>:(value.display_name||email)[0]}</span><div><h3>我的声音名片</h3><p>一份资料，在不同服务器延续。</p></div></div>
+    <div className="profile-cover"><span className="avatar large">{value.avatar?<img src={`data:image/png;base64,${value.avatar}`} alt="我的头像"/>:(value.display_name||'社区成员')[0]}</span><div><h3>我的社区名片</h3><p>一份社区资料，与好友及语音空间相连。</p></div></div>
     <p className="auth-help" role="status">{message||'资料随邮箱账号保存。头像与介绍同步由目标 TeamSpeak 服务器检查权限。'}</p>
     <fieldset disabled={busy||!!cropFile}><legend>基本资料</legend>
       <label>登录邮箱<input value={email} readOnly autoComplete="email"/></label><small>登录邮箱仅自己和站点管理员可见，不同步给 TS。</small>
-      <label>常用昵称<input value={value.display_name} onChange={e=>setValue({...value,display_name:e.target.value})} minLength={3} maxLength={30} placeholder="留空使用所选身份名称"/></label>
+      <label>社区昵称<input value={value.display_name} onChange={e=>setValue({...value,display_name:e.target.value})} minLength={3} maxLength={30} placeholder="留空显示 WebTS 用户编号"/></label>
       <label>个人介绍<textarea value={value.about} onChange={e=>setValue({...value,about:e.target.value})} maxLength={512} rows={4} placeholder="让频道里的朋友更了解你"/></label><small>{new TextEncoder().encode(value.about).length} / 512 字节 · 中文通常每字3字节</small>
       <label>固定头像<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file){setMessage('');setCropFile(file);}}}/></label>
       {value.avatar&&<button type="button" className="text-button danger" onClick={()=>setValue({...value,avatar:''})}>移除账号默认头像</button>}

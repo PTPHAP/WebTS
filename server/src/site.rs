@@ -108,6 +108,7 @@ impl Home {
             "f3222ba772448b34efd344229a4c7849e92b626d623bf6c80cb94e813f05c192",
             "8b2e9978b6ddbf3bfcdc48e48486058fe3d2bac392d35d791f1a03b79ad7aea8",
             "e9e58f5a01abfabccc3f3ac83e31be649dbee6a3df639e52292c9a4959be2719",
+            "e1665607675a56b87f4d761307d29bfb48574e264a1c1a78bd1469a3b44d974d",
         ]
         .contains(&hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n"))).as_str())
         {

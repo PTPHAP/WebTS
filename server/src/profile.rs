@@ -85,8 +85,8 @@ pub async fn save(
         body.normalize(limits)?;
         let data = serde_json::to_string(&body).map_err(anyhow::Error::from)?;
         let changed = a.db.connection.lock().unwrap().execute(
-            "INSERT INTO profiles(user_id,data) SELECT ?,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND u.id=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
-            params![session.user.id, data, session.hash, session.user.id, now(), now()]
+            "INSERT INTO profiles(user_id,data,avatar_hash) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND u.id=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,avatar_hash=excluded.avatar_hash",
+            params![session.user.id, data, if body.avatar.is_empty() {String::new()} else {crate::db::digest(&body.avatar)}, session.hash, session.user.id, now(), now()]
         ).map_err(anyhow::Error::from)?;
         if changed != 1 { return Err(Error(StatusCode::UNAUTHORIZED, "登录已失效，请重新登录")); }
         Ok(Json(body))

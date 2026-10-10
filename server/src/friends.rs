@@ -9,6 +9,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -278,16 +279,41 @@ pub async fn set_key(
 pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
-        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,0) ELSE COALESCE(m.allow_hi,0) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,0) ELSE COALESCE(m.allow_lo,0) END,COALESCE(m.epoch,0) FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
-        let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,0) ELSE COALESCE(m.allow_hi,0) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,0) ELSE COALESCE(m.allow_lo,0) END,COALESCE(m.epoch,0),COALESCE(p.avatar_hash,''),COALESCE(json_extract(p.data,'$.about'),'') FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
+        let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?,"avatar_hash":r.get::<_,String>(10)?,"about":r.get::<_,String>(11)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
-        Ok(Json(json!({"friends":rows,"unread":unread})))
+        let latest:i64=db.query_row("SELECT friend_revision FROM users WHERE id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
+        Ok(Json(json!({"friends":rows,"unread":unread,"latest_message":latest})))
     }).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     code: String,
+}
+pub async fn avatar(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(peer): Path<i64>,
+) -> Api<Response> {
+    app.work(move |a| {
+        let s=current(a,&headers)?;
+        let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
+        let (lo,hi)=pair(s.user.id,peer);
+        let data:Option<(String,String)>=db.query_row("SELECT json_extract(p.data,'$.avatar'),p.avatar_hash FROM profiles p JOIN users u ON u.id=p.user_id JOIN friendships f ON f.lo=? AND f.hi=? WHERE p.user_id=? AND f.status IN(0,1) AND length(p.avatar_hash)=64 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![lo,hi,peer,now()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_error)?;
+        let (avatar,hash)=data.ok_or(Error(StatusCode::NOT_FOUND,"好友头像不可用"))?;
+        let tag=format!("\"{hash}\"");
+        let mut response_headers=HeaderMap::new();
+        response_headers.insert("cache-control","private, no-store".parse().unwrap());
+        response_headers.insert("etag",tag.parse().unwrap());
+        response_headers.insert("content-type","image/png".parse().unwrap());
+        response_headers.insert("x-content-type-options","nosniff".parse().unwrap());
+        if headers.get("if-none-match").and_then(|v|v.to_str().ok())==Some(tag.as_str()) { return Ok((StatusCode::NOT_MODIFIED,response_headers).into_response()); }
+        use base64::Engine;
+        let bytes=base64::engine::general_purpose::STANDARD.decode(avatar).map_err(|_|Error::bad("好友头像不可用"))?;
+        if image::guess_format(&bytes).ok()!=Some(image::ImageFormat::Png) {return Err(Error::bad("好友头像不可用"));}
+        Ok((response_headers,bytes).into_response())
+    }).await
 }
 pub async fn request(
     State(app): State<Arc<App>>,
@@ -297,10 +323,9 @@ pub async fn request(
     app.work(move |a| {
         let s=current(a,&headers)?; if body.code.len()!=24 || !body.code.bytes().all(|b|b.is_ascii_hexdigit()) {return Err(Error::bad("好友码为24位字符"));}
         let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
-        let peer:Option<i64>=db.query_row("SELECT k.user_id FROM friend_keys k JOIN users u ON u.id=k.user_id WHERE k.code=? AND length(k.public_key)>0 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![body.code.to_lowercase(),now()],|r|r.get(0)).optional().map_err(db_error)?;
+        let peer:Option<i64>=db.query_row("SELECT k.user_id FROM friend_keys k JOIN users u ON u.id=k.user_id WHERE k.code=? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![body.code.to_lowercase(),now()],|r|r.get(0)).optional().map_err(db_error)?;
         let peer=peer.filter(|&id|id!=s.user.id).ok_or(Error::bad("好友码不可用"))?;
-        let own:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM friend_keys WHERE user_id=? AND length(public_key)>0)",[s.user.id],|r|r.get(0)).map_err(db_error)?;
-        if !own{return Err(Error::bad("先设置自己的私信密钥"));}
+        db.execute("INSERT OR IGNORE INTO friend_keys(user_id,code,public_key) VALUES(?,?,'')",params![s.user.id,&token()?[..24]]).map_err(db_error)?;
         for id in [s.user.id,peer] {
             let count:i64=db.query_row("SELECT count(*) FROM friendships WHERE (lo=? OR hi=?) AND (status!=2 OR blocked_by=?)",params![id,id,id],|r|r.get(0)).map_err(db_error)?;
             if count>=132{return Err(Error(StatusCode::TOO_MANY_REQUESTS,"好友及请求数量达到上限"));}
@@ -451,19 +476,21 @@ pub async fn send(
             .await?;
         storage::object(&storage, "PUT", &key, sealed)
             .await
-            .map_err(|_| {
+            .map_err(|e| {
                 Error(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "对象存储写入失败，消息未送达；请稍后重试",
+                    storage::failure_message(&e),
                 )
             })?;
     }
     app.work(move|a| {
-        let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
+        let s=current(a,&headers)?;let mut connection=a.db.connection.lock().unwrap();let db=connection.transaction().map_err(db_error)?;session_valid(&db,&s)?;device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&body.mode,epoch)?;
         if body.mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=target_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备已变化，消息未送达"));}}
-        let changed=db.execute("UPDATE friend_messages SET ready=1 WHERE id=? AND sender=? AND recipient=? AND expires>?",params![body.id,s.user.id,peer,now()]).map_err(db_error)?;
-        if changed!=1{return Err(Error(StatusCode::CONFLICT,"消息或好友关系已失效"));}
+        let ready:Option<bool>=db.query_row("SELECT ready FROM friend_messages WHERE id=? AND sender=? AND recipient=? AND expires>?",params![body.id,s.user.id,peer,now()],|r|r.get(0)).optional().map_err(db_error)?;
+        let ready=ready.ok_or(Error(StatusCode::CONFLICT,"消息或好友关系已失效"))?;
+        if !ready {db.execute("UPDATE friend_messages SET ready=1 WHERE id=?",[body.id]).map_err(db_error)?;db.execute("UPDATE users SET friend_revision=friend_revision+1 WHERE id=?",[peer]).map_err(db_error)?;}
+        db.commit().map_err(db_error)?;
         Ok(Json(json!({"message":"加密消息已送达。"})))
     }).await
 }
@@ -549,24 +576,21 @@ pub fn start_cleanup(app: Arc<App>) {
             // Expired data is inaccessible immediately, even when bucket deletion is unavailable.
             let rows=app.work(|a| {
                 let db=a.db.connection.lock().unwrap();
-                let mut q=db.prepare("SELECT id,object_key FROM friend_messages WHERE expires<=? OR (ready=0 AND created_at<?) ORDER BY expires LIMIT 100").map_err(db_error)?;
-                q.query_map(params![now(),now()-3600],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)
+                let mut q=db.prepare("SELECT id,object_key,0 AS probe,expires AS deadline FROM friend_messages WHERE expires<=? OR (ready=0 AND created_at<?) UNION ALL SELECT '',object_key,1,created_at FROM storage_probes WHERE created_at<? ORDER BY deadline LIMIT 100").map_err(db_error)?;
+                q.query_map(params![now(),now()-3600,now()-300],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)
             }).await;
             let Ok(rows) = rows else {
                 continue;
             };
-            for (id, key) in rows {
+            for (id, key, probe) in rows {
                 let Ok(_permit) = app.friend_objects.clone().try_acquire_owned() else {
                     break;
                 };
                 let storage = app.runtime.read().unwrap().settings.storage.clone();
-                if storage::object(&storage, "DELETE", &key, Vec::new())
-                    .await
-                    .is_err()
-                {
+                if storage::remove(&storage, &key).await.is_err() {
                     break;
                 }
-                let _=app.work(move|a| {a.db.connection.lock().unwrap().execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;Ok(())}).await;
+                let _=app.work(move|a| {let db=a.db.connection.lock().unwrap();if probe {db.execute("DELETE FROM storage_probes WHERE object_key=? AND created_at<?",params![key,now()-300]).map_err(db_error)?;} else {db.execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;}Ok(())}).await;
             }
         }
     });

@@ -70,6 +70,7 @@ impl Db {
             ("banned_until", "INTEGER NOT NULL DEFAULT 0"),
             ("ban_reason", "TEXT NOT NULL DEFAULT ''"),
             ("admin_note", "TEXT NOT NULL DEFAULT ''"),
+            ("friend_revision", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             let exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('users') WHERE name=?)",
@@ -84,6 +85,28 @@ impl Db {
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS profiles(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        let avatar_column: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('profiles') WHERE name='avatar_hash')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !avatar_column {
+            connection.execute_batch(
+                "ALTER TABLE profiles ADD COLUMN avatar_hash TEXT NOT NULL DEFAULT ''",
+            )?;
+        }
+        {
+            let mut profiles = connection.prepare("SELECT user_id,json_extract(data,'$.avatar') FROM profiles WHERE avatar_hash='' AND length(json_extract(data,'$.avatar'))>0")?;
+            let rows =
+                profiles.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, avatar) = row?;
+                connection.execute(
+                    "UPDATE profiles SET avatar_hash=? WHERE user_id=?",
+                    params![digest(&avatar), id],
+                )?;
+            }
+        }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS notice_preferences(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, email_enabled INTEGER NOT NULL DEFAULT 0 CHECK(email_enabled IN(0,1)));
           CREATE TABLE IF NOT EXISTS notices(id INTEGER PRIMARY KEY, author INTEGER REFERENCES users(id) ON DELETE SET NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL, title TEXT NOT NULL, html TEXT NOT NULL, created_at INTEGER NOT NULL, withdrawn INTEGER NOT NULL DEFAULT 0, UNIQUE(author,request_id));
           CREATE TABLE IF NOT EXISTS notice_receipts(notice_id INTEGER NOT NULL REFERENCES notices(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, read_at INTEGER, mail_state TEXT NOT NULL DEFAULT 'none', PRIMARY KEY(notice_id,user_id));
@@ -100,6 +123,7 @@ impl Db {
           CREATE TABLE IF NOT EXISTS friend_request_limits(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,window INTEGER NOT NULL,count INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS friend_prekeys(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,key TEXT NOT NULL,device TEXT NOT NULL,bundle TEXT NOT NULL,used INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,key));")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS friend_modes(lo INTEGER NOT NULL,hi INTEGER NOT NULL,allow_lo INTEGER NOT NULL DEFAULT 0 CHECK(allow_lo IN(0,1)),allow_hi INTEGER NOT NULL DEFAULT 0 CHECK(allow_hi IN(0,1)),epoch INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(lo,hi),FOREIGN KEY(lo,hi) REFERENCES friendships(lo,hi) ON DELETE CASCADE);")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS storage_probes(object_key TEXT PRIMARY KEY,created_at INTEGER NOT NULL)")?;
         for (column, definition) in [
             ("mode", "TEXT NOT NULL DEFAULT 'e2ee'"),
             ("mode_epoch", "INTEGER NOT NULL DEFAULT 0"),

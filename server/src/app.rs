@@ -280,6 +280,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/friends", get(crate::friends::list))
         .route("/friends/request", post(crate::friends::request))
         .route("/friends/{peer}", post(crate::friends::action))
+        .route("/friends/{peer}/avatar", get(crate::friends::avatar))
         .route("/friends/{peer}/messages", get(crate::friends::messages))
         .route(
             "/friends/messages",
@@ -291,6 +292,7 @@ pub fn router(app: Arc<App>) -> Router {
             "/admin/storage",
             get(crate::storage::get).post(crate::storage::save),
         )
+        .route("/admin/storage/test", post(crate::storage::test))
         .route("/site", get(crate::site::public))
         .route("/policies", get(crate::site::policies))
         .route("/notices", get(crate::notices::list))

@@ -20,3 +20,16 @@ test('tones need a user-armed context, obey mute/volume and coalesce repeated ev
   for(const tone of tones){assert.ok(tone.stopTime-tone.startTime<.23);tone.onended();assert.ok(tone.released);}
   sound.configure({enabled:false,volume:1});sound.play('connect');assert.equal(tones.length,4);sound.configure({enabled:true,volume:0});sound.play('leave');assert.equal(tones.length,4);sound.close();assert.ok(contexts[0].closed);
 });
+test('a brief pending friend notification plays after user activation, and mute drops pending sounds',async()=>{
+  const tones=[];let context,finish;
+  globalThis.AudioContext=class {
+    state='suspended';currentTime=1;
+    constructor(){context=this;}
+    resume(){return new Promise(resolve=>{finish=()=>{this.state='running';resolve();};});}
+    close(){return Promise.resolve();}
+    createOscillator(){tones.push(1);return {frequency:{value:0},connect(){},disconnect(){},start(){},stop(){}};}
+    createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};}
+  };
+  const sound=new NotificationSounds({enabled:true,volume:.5});sound.play('friend');sound.arm();assert.equal(tones.length,0);finish();await Promise.resolve();assert.equal(tones.length,3);
+  context.state='suspended';sound.play('mail');sound.configure({enabled:false,volume:.5});sound.configure({enabled:true,volume:.5});sound.arm();finish();await Promise.resolve();assert.equal(tones.length,3);sound.close();
+});

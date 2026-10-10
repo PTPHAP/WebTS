@@ -42,6 +42,30 @@ impl Drop for Storage {
     }
 }
 impl Storage {
+    fn normalize(&mut self) {
+        self.endpoint = self.endpoint.trim().to_owned();
+        self.bucket = self.bucket.trim().to_owned();
+        self.region = self.region.trim().to_owned();
+        if let Ok(url) = url::Url::parse(&self.endpoint) {
+            if self.region.is_empty() && url.host_str().is_some_and(|h| h.ends_with(".rains3.com"))
+            {
+                self.region = "us-east-1".into();
+            }
+            if url.path() == "/" {
+                self.endpoint = url.to_string().trim_end_matches('/').to_owned();
+            }
+        }
+    }
+    fn same_bucket(&self, other: &Self) -> bool {
+        self.bucket == other.bucket
+            && match (
+                url::Url::parse(&self.endpoint),
+                url::Url::parse(&other.endpoint),
+            ) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => self.endpoint == other.endpoint,
+            }
+    }
     pub fn validate(&self) -> Result<()> {
         if self.endpoint.is_empty() && !self.enabled {
             return Ok(());
@@ -123,6 +147,58 @@ fn authorization(
         hex::encode(mac(&signing, &string))
     )
 }
+// Only allowlisted status/code pairs cross the API boundary; never echo an S3 response body.
+#[derive(Debug)]
+struct ObjectError {
+    status: u16,
+    code: &'static str,
+}
+impl std::fmt::Display for ObjectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "S3 HTTP {} {}", self.status, self.code)
+    }
+}
+impl std::error::Error for ObjectError {}
+pub fn failure_message(error: &anyhow::Error) -> &'static str {
+    match error.downcast_ref::<ObjectError>().map(|e| e.code) {
+        Some("AccessDenied") => {
+            "对象存储拒绝访问（AccessDenied）：请核对桶名、密钥的读写删除权限和IP白名单"
+        }
+        Some("InvalidAccessKeyId" | "InvalidToken" | "ExpiredToken") => {
+            "对象存储访问密钥无效或已过期，请重新配置"
+        }
+        Some("SignatureDoesNotMatch" | "AuthorizationHeaderMalformed") => {
+            "对象存储签名不匹配，请核对Region和Access Key对应的Secret Key"
+        }
+        Some("NoSuchBucket") => "对象存储桶不存在，请填写控制台中的准确桶名",
+        Some("RequestTimeTooSkewed") => "对象存储拒绝签名：部署服务器时间偏差过大，请校准时间",
+        Some("NoSuchKey") => "临时对象不存在或已被生命周期清理",
+        _ => "对象存储请求失败，请检查HTTPS端点、网络和访问配置",
+    }
+}
+pub fn missing(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ObjectError>()
+        .is_some_and(|e| e.status == 404 && e.code == "NoSuchKey")
+}
+pub async fn remove(config: &Storage, key: &str) -> Result<()> {
+    match object(config, "DELETE", key, vec![]).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // A failed DELETE must not leave an expired index stuck when S3 confirms absence.
+            if object(config, "GET", key, vec![])
+                .await
+                .as_ref()
+                .err()
+                .is_some_and(missing)
+            {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
 pub async fn object(config: &Storage, method: &str, key: &str, body: Vec<u8>) -> Result<Vec<u8>> {
     // Neither a user-supplied URL nor a pre-signed URL crosses this boundary.
     let result = tokio::time::timeout(Duration::from_secs(18), async {
@@ -166,7 +242,13 @@ pub async fn object(config: &Storage, method: &str, key: &str, body: Vec<u8>) ->
     .await;
     result
         .unwrap_or_else(|_| Err(anyhow::anyhow!("存储请求超时")))
-        .map_err(|_| anyhow::anyhow!("对象存储不可用，请检查站点存储配置"))
+        .map_err(|e| {
+            if e.is::<ObjectError>() {
+                e
+            } else {
+                anyhow::anyhow!("对象存储不可用，请检查站点存储配置")
+            }
+        })
 }
 // Called only after object() validates and pins the configured HTTPS endpoint.
 async fn request_object(
@@ -191,7 +273,6 @@ async fn request_object(
         .header("x-amz-date", date)
         .header("x-amz-content-sha256", hash)
         .header("authorization", auth)
-        .header("content-type", "application/octet-stream")
         .body(body)
         .send()
         .await?;
@@ -199,7 +280,32 @@ async fn request_object(
         return Ok(Vec::new());
     }
     if !response.status().is_success() {
-        bail!("存储请求失败");
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len().saturating_add(chunk.len()) > 4096 {
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&body);
+        let value = text
+            .split_once("<Code>")
+            .and_then(|(_, v)| v.split_once("</Code>"))
+            .map(|(v, _)| v.trim());
+        let code = match value {
+            Some("AccessDenied") => "AccessDenied",
+            Some("InvalidAccessKeyId") => "InvalidAccessKeyId",
+            Some("SignatureDoesNotMatch") => "SignatureDoesNotMatch",
+            Some("AuthorizationHeaderMalformed") => "AuthorizationHeaderMalformed",
+            Some("NoSuchBucket") => "NoSuchBucket",
+            Some("RequestTimeTooSkewed") => "RequestTimeTooSkewed",
+            Some("NoSuchKey") => "NoSuchKey",
+            Some("ExpiredToken") => "ExpiredToken",
+            Some("InvalidToken") => "InvalidToken",
+            _ => "UnclassifiedError",
+        };
+        return Err(ObjectError { status, code }.into());
     }
     if method != "GET" {
         return Ok(Vec::new());
@@ -224,27 +330,41 @@ pub struct Update {
     storage: Storage,
 }
 pub async fn get(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
-    admin(&app, &headers)?;
-    Ok(Json(app.runtime.read().unwrap().settings.storage.view()))
+    app.work(move |a| {
+        admin(a, &headers)?;
+        let mut view = a.runtime.read().unwrap().settings.storage.view();
+        let db = a.db.connection.lock().unwrap();
+        let (total, pending, expired): (i64,i64,i64) = db.query_row("SELECT count(*),COALESCE(sum(ready=0),0),COALESCE(sum(expires<=?),0) FROM friend_messages", [crate::db::now()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(anyhow::Error::from)?;
+        let probes: i64 = db.query_row("SELECT count(*) FROM storage_probes", [], |r| r.get(0)).map_err(anyhow::Error::from)?;
+        view["objects"] = json!({"total":total,"pending":pending,"expired":expired,"probes":probes});
+        Ok(Json(view))
+    }).await
 }
 pub async fn save(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Json(mut body): Json<Update>,
 ) -> Api<Json<Value>> {
+    if body.password.len() > 128 {
+        return Err(Error::bad("密码输入超出限制"));
+    }
     app.work(move |a| {
         admin(a, &headers)?; let session = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
+        body.storage.normalize();
         let mut runtime = a.runtime.write().unwrap(); let old = &runtime.settings.storage;
         if body.storage.access_key.is_empty() { body.storage.access_key = old.access_key.clone(); }
         if body.storage.secret_key.is_empty() {
-            if body.storage.endpoint != old.endpoint || body.storage.access_key != old.access_key { return Err(Error::bad("更换端点或Access Key时需要填写新Secret Key")); }
+            if url::Url::parse(&body.storage.endpoint).ok() != url::Url::parse(&old.endpoint).ok() || body.storage.access_key != old.access_key { return Err(Error::bad("更换端点或Access Key时需要填写新Secret Key")); }
             body.storage.secret_key = old.secret_key.clone();
         }
         body.storage.validate().map_err(|_| Error::bad("仅支持公网HTTPS443的S3兼容端点；检查桶名、区域、密钥和1–30天保留期"))?;
-        if (body.storage.endpoint != old.endpoint || body.storage.bucket != old.bucket || body.storage.region != old.region)
-            && a.db.connection.lock().unwrap().query_row("SELECT count(*) FROM friend_messages", [], |r| r.get::<_,i64>(0)).map_err(anyhow::Error::from)? > 0 {
-            return Err(Error(StatusCode::CONFLICT, "仍有临时对象，清理完成前不能迁移存储桶；可以关闭新发送或轮换同桶凭据"));
-        }
+        let _migration_guard = if !body.storage.same_bucket(old) {
+            let permit = a.friend_objects.clone().try_acquire_many_owned(2).map_err(|_| Error(StatusCode::CONFLICT,"临时对象正在传输或检测，请稍后再迁移存储桶"))?;
+            if a.db.connection.lock().unwrap().query_row("SELECT (SELECT count(*) FROM friend_messages)+(SELECT count(*) FROM storage_probes)", [], |r| r.get::<_,i64>(0)).map_err(anyhow::Error::from)? > 0 {
+                return Err(Error(StatusCode::CONFLICT, "仍有临时对象，清理完成前不能迁移存储桶；同桶Region修正、关闭新发送和凭据轮换不受此限制"));
+            }
+            Some(permit)
+        } else { None };
         let mut updated = runtime.settings.clone(); updated.storage = body.storage;
         let next = crate::settings::Runtime::new(updated)?;
         let bytes = Zeroizing::new(serde_json::to_vec(&next.settings).map_err(anyhow::Error::from)?);
@@ -253,6 +373,105 @@ pub async fn save(
         *runtime = next;
         Ok(Json(json!({"message":"存储设置已热加载。请在桶中关闭公开访问，并为webts-temporary/配置生命周期删除和旧版本清理。"})))
     }).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Test {
+    password: String,
+}
+pub async fn test(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(body): Json<Test>,
+) -> Api<Json<Value>> {
+    if body.password.len() > 128 {
+        return Err(Error::bad("密码输入超出限制"));
+    }
+    let _permit = app
+        .friend_objects
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            Error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "存储检测或传输正在进行，请稍后重试",
+            )
+        })?;
+    let (config, key, payload) = app
+        .work(move |a| {
+            admin(a, &headers)?;
+            let s = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
+            let config = a.runtime.read().unwrap().settings.storage.clone();
+            config
+                .validate()
+                .map_err(|_| Error::bad("请先保存完整的S3配置，再检测"))?;
+            if config.endpoint.is_empty() {
+                return Err(Error::bad("请先保存完整的S3配置，再检测"));
+            }
+            let key = crate::vault::token()?;
+            let db = a.db.connection.lock().unwrap();
+            let count: i64 = db
+                .query_row("SELECT count(*) FROM storage_probes", [], |r| r.get(0))
+                .map_err(anyhow::Error::from)?;
+            if count >= 3 {
+                return Err(Error(
+                    StatusCode::CONFLICT,
+                    "仍有待清理的检测对象，请修复删除权限后再检测",
+                ));
+            }
+            db.execute(
+                "INSERT INTO storage_probes VALUES(?,?)",
+                rusqlite::params![key, crate::db::now()],
+            )
+            .map_err(anyhow::Error::from)?;
+            let payload = a.vault.seal(
+                s.user.id,
+                "storage-probe",
+                &key,
+                b"WebTS synthetic encrypted storage diagnostic",
+            )?;
+            Ok((config, key, payload))
+        })
+        .await?;
+    let put = object(&config, "PUT", &key, payload.clone()).await;
+    let write_rejected = put.as_ref().err().is_some_and(|e| e.is::<ObjectError>());
+    let read = if put.is_ok() {
+        Some(object(&config, "GET", &key, vec![]).await)
+    } else {
+        None
+    };
+    let delete = object(&config, "DELETE", &key, vec![]).await;
+    let cleanup = delete.is_ok() || write_rejected;
+    if cleanup {
+        let key = key.clone();
+        app.work(move |a| {
+            a.db.connection
+                .lock()
+                .unwrap()
+                .execute("DELETE FROM storage_probes WHERE object_key=?", [key])
+                .map_err(anyhow::Error::from)?;
+            Ok(())
+        })
+        .await?;
+    }
+    let same = read
+        .as_ref()
+        .is_some_and(|r| r.as_ref().is_ok_and(|v| v == &payload));
+    let stage = |name: &str, result: &Result<Vec<u8>>| json!({"stage":name,"ok":result.is_ok(),"status":result.as_ref().err().and_then(|e| e.downcast_ref::<ObjectError>()).map(|e| e.status),"code":result.as_ref().err().and_then(|e| e.downcast_ref::<ObjectError>()).map(|e| e.code),"message":result.as_ref().err().map(failure_message)});
+    let mut stages = vec![stage("上传", &put)];
+    if let Some(read) = &read {
+        let mut result = stage("读取", read);
+        if read.is_ok() && !same {
+            result["ok"] = json!(false);
+            result["message"] = json!("读回的密文与测试文件不一致，请检查对象存储服务");
+        }
+        stages.push(result);
+    }
+    stages.push(stage("删除", &delete));
+    Ok(Json(
+        json!({"ok":put.is_ok() && same && delete.is_ok(),"stages":stages,"roundtrip_match":same,"cleanup_pending":!cleanup,"message":if put.is_ok() && same && delete.is_ok() {"加密测试文件上传、读取和删除均通过。"} else {"检测未通过，请按各阶段提示检查。检测不读取或修改用户消息。"}}),
+    ))
 }
 
 #[cfg(test)]
@@ -306,7 +525,7 @@ mod tests {
         let expected = payload.clone();
         let server = tokio::spawn(async move {
             let mut stored = Vec::new();
-            for step in 0..4 {
+            for step in 0..6 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut input = Vec::new();
                 let mut buffer = [0; 1024];
@@ -320,6 +539,10 @@ mod tests {
                     }
                 };
                 let headers = String::from_utf8(input[..header_end].to_vec()).unwrap();
+                assert!(
+                    !headers.to_ascii_lowercase().contains("content-type:"),
+                    "optional unsigned Content-Type breaks the configured S3-compatible endpoint"
+                );
                 let method = if step == 0 {
                     "PUT"
                 } else if step == 2 {
@@ -358,7 +581,15 @@ mod tests {
                         stored.clear();
                         ("404 Not Found", Vec::new(), 0)
                     }
-                    _ => ("200 OK", Vec::new(), MAX_CIPHERTEXT + 30),
+                    3 => ("200 OK", Vec::new(), MAX_CIPHERTEXT + 30),
+                    4 => {
+                        let error=b"<Error><Code>AccessDenied</Code><Message>private-provider-response-do-not-echo</Message></Error>".to_vec();
+                        ("403 Forbidden", error.clone(), error.len())
+                    }
+                    _ => {
+                        let error = b"<Error><Code>NoSuchKey</Code></Error>".to_vec();
+                        ("404 Not Found", error.clone(), error.len())
+                    }
                 };
                 socket.write_all(format!("HTTP/1.1 {status}\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n").as_bytes()).await.unwrap();
                 socket.write_all(&response).await.unwrap();
@@ -385,10 +616,25 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            request_object(&c, &client, url, "GET", &key, vec![], date)
+            request_object(&c, &client, url.clone(), "GET", &key, vec![], date)
                 .await
                 .is_err()
         );
+        let error = request_object(&c, &client, url.clone(), "GET", &key, vec![], date)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<ObjectError>().unwrap().code,
+            "AccessDenied"
+        );
+        assert!(failure_message(&error).contains("AccessDenied"));
+        assert!(!error.to_string().contains("private-provider-response"));
+        assert!(!failure_message(&error).contains("private-provider-response"));
+        let absent = request_object(&c, &client, url, "GET", &key, vec![], date)
+            .await
+            .unwrap_err();
+        assert!(missing(&absent));
+        assert!(!missing(&error));
         server.await.unwrap();
         // The test-only local transport does not weaken the production endpoint validator.
         let mut rejected = c.clone();
@@ -407,6 +653,18 @@ mod tests {
             retention_days: 7,
         };
         assert!(good.validate().is_ok());
+        let mut rainyun = good.clone();
+        rainyun.endpoint = " https://cn-sy1.rains3.com/ ".into();
+        rainyun.region = String::new();
+        rainyun.normalize();
+        assert_eq!(rainyun.region, "us-east-1");
+        assert!(rainyun.validate().is_ok());
+        let mut signing_correction = rainyun.clone();
+        signing_correction.region = "another-region".into();
+        signing_correction.endpoint.push('/');
+        assert!(rainyun.same_bucket(&signing_correction));
+        signing_correction.bucket = "another-bucket".into();
+        assert!(!rainyun.same_bucket(&signing_correction));
         for endpoint in [
             "http://s3.example.com",
             "https://127.0.0.1",

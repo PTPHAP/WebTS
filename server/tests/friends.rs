@@ -12,6 +12,296 @@ use web_ts::{
 };
 const ORIGIN: &str = "https://friends.example";
 const PASSWORD: &str = "synthetic friends fixture password only";
+#[tokio::test]
+async fn account_friends_share_updated_profiles_without_exposing_email_or_needing_chat_keys() {
+    let (_root, app) = setup();
+    let (alice, ac) = user(&app, "community-alice@example.invalid");
+    let (bob, bc) = user(&app, "community-bob@example.invalid");
+    let (_, stranger) = user(&app, "community-outsider@example.invalid");
+    let code = call(&app, "/friends/me", None, &bc, "", ORIGIN).await.1["code"].clone();
+    assert_eq!(
+        call(
+            &app,
+            "/friends/request",
+            Some(json!({"code":code})),
+            &ac,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK,
+        "friendship must not require initializing encryption first"
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{alice}"),
+            Some(json!({"action":"accept"})),
+            &bc,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    use base64::Engine;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+        16,
+        16,
+        image::Rgba([30, 70, 210, 255]),
+    ))
+    .write_to(&mut png, image::ImageFormat::Png)
+    .unwrap();
+    let avatar = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    assert_eq!(call(&app,"/profile",Some(json!({"display_name":"社区昵称","about":"hello community","avatar":avatar,"sync_avatar":false,"sync_about":false})),&bc,"",ORIGIN).await.0,StatusCode::OK);
+    let listing = call(&app, "/friends", None, &ac, "", ORIGIN).await.1;
+    let friend = &listing["friends"][0];
+    assert_eq!(friend["name"], "社区昵称");
+    assert_eq!(friend["about"], "hello community");
+    assert_eq!(friend["avatar_hash"].as_str().unwrap().len(), 64);
+    assert!(
+        !listing
+            .to_string()
+            .contains("community-bob@example.invalid")
+    );
+    let request = |cookie: &str| {
+        Request::builder()
+            .uri(format!("/api/friends/{bob}/avatar"))
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = router(app.clone()).oneshot(request(&ac)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    let etag = response.headers()["etag"].clone();
+    assert!(
+        response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    let bytes = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+    assert_eq!(
+        image::guess_format(&bytes).unwrap(),
+        image::ImageFormat::Png
+    );
+    let cached = Request::builder()
+        .uri(format!("/api/friends/{bob}/avatar"))
+        .header("cookie", &ac)
+        .header("if-none-match", etag.clone())
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router(app.clone()).oneshot(cached).await.unwrap().status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(
+        router(app.clone())
+            .oneshot(request(&stranger))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bob}"),
+            Some(json!({"action":"block"})),
+            &ac,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let denied_cached = Request::builder()
+        .uri(format!("/api/friends/{bob}/avatar"))
+        .header("cookie", &ac)
+        .header("if-none-match", etag)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router(app.clone())
+            .oneshot(denied_cached)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+#[tokio::test]
+async fn storage_region_correction_keeps_existing_objects_and_blocks_real_migration() {
+    let (_root, app) = setup();
+    let (owner, cookie) = user(&app, "storage-admin@example.invalid");
+    let (peer, _) = user(&app, "storage-peer@example.invalid");
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE users SET is_admin=1 WHERE id=?", [owner])
+        .unwrap();
+    let old = web_ts::storage::Storage {
+        enabled: true,
+        endpoint: "https://cn-sy1.rains3.com".into(),
+        bucket: "fixture-community".into(),
+        region: "321".into(),
+        access_key: "synthetic-access".into(),
+        secret_key: "synthetic secret only".into(),
+        retention_days: 7,
+    };
+    app.runtime.write().unwrap().settings.storage = old.clone();
+    app.db.connection.lock().unwrap().execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES('region-fixture',?,?,?,'synthetic-hash',0,?,0)",rusqlite::params![owner,peer,"a".repeat(64),web_ts::db::now()+3600]).unwrap();
+    let mut corrected = serde_json::to_value(&old).unwrap();
+    corrected["region"] = json!("");
+    corrected["endpoint"] = json!("https://cn-sy1.rains3.com/");
+    corrected["access_key"] = json!("");
+    corrected["secret_key"] = json!("");
+    let result = call(
+        &app,
+        "/admin/storage",
+        Some(json!({"password":PASSWORD,"storage":corrected})),
+        &cookie,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        result.0,
+        StatusCode::OK,
+        "same bucket signing correction must not be treated as a migration: {}",
+        result.1
+    );
+    assert_eq!(
+        app.runtime.read().unwrap().settings.storage.region,
+        "us-east-1"
+    );
+    assert_eq!(
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM friend_messages WHERE id='region-fixture'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let mut moved = serde_json::to_value(&app.runtime.read().unwrap().settings.storage).unwrap();
+    moved["bucket"] = json!("different-community");
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage",
+            Some(json!({"password":PASSWORD,"storage":moved})),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let mut disabled = serde_json::to_value(&app.runtime.read().unwrap().settings.storage).unwrap();
+    disabled["enabled"] = json!(false);
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage",
+            Some(json!({"password":PASSWORD,"storage":disabled})),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/test",
+            Some(json!({"password":PASSWORD})),
+            "",
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, regular) = user(&app, "storage-outsider@example.invalid");
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/test",
+            Some(json!({"password":PASSWORD})),
+            &regular,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/test",
+            Some(json!({"password":"wrong"})),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/test",
+            Some(json!({"password":PASSWORD})),
+            &cookie,
+            "",
+            "https://outsider.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    // Even before a message index is reserved, an active object operation prevents migration.
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM friend_messages", [])
+        .unwrap();
+    let permit = app.friend_objects.clone().try_acquire_owned().unwrap();
+    let mut moved = serde_json::to_value(&app.runtime.read().unwrap().settings.storage).unwrap();
+    moved["bucket"] = json!("another-community");
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage",
+            Some(json!({"password":PASSWORD,"storage":moved})),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    drop(permit);
+}
 fn setup() -> (tempfile::TempDir, Arc<App>) {
     let root = tempfile::tempdir().unwrap();
     let key = root.path().join("key");

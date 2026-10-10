@@ -86,6 +86,30 @@ fn activation(e: &mut webts_crypto::Engine, device: &str, lease: &str) -> Value 
     v["lease"] = json!(lease);
     v
 }
+fn readable_packet(sender: i64, recipient: i64, id: &str, epoch: i64) -> String {
+    use aes_gcm::{
+        Aes256Gcm, KeyInit, Nonce,
+        aead::{Aead, Payload},
+    };
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut key = [0; 32];
+    let mut iv = [0; 12];
+    getrandom::fill(&mut key).unwrap();
+    getrandom::fill(&mut iv).unwrap();
+    let value = json!({"version":1,"site":ORIGIN,"id":id,"sender":sender,"recipient":recipient,"expires":web_ts::db::now()+3600,"text":"synthetic readable fixture","burn":false});
+    let aad = format!("webts-server-content-v1:{ORIGIN}:{id}:{sender}:{recipient}:false:{epoch}");
+    let content = Aes256Gcm::new_from_slice(&key)
+        .unwrap()
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: value.to_string().as_bytes(),
+                aad: aad.as_bytes(),
+            },
+        )
+        .unwrap();
+    json!({"version":1,"mode":"server","epoch":epoch,"key":STANDARD.encode(key),"iv":STANDARD.encode(iv),"content":STANDARD.encode(content)}).to_string()
+}
 #[tokio::test]
 async fn friendships_require_acceptance_and_keys_are_immutable_and_signed() {
     let (_root, app) = setup();
@@ -592,4 +616,432 @@ async fn removing_requests_does_not_reset_account_rate_limits() {
         )
         .unwrap();
     assert_eq!(limits, 5);
+}
+
+#[tokio::test]
+async fn encryption_requires_paired_password_consent_and_invalidates_inflight_uploads() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "alice@example.invalid");
+    let (bi, b) = user(&app, "bob@example.invalid");
+    let mut ae = webts_crypto::Engine::new();
+    let mut be = webts_crypto::Engine::new();
+    register(&app, &a, &ae).await;
+    register(&app, &b, &be).await;
+    let la = "a".repeat(64);
+    let lb = "b".repeat(64);
+    for (cookie, engine, lease, device) in [
+        (&a, &mut ae, &la, "a041b157-319f-4bf3-970e-7a04e30bd070"),
+        (&b, &mut be, &lb, "b041b157-319f-4bf3-970e-7a04e30bd070"),
+    ] {
+        assert_eq!(
+            call(
+                &app,
+                "/friends/device",
+                Some(activation(engine, device, lease)),
+                cookie,
+                "",
+                ORIGIN
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    let pa = format!("/friends/{bi}/encryption");
+    let pb = format!("/friends/{ai}/encryption");
+    let consent = json!({"server_decrypt":true,"acknowledge":true,"password":PASSWORD});
+    assert_eq!(
+        call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    {
+        let db = app.db.connection.lock().unwrap();
+        db.execute(
+            "INSERT INTO friendships VALUES(?,?,?,1,0,0)",
+            rusqlite::params![ai, bi, ai],
+        )
+        .unwrap();
+        for (id, ready) in [("pending-mode", 0), ("historical-e2ee", 1)] {
+            db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES(?,?,?,?,?,0,?,?)",rusqlite::params![id,ai,bi,id,"hash",web_ts::db::now()+3600,ready]).unwrap();
+        }
+    }
+    assert_eq!(
+        call(
+            &app,
+            &pa,
+            Some(consent.clone()),
+            &a,
+            &la,
+            "https://attacker.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            &pa,
+            Some(json!({"server_decrypt":true,"password":PASSWORD})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &app,
+            &pa,
+            Some(json!({"server_decrypt":true,"acknowledge":true,"password":"wrong password"})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, &pa, Some(consent.clone()), &a, &lb, ORIGIN)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let first = call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN).await;
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(first.1["mode"], "e2ee");
+    assert_eq!(first.1["epoch"], 1);
+    assert_eq!(
+        call(&app, &pa, Some(consent.clone()), &a, &la, ORIGIN)
+            .await
+            .1["epoch"],
+        1
+    );
+    let second = call(&app, &pb, Some(consent.clone()), &b, &lb, ORIGIN).await;
+    assert_eq!(second.0, StatusCode::OK);
+    assert_eq!(second.1["mode"], "server");
+    assert_eq!(second.1["epoch"], 2);
+    let rows = call(&app, "/friends", None, &b, "", ORIGIN).await.1;
+    assert_eq!(rows["friends"][0]["allow_server"], true);
+    assert_eq!(rows["friends"][0]["peer_allow_server"], true);
+    assert_eq!(rows["friends"][0]["mode_epoch"], 2);
+    let mid = "c041b157-319f-4bf3-970e-7a04e30bd070";
+    let valid = readable_packet(ai, bi, mid, 2);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":valid,"mode":"server","epoch":2})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let swapped = readable_packet(bi, ai, mid, 2);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":swapped,"mode":"server","epoch":2})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let encrypted=json!({"version":1,"device":"b041b157-319f-4bf3-970e-7a04e30bd070","packet":"opaque","iv":"AQEBAQEBAQEBAQEB","content":"AAAA"}).to_string();
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":encrypted,"mode":"e2ee","epoch":2})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":"{}","mode":"server","epoch":1})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":"{}","mode":"server","epoch":2})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let historical = call(
+        &app,
+        &format!("/friends/{ai}/messages"),
+        None,
+        &b,
+        &lb,
+        ORIGIN,
+    )
+    .await
+    .1;
+    assert_eq!(historical["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(historical["messages"][0]["mode"], "e2ee");
+    assert_eq!(historical["messages"][0]["epoch"], 0);
+    {
+        let db = app.db.connection.lock().unwrap();
+        let pending: i64 = db
+            .query_row(
+                "SELECT expires FROM friend_messages WHERE id='pending-mode'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pending <= web_ts::db::now());
+    }
+    let restored = call(
+        &app,
+        &pb,
+        Some(json!({"server_decrypt":false})),
+        &b,
+        &lb,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(restored.0, StatusCode::OK);
+    assert_eq!(restored.1["mode"], "e2ee");
+    assert_eq!(restored.1["epoch"], 3);
+    assert_eq!(
+        call(&app, &pb, Some(consent), &b, &lb, ORIGIN).await.1["epoch"],
+        4
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(json!({"peer":bi,"id":mid,"ciphertext":"{}","mode":"server","epoch":2})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE users SET banned_until=-1 WHERE id=?", [ai])
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            &pa,
+            Some(json!({"server_decrypt":false})),
+            &a,
+            &la,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE users SET banned_until=0 WHERE id=?", [ai])
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}"),
+            Some(json!({"action":"remove"})),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM friend_modes", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn automatic_activation_requires_the_current_lease_and_cannot_take_over_another_device() {
+    let (_root, app) = setup();
+    let (_, cookie) = user(&app, "auto@example.invalid");
+    let mut engine = webts_crypto::Engine::new();
+    register(&app, &cookie, &engine).await;
+    let device = "a041b157-319f-4bf3-970e-7a04e30bd070";
+    let first = "a".repeat(64);
+    let second = "b".repeat(64);
+    let mut body = activation(&mut engine, device, &first);
+    body["password"] = json!("");
+    assert_eq!(
+        call(&app, "/friends/device", Some(body), &cookie, &first, ORIGIN)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(&mut engine, device, &first)),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let mut rotate = activation(&mut engine, device, &second);
+    rotate["password"] = json!("");
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(rotate.clone()),
+            &cookie,
+            &first,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(rotate.clone()),
+            &cookie,
+            &first,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(rotate),
+            &cookie,
+            &second,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let mut takeover = activation(
+        &mut engine,
+        "c041b157-319f-4bf3-970e-7a04e30bd070",
+        &"c".repeat(64),
+    );
+    takeover["password"] = json!("");
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(takeover),
+            &cookie,
+            &second,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM sessions", [])
+        .unwrap();
+    let mut revoked = activation(&mut engine, device, &second);
+    revoked["password"] = json!("");
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(revoked),
+            &cookie,
+            &second,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[test]
+fn migration_preserves_old_opaque_messages_as_e2ee_and_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("old.sqlite");
+    {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0);INSERT INTO users VALUES(1,'a@example.invalid','hash',1),(2,'b@example.invalid','hash',1);CREATE TABLE friend_messages(seq INTEGER PRIMARY KEY,id TEXT UNIQUE NOT NULL,sender INTEGER NOT NULL,recipient INTEGER NOT NULL,object_key TEXT UNIQUE NOT NULL,content_hash TEXT NOT NULL,created_at INTEGER NOT NULL,expires INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0,read_at INTEGER,burn INTEGER NOT NULL DEFAULT 0);INSERT INTO friend_messages VALUES(7,'old-message',1,2,'opaque-object','opaque-hash',123,456,1,NULL,0);").unwrap();
+    }
+    for _ in 0..2 {
+        let db = web_ts::db::Db::open(path.to_str().unwrap()).unwrap();
+        let conn = db.connection.lock().unwrap();
+        let row: (i64, String, String, String, i64) = conn
+            .query_row(
+                "SELECT seq,object_key,content_hash,mode,mode_epoch FROM friend_messages",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                7,
+                "opaque-object".into(),
+                "opaque-hash".into(),
+                "e2ee".into(),
+                0
+            )
+        );
+    }
 }

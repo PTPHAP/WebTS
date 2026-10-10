@@ -18,5 +18,6 @@ pub mod vault;
 
 mod server_banner;
 
+mod friend_content;
 pub mod friends;
 pub mod storage;

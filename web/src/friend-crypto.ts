@@ -5,9 +5,9 @@ export async function cryptoModule():Promise<EngineModule>{
   modulePromise??=(async()=>{const path='/crypto/webts_crypto.js';const m=await import(/* @vite-ignore */ path) as EngineModule;await m.default();return m;})();return modulePromise;
 }
 export type Envelope={version:1;site:string;id:string;sender:number;recipient:number;expires:number;text:string;image?:string;sticker?:string;burn:boolean};
-export type Encrypted={version:1;account:number;kind:'identity'|'state';publicKey:string;salt:string;iv:string;data:string};
-export type Cache={value:Envelope;created_at:number};
-export type Saved={engine:string;device:string;lease:string;peerDevices:Record<string,string>;cache:Record<string,Cache>;readPending?:string[];outbox?:{peer:number;id:string;ciphertext:string;burn:boolean}};
+export type Encrypted={version:1;account:number;kind:'identity'|'state';publicKey:string;salt:string;iv:string;data:string;automatic?:boolean};
+export type Cache={value:Envelope;created_at:number;mode?:'e2ee'|'server';epoch?:number};
+export type Saved={engine:string;device:string;lease:string;previousLease?:string;peerDevices:Record<string,string>;cache:Record<string,Cache>;readPending?:string[];outbox?:{peer:number;id:string;ciphertext:string;burn:boolean;mode?:'e2ee'|'server';epoch?:number}};
 export type Unlocked={engine:RatchetEngine;record:Encrypted;key:CryptoKey;saved:Saved};
 const utf8=new TextEncoder();
 export function b64(bytes:Uint8Array):string{let s='';for(let i=0;i<bytes.length;i+=4096)s+=String.fromCharCode(...bytes.subarray(i,i+4096));return btoa(s);}
@@ -17,9 +17,34 @@ async function derive(passphrase:string,salt:Uint8Array<ArrayBuffer>):Promise<Cr
 async function protect(record:Encrypted,key:CryptoKey,text:string):Promise<Encrypted>{const iv=crypto.getRandomValues(new Uint8Array(12));const data=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:context(record)},key,utf8.encode(text));return {...record,iv:b64(iv),data:b64(new Uint8Array(data))};}
 function parseRecord(value:unknown,account:number,kind:'identity'|'state'):Encrypted{
   const r=value as Encrypted;
-  if(!r||r.version!==1||r.account!==account||r.kind!==kind||typeof r.publicKey!=='string'||r.publicKey.length>256||typeof r.salt!=='string'||unb64(r.salt).length!==16||typeof r.iv!=='string'||unb64(r.iv).length!==12||typeof r.data!=='string'||r.data.length>16*1024*1024)throw new Error('备份格式、账号或容量不匹配');return r;
+  if(!r||r.version!==1||r.account!==account||r.kind!==kind||r.automatic!==undefined&&typeof r.automatic!=='boolean'||typeof r.publicKey!=='string'||r.publicKey.length>256||typeof r.salt!=='string'||unb64(r.salt).length!==16||typeof r.iv!=='string'||unb64(r.iv).length!==12||typeof r.data!=='string'||r.data.length>16*1024*1024)throw new Error('备份格式、账号或容量不匹配');return r;
 }
 async function unprotect(record:Encrypted,key:CryptoKey):Promise<string>{const value=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(record.iv),additionalData:context(record)},key,unb64(record.data));return new TextDecoder('utf-8',{fatal:true}).decode(value);}
+async function deviceKey(account:number,create=false):Promise<CryptoKey>{
+  let key=await loadLocal<CryptoKey>('keys',`device:${account}`);
+  if(!key&&create){key=await crypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);await saveLocal('keys',`device:${account}`,key);}
+  if(!key||key.type!=='secret'||key.extractable||key.algorithm.name!=='AES-GCM'||(key.algorithm as AesKeyAlgorithm).length!==256||!key.usages.includes('encrypt')||!key.usages.includes('decrypt'))throw new Error('此浏览器的自动密钥不可用，请导入受口令保护的身份备份。');return key;
+}
+export async function createAutomaticIdentity(account:number):Promise<Encrypted>{
+  const key=await deviceKey(account,true),m=await cryptoModule(),engine=new m.Engine();
+  try{const record:Encrypted={version:1,account,kind:'identity',publicKey:engine.identity(),salt:b64(crypto.getRandomValues(new Uint8Array(16))),iv:'',data:'',automatic:true};return await protect(record,key,engine.save());}finally{engine.free();}
+}
+export async function exportIdentity(identity:Encrypted,passphrase:string):Promise<Encrypted>{
+  if(passphrase.length<16||passphrase.length>256)throw new Error('备份口令需要16–256个字符。');
+  const raw=await unprotect(identity,identity.automatic?await deviceKey(identity.account):await derive(passphrase,unb64(identity.salt)));
+  const salt=crypto.getRandomValues(new Uint8Array(16));return protect({...identity,automatic:undefined,salt:b64(salt)},await derive(passphrase,salt),raw);
+}
+export async function saveImportedIdentity(identity:Encrypted):Promise<void>{
+  parseRecord(identity,identity.account,'identity');if(identity.automatic)throw new Error('只能导入口令保护的可移植备份');
+  await saveLocals([[`identity:${identity.account}`,identity],[`state:${identity.account}`,undefined]]);
+}
+export async function rememberDevice(identity:Encrypted,state:Unlocked,passphrase:string):Promise<Encrypted>{
+  if(identity.automatic)return identity;
+  const raw=await unprotect(identity,await derive(passphrase,unb64(identity.salt))),key=await deviceKey(identity.account,true);
+  const savedIdentity=await protect({...identity,automatic:true},key,raw);
+  state.saved.engine=state.engine.save();const record=await protect({...state.record,automatic:true},key,JSON.stringify(state.saved));
+  await saveLocals([[`identity:${identity.account}`,savedIdentity],[`state:${identity.account}`,record]]);state.key=key;state.record=record;return savedIdentity;
+}
 export async function createIdentity(account:number,passphrase:string):Promise<Encrypted>{
   if(passphrase.length<16||passphrase.length>256)throw new Error('私信密钥口令需要16–256个字符，建议使用独立的长句。');
   const m=await cryptoModule(),engine=new m.Engine();try{const salt=crypto.getRandomValues(new Uint8Array(16));const record:Encrypted={version:1,account,kind:'identity',publicKey:engine.identity(),salt:b64(salt),iv:'',data:''};return await protect(record,await derive(passphrase,salt),engine.save());}finally{engine.free();}
@@ -27,7 +52,7 @@ export async function createIdentity(account:number,passphrase:string):Promise<E
 export async function unlockState(identity:Encrypted,local:Encrypted|undefined,account:number,publicKey:string,passphrase:string):Promise<Unlocked>{
   const source=parseRecord(local??identity,account,local?'state':'identity');
   if(source.publicKey!==publicKey||identity.publicKey!==publicKey)throw new Error('备份与账号已登记的私信身份不一致');
-  const m=await cryptoModule(),key=await derive(passphrase,unb64(source.salt));const raw=await unprotect(source,key);
+  const m=await cryptoModule(),key=source.automatic?await deviceKey(account):await derive(passphrase,unb64(source.salt));const raw=await unprotect(source,key);
   const saved:Saved=local?JSON.parse(raw):{engine:raw,device:crypto.randomUUID(),lease:Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join(''),peerDevices:{},cache:{}};
   const engine=m.Engine.restore(saved.engine);
   if(engine.identity()!==publicKey){engine.free();throw new Error('私信身份校验失败');}
@@ -67,6 +92,25 @@ export async function openMessage(ciphertext:string,state:Unlocked,curve:string,
   const data=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(outer.iv),additionalData:messageContext(expected)},key,unb64(outer.content));
   if(data.byteLength>192*1024)throw new Error('正文超过安全上限');return validEnvelope(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data)),expected);
 }
+const serverContext=(v:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>,epoch:number)=>utf8.encode(`webts-server-content-v1:${v.site}:${v.id}:${v.sender}:${v.recipient}:${v.burn}:${epoch}`);
+export async function sealServerMessage(value:Envelope,epoch:number):Promise<string>{
+  validEnvelope(value,value);if(!Number.isSafeInteger(epoch)||epoch<1)throw new Error('请先确认双方的私信加密选择。');
+  const bytes=crypto.getRandomValues(new Uint8Array(32)),iv=crypto.getRandomValues(new Uint8Array(12));
+  const key=await crypto.subtle.importKey('raw',bytes,'AES-GCM',false,['encrypt']);
+  const data=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:serverContext(value,epoch)},key,utf8.encode(JSON.stringify(value)));
+  const encoded=b64(bytes);bytes.fill(0);
+  // This key deliberately reaches the site over HTTPS. This mode is not E2EE.
+  return JSON.stringify({version:1,mode:'server',epoch,key:encoded,iv:b64(iv),content:b64(new Uint8Array(data))});
+}
+export async function openServerMessage(ciphertext:string,epoch:number,expected:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>):Promise<Envelope>{
+  if(ciphertext.length>384*1024)throw new Error('密文超过安全上限');const outer=JSON.parse(ciphertext);
+  if(outer.version!==1||outer.mode!=='server'||outer.epoch!==epoch||typeof outer.key!=='string'||typeof outer.iv!=='string'||typeof outer.content!=='string')throw new Error('服务器可解密消息的模式不匹配');
+  const raw=unb64(outer.key),iv=unb64(outer.iv);if(raw.length!==32||iv.length!==12)throw new Error('必须使用AES-256-GCM');
+  const key=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);raw.fill(0);
+  const data=await crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:serverContext(expected,epoch)},key,unb64(outer.content));
+  if(data.byteLength>192*1024)throw new Error('正文超过安全上限');return validEnvelope(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data)),expected);
+}
 function database():Promise<IDBDatabase>{return new Promise((resolve,reject)=>{const r=indexedDB.open('webts-private-messaging',1);r.onupgradeneeded=()=>{r.result.createObjectStore('keys');r.result.createObjectStore('trust');};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(new Error('浏览器无法保存加密密钥'));});}
 export async function loadLocal<T>(store:'keys'|'trust',key:string):Promise<T|undefined>{const db=await database();try{return await new Promise<T|undefined>((resolve,reject)=>{const tx=db.transaction(store);const r=tx.objectStore(store).get(key);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(new Error('本地记录读取失败'));});}finally{db.close();}}
-export async function saveLocal(store:'keys'|'trust',key:string,value:unknown):Promise<void>{const db=await database();try{await new Promise<void>((resolve,reject)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(value,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(new Error('本地记录保存失败'));tx.onabort=()=>reject(new Error('本地记录保存取消'));});}finally{db.close();}}
+async function saveLocals(entries:[string,unknown][],store:'keys'|'trust'='keys'):Promise<void>{const db=await database();try{await new Promise<void>((resolve,reject)=>{const tx=db.transaction(store,'readwrite');for(const [key,value] of entries){const object=tx.objectStore(store);if(value===undefined)object.delete(key);else object.put(value,key);}tx.oncomplete=()=>resolve();tx.onerror=()=>reject(new Error('本地记录保存失败'));tx.onabort=()=>reject(new Error('本地记录保存取消'));});}finally{db.close();}}
+export async function saveLocal(store:'keys'|'trust',key:string,value:unknown):Promise<void>{await saveLocals([[key,value]],store);}

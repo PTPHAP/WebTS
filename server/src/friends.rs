@@ -1,4 +1,4 @@
-//! Account friendships and opaque, expiring Olm envelopes. No private keys or message text.
+//! Account friendships and expiring encrypted envelopes; server-readable mode requires paired consent.
 use crate::{
     app::{Api, App, Error},
     db::{Session, now},
@@ -101,7 +101,8 @@ pub async fn activate(
     Json(body): Json<Device>,
 ) -> Api<Json<Value>> {
     app.work(move|a| {
-        let s=if body.password.is_empty() {let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;let old:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;if old!=body.device{return Err(Error::bad("设备接管需要重新验证密码"));}s} else {a.reauthenticate(&headers,&Zeroizing::new(body.password))?};
+        let automatic=body.password.is_empty();
+        let s=if automatic {let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;let old:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;if old!=body.device{return Err(Error::bad("设备接管需要重新验证密码"));}s} else {a.reauthenticate(&headers,&Zeroizing::new(body.password))?};
         if body.lease.len()!=64||!body.lease.bytes().all(|b|b.is_ascii_hexdigit())||!uuid(&body.device)||body.payload.len()>8192||!b64(&body.signature,64){return Err(Error::bad("设备密钥数据无效"));}
         let payload:Value=serde_json::from_str(&body.payload).map_err(|_|Error::bad("设备密钥格式无效"))?;
         let identity=payload["identity"].as_str().unwrap_or("");
@@ -115,6 +116,9 @@ pub async fn activate(
         // The peer independently verifies this signature against their pinned identity.
         let bundle=json!({"payload":body.payload,"signature":body.signature,"device":body.device}).to_string();
         let old_device:String=tx.query_row("SELECT device FROM friend_keys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
+        // Fence an automatic renewal again inside the write transaction: another
+        // device may have taken over while this request's signature was checked.
+        if automatic {device(&tx,&s,&headers)?;if old_device!=body.device{return Err(Error::bad("设备接管需要重新验证密码"));}}
         if !old_device.is_empty()&&old_device!=body.device {
             // A backup-based device lacks old ratchets. Do not deliver late old-device
             // packets into a new session for the same public identity.
@@ -163,6 +167,81 @@ fn accepted(db: &rusqlite::Connection, owner: i64, peer: i64) -> Api<()> {
     }
     Ok(())
 }
+fn encryption_state(db: &rusqlite::Connection, owner: i64, peer: i64) -> Api<(bool, bool, i64)> {
+    let (lo, hi) = pair(owner, peer);
+    let (a, b, epoch) = db
+        .query_row(
+            "SELECT allow_lo,allow_hi,epoch FROM friend_modes WHERE lo=? AND hi=?",
+            params![lo, hi],
+            |r| {
+                Ok((
+                    r.get::<_, bool>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_error)?
+        .unwrap_or((false, false, 0));
+    Ok(if owner == lo {
+        (a, b, epoch)
+    } else {
+        (b, a, epoch)
+    })
+}
+fn require_mode(
+    db: &rusqlite::Connection,
+    owner: i64,
+    peer: i64,
+    mode: &str,
+    epoch: i64,
+) -> Api<()> {
+    let (own, other, current) = encryption_state(db, owner, peer)?;
+    if epoch != current || mode != if own && other { "server" } else { "e2ee" } {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "加密选择已变化；服务器可解密模式需要双方明确同意，请刷新后重试",
+        ));
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Encryption {
+    server_decrypt: bool,
+    #[serde(default)]
+    acknowledge: bool,
+    #[serde(default)]
+    password: String,
+}
+pub async fn encryption(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(peer): Path<i64>,
+    Json(body): Json<Encryption>,
+) -> Api<Json<Value>> {
+    if body.password.len() > 128 {
+        return Err(Error::bad("密码输入超出限制"));
+    }
+    if body.server_decrypt && !body.acknowledge {
+        return Err(Error::bad("必须明确确认本站可以读取此会话的后续消息"));
+    }
+    app.work(move |a| {
+        let s = if body.server_decrypt { a.reauthenticate(&headers,&Zeroizing::new(body.password))? } else { current(a,&headers)? };
+        let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;session_valid(&tx,&s)?;device(&tx,&s,&headers)?;accepted(&tx,s.user.id,peer)?;
+        let (lo,hi)=pair(s.user.id,peer);let (own,other,epoch)=encryption_state(&tx,s.user.id,peer)?;
+        if own!=body.server_decrypt {
+            tx.execute("INSERT OR IGNORE INTO friend_modes(lo,hi) VALUES(?,?)",params![lo,hi]).map_err(db_error)?;
+            let sql=if s.user.id==lo {"UPDATE friend_modes SET allow_lo=?,epoch=epoch+1 WHERE lo=? AND hi=?"} else {"UPDATE friend_modes SET allow_hi=?,epoch=epoch+1 WHERE lo=? AND hi=?"};
+            tx.execute(sql,params![body.server_decrypt,lo,hi]).map_err(db_error)?;
+            // A pending upload cannot become visible after either person's choice changes.
+            tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE ready=0 AND ((sender=? AND recipient=?) OR (sender=? AND recipient=?))",params![now(),lo,hi,hi,lo]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        Ok(Json(json!({"mode":if body.server_decrypt&&other {"server"}else{"e2ee"},"epoch":epoch+i64::from(own!=body.server_decrypt),"message":"选择已保存。仅双方同意时使用服务器可解密模式，旧消息保护方式保持。"})))
+    }).await
+}
 pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?; let storage=a.runtime.read().unwrap().settings.storage.clone(); let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
@@ -199,8 +278,8 @@ pub async fn set_key(
 pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
-        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
-        let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,0) ELSE COALESCE(m.allow_hi,0) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,0) ELSE COALESCE(m.allow_lo,0) END,COALESCE(m.epoch,0) FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
+        let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
         Ok(Json(json!({"friends":rows,"unread":unread})))
     }).await
@@ -276,8 +355,8 @@ pub async fn messages(
 ) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?; device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
-        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
-        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
+        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         Ok(Json(json!({"messages":rows})))
     }).await
 }
@@ -289,42 +368,62 @@ pub struct Send {
     ciphertext: String,
     #[serde(default)]
     burn: bool,
+    #[serde(default = "default_mode")]
+    mode: String,
+    #[serde(default)]
+    epoch: i64,
+}
+fn default_mode() -> String {
+    "e2ee".into()
 }
 pub async fn send(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Json(body): Json<Send>,
+    Json(mut body): Json<Send>,
 ) -> Api<Json<Value>> {
-    if !uuid(&body.id) || !valid_ciphertext(&body.ciphertext) {
-        return Err(Error::bad("只接受限制以内的Olm双棘轮密文"));
+    let ciphertext = Zeroizing::new(std::mem::take(&mut body.ciphertext));
+    if !uuid(&body.id)
+        || body.epoch < 0
+        || ciphertext.len() > MAX_CIPHERTEXT
+        || !matches!(body.mode.as_str(), "e2ee" | "server")
+        || body.mode == "e2ee" && !valid_ciphertext(&ciphertext)
+    {
+        return Err(Error::bad("只接受限制以内且模式明确的加密消息"));
     }
     let _permit = app
         .friend_objects
         .clone()
         .try_acquire_owned()
         .map_err(|_| Error(StatusCode::TOO_MANY_REQUESTS, "临时存储正忙，请稍后重试"))?;
-    let storage = app.runtime.read().unwrap().settings.storage.clone();
-    if !storage.enabled {
-        return Err(Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "管理员尚未启用私有对象存储，私信不会降级为明文",
-        ));
-    }
     let check_headers = headers.clone();
     let id = body.id.clone();
     let peer = body.peer;
-    let target_device = serde_json::from_str::<Value>(&body.ciphertext).unwrap()["device"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let target_device = if body.mode == "e2ee" {
+        serde_json::from_str::<Value>(&ciphertext).unwrap()["device"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    } else {
+        String::new()
+    };
     let check_device = target_device.clone();
     let burn = body.burn;
-    let hash = crate::db::digest(&format!("{}:{burn}", body.ciphertext));
+    let mode = body.mode.clone();
+    let epoch = body.epoch;
+    let validation = ciphertext.clone();
+    let input = Zeroizing::new(if mode == "e2ee" && epoch == 0 {
+        format!("{}:{burn}", ciphertext.as_str())
+    } else {
+        format!("{}:{burn}:{mode}:{epoch}", ciphertext.as_str())
+    });
+    let hash = crate::db::digest(&input);
     let (owner,key,duplicate,storage)=app.work(move |a| {
         let s=current(a,&check_headers)?;let runtime=a.runtime.read().unwrap();
-        if !runtime.settings.storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"私信存储已关闭"));}
         let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&check_headers)?; accepted(&db,s.user.id,peer)?;
-        let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=check_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备发生变化，请重新建立加密会话"));}
+        require_mode(&db,s.user.id,peer,&mode,epoch)?;
+        if mode=="server" {crate::friend_content::validate(&validation,&a.config.origin(),&id,s.user.id,peer,burn,epoch)?;}
+        if !storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"管理员尚未启用私有对象存储，私信不会降级为明文"));}
+        if mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=check_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备发生变化，请重新建立加密会话"));}}
         let existing:Option<(i64,i64,String,String,bool,i64,i64)>=db.query_row("SELECT sender,recipient,object_key,content_hash,ready,expires,created_at FROM friend_messages WHERE id=?",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(db_error)?;
         if let Some((sender,recipient,key,old,ready,expires,created))=existing {
             if sender!=s.user.id||recipient!=peer||old!=hash||expires<=now()||(!ready&&created<=now()-3600){return Err(Error(StatusCode::CONFLICT,"消息编号已使用或消息已过期"));}
@@ -334,18 +433,18 @@ pub async fn send(
         if total>=10000||own>=1000||recent>=20{return Err(Error(StatusCode::TOO_MANY_REQUESTS,"临时消息容量或发送频率达到上限"));}
         let key=token()?;
         let days=storage.retention_days.max(1);
-        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn) VALUES(?,?,?,?,?,?,?,0,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn]).map_err(db_error)?;
+        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,mode,mode_epoch) VALUES(?,?,?,?,?,?,?,0,?,?,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn,mode,epoch]).map_err(db_error)?;
         Ok((s.user.id,key,false,storage))
     }).await?;
     if !duplicate {
         let id = body.id.clone();
-        let ciphertext = Zeroizing::new(body.ciphertext);
+        let context = crate::friend_content::object_context(peer, &body.mode, epoch);
         let sealed = app
             .work(move |a| {
                 Ok(a.vault.seal(
                     owner,
                     &format!("friend-message:{id}"),
-                    &peer.to_string(),
+                    &context,
                     ciphertext.as_bytes(),
                 )?)
             })
@@ -361,7 +460,8 @@ pub async fn send(
     }
     app.work(move|a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
-        let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=target_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备已变化，消息未送达"));}
+        require_mode(&db,s.user.id,peer,&body.mode,epoch)?;
+        if body.mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=target_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备已变化，消息未送达"));}}
         let changed=db.execute("UPDATE friend_messages SET ready=1 WHERE id=? AND sender=? AND recipient=? AND expires>?",params![body.id,s.user.id,peer,now()]).map_err(db_error)?;
         if changed!=1{return Err(Error(StatusCode::CONFLICT,"消息或好友关系已失效"));}
         Ok(Json(json!({"message":"加密消息已送达。"})))
@@ -379,11 +479,11 @@ pub async fn content(
         .map_err(|_| Error(StatusCode::TOO_MANY_REQUESTS, "临时存储正忙，请稍后重试"))?;
     let h = headers.clone();
     let mid = id.clone();
-    let (sender,recipient,key)=app.work(move|a| {
+    let (sender,recipient,key,mode,epoch)=app.work(move|a| {
         let s=current(a,&h)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&h)?;
-        let row:Option<(i64,i64,String)>=db.query_row("SELECT sender,recipient,object_key FROM friend_messages WHERE id=? AND (sender=? OR recipient=?) AND ready=1 AND expires>?",params![mid,s.user.id,s.user.id,now()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_error)?;
-        let (sender,recipient,key)=row.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在或已过期"))?;
-        accepted(&db,s.user.id,if sender==s.user.id{recipient}else{sender})?;Ok((sender,recipient,key))
+        let row:Option<(i64,i64,String,String,i64)>=db.query_row("SELECT sender,recipient,object_key,mode,mode_epoch FROM friend_messages WHERE id=? AND (sender=? OR recipient=?) AND ready=1 AND expires>?",params![mid,s.user.id,s.user.id,now()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(db_error)?;
+        let (sender,recipient,key,mode,epoch)=row.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在或已过期"))?;
+        accepted(&db,s.user.id,if sender==s.user.id{recipient}else{sender})?;Ok((sender,recipient,key,mode,epoch))
     }).await?;
     let storage = app.runtime.read().unwrap().settings.storage.clone();
     let sealed = storage::object(&storage, "GET", &key, Vec::new())
@@ -420,7 +520,7 @@ pub async fn content(
         let plain = a.vault.open(
             sender,
             &format!("friend-message:{id}"),
-            &recipient.to_string(),
+            &crate::friend_content::object_context(recipient, &mode, epoch),
             &sealed,
         )?;
         let ciphertext = std::str::from_utf8(&plain).map_err(anyhow::Error::from)?;

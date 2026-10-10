@@ -273,6 +273,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/friends/key", post(crate::friends::set_key))
         .route("/friends/device", post(crate::friends::activate))
         .route("/friends/{peer}/prekey", post(crate::friends::claim))
+        .route(
+            "/friends/{peer}/encryption",
+            post(crate::friends::encryption),
+        )
         .route("/friends", get(crate::friends::list))
         .route("/friends/request", post(crate::friends::request))
         .route("/friends/{peer}", post(crate::friends::action))
@@ -415,6 +419,9 @@ async fn guard(
     let auth = request.uri().path().contains("/auth/")
         || (mutation
             && (request.uri().path().contains("/admin/")
+                || request.uri().path().ends_with("/friends/key")
+                || request.uri().path().ends_with("/friends/device")
+                || request.uri().path().ends_with("/encryption")
                 || request.uri().path().ends_with("/profile")));
     let window = if auth { 600 } else { 60 };
     let cap = if auth { 30 } else { 240 };

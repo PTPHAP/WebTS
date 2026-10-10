@@ -1,0 +1,24 @@
+{
+  "clock": 1900000000,
+  "epoch": 4,
+  "envelope": {
+    "version": 1,
+    "site": "https://fixture.example",
+    "id": "a041b157-319f-4bf3-970e-7a04e30bd070",
+    "sender": 1,
+    "recipient": 2,
+    "expires": 1900000500,
+    "text": "Public synthetic AES-256 fixture 你好",
+    "image": "data:image/jpeg;base64,c2FmZQ==",
+    "sticker": "hello",
+    "burn": false
+  },
+  "packet": {
+    "version": 1,
+    "mode": "server",
+    "epoch": 4,
+    "key": "Zs6Jp8GZnnTgk7IeKn9L568nDYXtWQLS7jvkrlTt5OM=",
+    "iv": "hsyTEQw4YGbTMLIy",
+    "content": "6lsMQVH3FjwyqbCgZuCNGdpnmo8yCaao04lmnWaHHwqwl2D1xiuuQ4NhjKiAjaAssc0/DCyJJrPV8VqbHd+rMVKRkgWVbQyqo9gtWjBfqeDJmr5hjR3xB+r/h/KyauPuOQp2qFdmYOe5zlSFVFHSeRV5jqU9wVnAJe+S6Kfr98sbZk+JI1Lwz2oq5G6+X82Sza12dhdtYBGSmbBmQIzI7APZtBgLguGlb6O2Pg2sEuJO+nRUFCQZpK4JagW6MYw/eysGlcFJDpSP+qivrg8z8AlaOd2SztlBLCBmvfjru53XKMutftYnVLQL5ZxK1roVXHNefrIfbTE2ZRRiGcKaxCzETeuKsAsetNJuiLNljVoBTg=="
+  }
+}

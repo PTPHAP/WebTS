@@ -31,7 +31,7 @@ use tsclientlib::{
 use tsproto_packets::packets::{
     AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType,
 };
-use tsproto_types::{Codec, CodecEncryptionMode};
+use tsproto_types::{ClientId, Codec, CodecEncryptionMode};
 
 struct Entry {
     owner: i64,
@@ -220,7 +220,7 @@ pub async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Api<Response> {
-    app.session(&headers)?;
+    app.session_async(&headers).await?;
     let permit = app.sockets.clone().try_acquire_owned().map_err(|_| {
         crate::app::Error(axum::http::StatusCode::TOO_MANY_REQUESTS, "网关连接已满")
     })?;
@@ -318,7 +318,8 @@ async fn bridge(
         bail!("连接参数无效");
     }
     let session = app
-        .session(headers)
+        .session_async(headers)
+        .await
         .map_err(|_| anyhow::anyhow!("请重新登录"))?;
     let source = {
         let current = app.runtime.read().unwrap();
@@ -399,11 +400,15 @@ async fn bridge(
             app.config.rtc.udp_max,
         )?
     };
-    app.session(headers)
-        .map_err(|_| anyhow::anyhow!("登录已失效"))?;
-    app.db
-        .identity(owner, &request.identity)
-        .map_err(|_| anyhow::anyhow!("身份已删除"))?;
+    let check_headers = headers.clone();
+    let check_identity = request.identity.clone();
+    app.work(move |a| {
+        a.session(&check_headers)?;
+        a.db.identity(owner, &check_identity)?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("登录已失效或身份已删除"))?;
     emit(tx, json!({"type":"status","message":"正在连接 TeamSpeak…"}))?;
     let mut conn = Connection::build(target.to_string())
         .identity(identity)
@@ -601,6 +606,31 @@ async fn connected(
     audio: &mut mpsc::Receiver<rtc::rtp::Packet>,
     connection_id: &str,
 ) -> Result<()> {
+    let session = app
+        .session_async(headers)
+        .await
+        .map_err(|_| anyhow::anyhow!("登录已失效"))?;
+    let session_deadline = tokio::time::Instant::now()
+        + Duration::from_secs(session.expires.saturating_sub(crate::db::now()).max(0) as u64);
+    let session_check = async {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if tokio::time::Instant::now() >= session_deadline {
+                return Err(anyhow::anyhow!("登录已过期"));
+            }
+            match tokio::time::timeout_at(session_deadline, app.session_async(headers))
+                .await
+                .map_err(|_| anyhow::anyhow!("登录已过期"))?
+            {
+                Ok(_) => {}
+                Err(error) if error.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE => {}
+                Err(_) => return Err::<(), _>(anyhow::anyhow!("登录已失效")),
+            }
+        }
+    };
+    tokio::pin!(session_check);
     let mut timer = tokio::time::interval(Duration::from_millis(100));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut changed = true;
@@ -632,6 +662,7 @@ async fn connected(
     let mut described_channel = None;
     loop {
         tokio::select! {
+            result=&mut session_check=>return result,
             _=cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销，请检查登录状态、身份或管理员的服务器设置");},
             _=media_cancel.cancelled()=>return Err(retryable("浏览器语音连接中断，正在自动重连")),
             _=done.cancelled()=>return Err(retryable("网页接收连接已中断")),
@@ -641,11 +672,11 @@ async fn connected(
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 for completed in images.expire(){emit(tx,crate::channel_images::event(conn,completed))?;}
-                if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.keys().any(|client|client.0==*id));let ids:Vec<u16>=s.clients.keys().filter(|id|**id!=s.own_client).map(|id|id.0).collect();media.sync_speakers(&ids,tx).await?;let mut state=snapshot(conn)?;app.connections.update_location(connection_id,&mut state);emit(tx,state)?;changed=false;}
+                if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.contains_key(&ClientId(*id)));let mut ids:Vec<u16>=s.clients.iter().filter(|(id,c)|**id!=s.own_client&&Some(c.channel)==own_channel).map(|(id,_)|id.0).collect();ids.extend(media.recent_speakers().filter(|id|s.clients.contains_key(&ClientId(*id))));ids.sort_unstable();ids.dedup();media.sync_speakers(&ids,tx).await?;let mut state=snapshot(conn)?;app.connections.update_location(connection_id,&mut state);emit(tx,state)?;changed=false;}
                 if network_check.elapsed()>=Duration::from_secs(2){emit(tx,json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}))?;if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
-                if check.elapsed()>=Duration::from_secs(1){app.session(headers).map_err(|_|anyhow::anyhow!("登录已失效"))?;let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();let mut away_timeout=false;pending.retain(|handle,(id,start)|{if start.elapsed()>Duration::from_secs(15){away_timeout|=away_handles.remove(handle);let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});if away_timeout{bail!("离开状态更新超时，连接已停止；请重新连接以确认状态");}}
+                if check.elapsed()>=Duration::from_secs(1){let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();let mut away_timeout=false;pending.retain(|handle,(id,start)|{if start.elapsed()>Duration::from_secs(15){away_timeout|=away_handles.remove(handle);let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});if away_timeout{bail!("离开状态更新超时，连接已停止；请重新连接以确认状态");}}
             },
             packet=audio.recv()=>{let Some(packet)=packet else{return Err(retryable("语音通道已关闭"));};let channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);if lead_channel!=channel{lead.clear();lead_channel=channel;}
             if !muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if transmit{if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}else if pre_roll&&crate::media::opus_has_audio(&packet.payload){lead.push(packet.payload,Instant::now());}}else{lead.clear();}},
@@ -656,7 +687,8 @@ async fn connected(
                 StreamItem::FileDownload(handle,result)=>{if images.contains(handle.0){images.downloaded(handle.0,result,app.clone());}else{avatars.downloaded(handle.0,result,app.clone());}},
                 StreamItem::FileUpload(handle,result)=>avatars.uploaded(handle.0,result),
                 StreamItem::FiletransferFailed(handle,_)=>{if let Some(completed)=images.failed(handle.0){emit(tx,crate::channel_images::event(conn,completed))?;}else if let Some(completed)=avatars.failed(handle.0){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
-                StreamItem::Audio(packet)=>{if !audio_is_encrypted(packet.data().packet().header().flags()){if unsafe_notice.elapsed()>=Duration::from_secs(5){emit(tx,json!({"type":"notice","message":"已拒收未加密语音；网页连接保留。请让该成员或音乐机器人启用语音加密。"}))?;unsafe_notice=Instant::now();}continue;}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {media.audio(*from,*id,data).await?;if data.len()<=1{if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
+                StreamItem::Audio(packet)=>{if !audio_is_encrypted(packet.data().packet().header().flags()){if unsafe_notice.elapsed()>=Duration::from_secs(5){emit(tx,json!({"type":"notice","message":"已拒收未加密语音；网页连接保留。请让该成员或音乐机器人启用语音加密。"}))?;unsafe_notice=Instant::now();}continue;}match packet.data().data(){AudioData::S2C{id,from,codec,data}|AudioData::S2CWhisper{id,from,codec,data}if !deafened&&matches!(codec,CodecType::OpusVoice|CodecType::OpusMusic)=> {if !conn.get_state()?.clients.contains_key(&ClientId(*from))||!media.audio(*from,*id,data).await?{continue;}
+                if data.len()<=1{if speaking.remove(from).is_some(){emit(tx,json!({"type":"speaking","client":from,"enabled":false}))?;}}else if crate::media::opus_has_audio(data)&&speech_activity(&mut speaking,*from,Instant::now()){emit(tx,json!({"type":"speaking","client":from}))?;}},_=>{}}},
                 StreamItem::MessageResult(handle,result)=>if let Some((id,_))=pending.remove(&handle.0){if away_handles.remove(&handle.0)&&result.is_err(){emit(tx,command_result(&id,result))?;bail!("TeamSpeak拒绝离开状态更新，连接已停止；请重新连接以确认状态");}else if id.starts_with("avatar:")&&result.is_ok(){command("clientgetvariables",&[("clid",conn.get_state()?.own_client.0.to_string())]).send(conn)?;}emit(tx,command_result(&id,result))?;},
                 _=>{}
             }},

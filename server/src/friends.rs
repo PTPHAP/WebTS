@@ -101,7 +101,7 @@ pub async fn activate(
     headers: HeaderMap,
     Json(body): Json<Device>,
 ) -> Api<Json<Value>> {
-    app.work(move|a| {
+    app.expensive(move|a| {
         let automatic=body.password.is_empty();
         let s=if automatic {let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;let old:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;if old!=body.device{return Err(Error::bad("设备接管需要重新验证密码"));}s} else {a.reauthenticate(&headers,&Zeroizing::new(body.password))?};
         if body.lease.len()!=64||!body.lease.bytes().all(|b|b.is_ascii_hexdigit())||!uuid(&body.device)||body.payload.len()>8192||!b64(&body.signature,64){return Err(Error::bad("设备密钥数据无效"));}
@@ -126,7 +126,8 @@ pub async fn activate(
             tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE mode='e2ee' AND (sender=? OR recipient=?)",params![now(),s.user.id,s.user.id]).map_err(db_error)?;
         }
         tx.execute("UPDATE friend_keys SET device=?,lease_hash=? WHERE user_id=?",params![body.device,crate::db::digest(&body.lease),s.user.id]).map_err(db_error)?;
-        tx.execute("DELETE FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id]).map_err(db_error)?;
+        // No stored message survives 30 days; keep spent-key records an extra day.
+        tx.execute("DELETE FROM friend_prekeys WHERE user_id=? AND (used=0 OR (used=1 AND used_at<?))",params![s.user.id,now()-31*86400]).map_err(db_error)?;
         let count:i64=tx.query_row("SELECT count(*) FROM friend_prekeys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
         if count+keys.len() as i64>10000{return Err(Error(StatusCode::TOO_MANY_REQUESTS,"设备公钥容量达到上限"));}
         for key in keys {tx.execute("INSERT OR IGNORE INTO friend_prekeys(user_id,key,device,bundle,used) VALUES(?,?,?,?,0)",params![s.user.id,key.as_str(),body.device,bundle]).map_err(db_error)?;}
@@ -143,7 +144,7 @@ pub async fn claim(
         let s=current(a,&headers)?;let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;device(&tx,&s,&headers)?;accepted(&tx,s.user.id,peer)?;
         let row:Option<(String,String)>=tx.query_row("SELECT p.key,p.bundle FROM friend_prekeys p JOIN friend_keys k ON k.user_id=p.user_id AND k.device=p.device WHERE p.user_id=? AND p.used=0 ORDER BY p.rowid LIMIT 1",[peer],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_error)?;
         let (key,bundle)=row.ok_or(Error(StatusCode::CONFLICT,"对方需要先解锁并更新设备一次性密钥"))?;
-        tx.execute("UPDATE friend_prekeys SET used=1 WHERE user_id=? AND key=? AND used=0",params![peer,key]).map_err(db_error)?;tx.commit().map_err(db_error)?;
+        tx.execute("UPDATE friend_prekeys SET used=1,used_at=? WHERE user_id=? AND key=? AND used=0",params![now(),peer,key]).map_err(db_error)?;tx.commit().map_err(db_error)?;
         Ok(Json(json!({"key":key,"bundle":serde_json::from_str::<Value>(&bundle).map_err(anyhow::Error::from)?})))
     }).await
 }
@@ -226,7 +227,7 @@ pub async fn encryption(
     if body.password.len() > 128 {
         return Err(Error::bad("密码输入超出限制"));
     }
-    app.work(move |a| {
+    app.expensive(move |a| {
         let s = if !body.password.is_empty() { a.reauthenticate(&headers,&Zeroizing::new(body.password))? } else { current(a,&headers)? };
         let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;session_valid(&tx,&s)?;accepted(&tx,s.user.id,peer)?;
         let (lo,hi)=pair(s.user.id,peer);let (own,_,epoch)=encryption_state(&tx,s.user.id,peer)?;
@@ -247,7 +248,7 @@ pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Val
         db.execute("INSERT OR IGNORE INTO friend_keys(user_id,code,public_key) VALUES(?,?,'')",params![s.user.id,&token()?[..24]]).map_err(db_error)?;
         let (code,key,share):(String,String,bool)=db.query_row("SELECT code,public_key,share_presence FROM friend_keys WHERE user_id=?",[s.user.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;a.connections.touch(s.user.id,&s.hash);
         let left:i64=db.query_row("SELECT count(*) FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id],|r|r.get(0)).map_err(db_error)?;
-        Ok(Json(json!({"id":s.user.id,"code":code,"public_key":key,"share_presence":share,"prekeys_left":left,"storage_enabled":storage.enabled,"retention_days":if storage.retention_days==0{7}else{storage.retention_days}})))
+        Ok(Json(json!({"id":s.user.id,"code":code,"public_key":key,"share_presence":share,"prekeys_left":left,"storage_enabled":storage.enabled,"server_time":crate::db::now(),"retention_days":if storage.retention_days==0{7}else{storage.retention_days}})))
     }).await
 }
 #[derive(Deserialize)]
@@ -261,7 +262,7 @@ pub async fn set_key(
     headers: HeaderMap,
     Json(body): Json<Key>,
 ) -> Api<Json<Value>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         let s=a.reauthenticate(&headers,&Zeroizing::new(body.password))?;
         let key=body.public_key.trim();
         if !valid_identity(key) {return Err(Error::bad("需要有效的Olm公开身份，不能上传私钥"));}
@@ -276,16 +277,30 @@ pub async fn set_key(
 }
 pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
+        let (allow_custom, servers) = presence_policy(a);
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device,CASE WHEN f.lo=? THEN COALESCE(m.allow_lo,1) ELSE COALESCE(m.allow_hi,1) END,CASE WHEN f.lo=? THEN COALESCE(m.allow_hi,1) ELSE COALESCE(m.allow_lo,1) END,COALESCE(m.epoch,0),COALESCE(p.avatar_hash,''),COALESCE(json_extract(p.data,'$.about'),'') FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN friend_modes m ON m.lo=f.lo AND m.hi=f.hi WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
         let mut rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?,"allow_server":r.get::<_,bool>(7)?,"peer_allow_server":r.get::<_,bool>(8)?,"mode_epoch":r.get::<_,i64>(9)?,"avatar_hash":r.get::<_,String>(10)?,"about":r.get::<_,String>(11)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
-        for row in &mut rows {if row["status"]==1 {let (online,locations)=friend_activity(a,&db,row["id"].as_i64().unwrap())?;row["online"]=json!(online);row["locations"]=json!(locations);}}
+        for row in &mut rows {if row["status"]==1 {let (online,locations)=friend_activity(a,allow_custom,&servers,&db,row["id"].as_i64().unwrap())?;row["online"]=json!(online);row["locations"]=json!(locations);}}
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
         let latest:i64=db.query_row("SELECT friend_revision FROM users WHERE id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
         Ok(Json(json!({"friends":rows,"unread":unread,"latest_message":latest})))
     }).await
 }
-fn friend_activity(a: &App, db: &rusqlite::Connection, peer: i64) -> Api<(bool, Vec<Value>)> {
+fn presence_policy(a: &App) -> (bool, Vec<crate::config::Server>) {
+    let runtime = a.runtime.read().unwrap();
+    (
+        runtime.settings.allow_custom,
+        runtime.settings.servers.clone(),
+    )
+}
+fn friend_activity(
+    a: &App,
+    allow_custom: bool,
+    servers: &[crate::config::Server],
+    db: &rusqlite::Connection,
+    peer: i64,
+) -> Api<(bool, Vec<Value>)> {
     let share = db
         .query_row(
             "SELECT share_presence FROM friend_keys WHERE user_id=?",
@@ -306,16 +321,13 @@ fn friend_activity(a: &App, db: &rusqlite::Connection, peer: i64) -> Api<(bool, 
     for session in sessions {
         online |= valid(&session)?;
     }
-    let runtime = a.runtime.read().unwrap();
     let mut shared = Vec::new();
     for (session, location) in locations {
         let server = location["server"].as_str().unwrap_or("");
         let permitted = if server.is_empty() {
-            runtime.settings.allow_custom
+            allow_custom
         } else {
-            runtime
-                .settings
-                .servers
+            servers
                 .iter()
                 .any(|s| s.id == server && s.address == location["address"])
         };
@@ -365,11 +377,12 @@ pub async fn join(
         return Err(Error::bad("连接引用无效"));
     }
     app.work(move |a| {
+        let (allow_custom, servers) = presence_policy(a);
         let s = current(a, &headers)?;
         let db = a.db.connection.lock().unwrap();
         session_valid(&db, &s)?;
         accepted(&db, s.user.id, peer)?;
-        let (_, locations) = friend_activity(a, &db, peer)?;
+        let (_, locations) = friend_activity(a, allow_custom, &servers, &db, peer)?;
         let location = locations
             .into_iter()
             .find(|v| v["connection"] == body.connection)
@@ -514,11 +527,7 @@ pub async fn send(
     {
         return Err(Error::bad("只接受限制以内且模式明确的加密消息"));
     }
-    let _permit = app
-        .friend_objects
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error(StatusCode::TOO_MANY_REQUESTS, "临时存储正忙，请稍后重试"))?;
+    let _permit = app.object_permit(&headers).await?;
     let check_headers = headers.clone();
     let id = body.id.clone();
     let peer = body.peer;
@@ -546,7 +555,7 @@ pub async fn send(
     } else {
         input
     });
-    let (owner,key,duplicate,storage)=app.work(move |a| {
+    let (owner,key,duplicate,storage)=app.expensive(move |a| {
         let s=current(a,&check_headers)?;let runtime=a.runtime.read().unwrap();
         let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;if mode=="e2ee" {device(&db,&s,&check_headers)?;} accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&mode,epoch)?;
@@ -603,11 +612,7 @@ pub async fn content(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Api<Json<Value>> {
-    let _permit = app
-        .friend_objects
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error(StatusCode::TOO_MANY_REQUESTS, "临时存储正忙，请稍后重试"))?;
+    let _permit = app.object_permit(&headers).await?;
     let h = headers.clone();
     let mid = id.clone();
     let (sender,recipient,key,mode,epoch)=app.work(move|a| {
@@ -676,30 +681,106 @@ pub async fn read(
         Ok(Json(json!({"message":"已读","read_at":read_at,"expires":expires})))
     }).await
 }
+fn cleanup_candidates(db: &rusqlite::Connection) -> Api<Vec<(String, String, bool)>> {
+    let mut q=db.prepare("WITH candidates AS (SELECT id,object_key,0 AS probe,expires AS deadline FROM friend_messages WHERE expires<=? OR (ready=0 AND created_at<?) UNION ALL SELECT '',object_key,1,created_at FROM storage_probes WHERE created_at<?) SELECT c.id,c.object_key,c.probe FROM candidates c LEFT JOIN storage_cleanup_retries r ON r.object_key=c.object_key WHERE COALESCE(r.next_attempt,0)<=? ORDER BY c.deadline LIMIT 100").map_err(db_error)?;
+    q.query_map(params![now(), now() - 3600, now() - 300, now()], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })
+    .map_err(db_error)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(db_error)
+}
+fn cleanup_failed(db: &rusqlite::Connection, key: &str) -> Api<()> {
+    let attempts: i64 = db
+        .query_row(
+            "SELECT attempts FROM storage_cleanup_retries WHERE object_key=?",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_error)?
+        .unwrap_or(0);
+    let delay = (30i64 << attempts.clamp(0, 7)).min(3600);
+    db.execute("INSERT INTO storage_cleanup_retries VALUES(?,1,?) ON CONFLICT(object_key) DO UPDATE SET attempts=min(attempts+1,10),next_attempt=excluded.next_attempt",params![key,now()+delay]).map_err(db_error)?;
+    Ok(())
+}
 pub fn start_cleanup(app: Arc<App>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             // Expired data is inaccessible immediately, even when bucket deletion is unavailable.
-            let rows=app.work(|a| {
-                let db=a.db.connection.lock().unwrap();
-                let mut q=db.prepare("SELECT id,object_key,0 AS probe,expires AS deadline FROM friend_messages WHERE expires<=? OR (ready=0 AND created_at<?) UNION ALL SELECT '',object_key,1,created_at FROM storage_probes WHERE created_at<? ORDER BY deadline LIMIT 100").map_err(db_error)?;
-                q.query_map(params![now(),now()-3600,now()-300],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)
-            }).await;
+            let rows = app
+                .work(|a| {
+                    let db = a.db.connection.lock().unwrap();
+                    cleanup_candidates(&db)
+                })
+                .await;
             let Ok(rows) = rows else {
                 continue;
             };
+            let started = std::time::Instant::now();
             for (id, key, probe) in rows {
+                if started.elapsed() >= Duration::from_secs(40) {
+                    break;
+                }
                 let Ok(_permit) = app.friend_objects.clone().try_acquire_owned() else {
                     break;
                 };
                 let storage = app.runtime.read().unwrap().settings.storage.clone();
                 if storage::remove(&storage, &key).await.is_err() {
-                    break;
+                    tracing::warn!(
+                        "临时对象删除失败，已安排退避；其他对象继续清理，未记录内容或凭据"
+                    );
+                    let _ = app
+                        .work(move |a| cleanup_failed(&a.db.connection.lock().unwrap(), &key))
+                        .await;
+                    continue;
                 }
-                let _=app.work(move|a| {let db=a.db.connection.lock().unwrap();if probe {db.execute("DELETE FROM storage_probes WHERE object_key=? AND created_at<?",params![key,now()-300]).map_err(db_error)?;} else {db.execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;}Ok(())}).await;
+                let _=app.work(move|a| {let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;if probe {tx.execute("DELETE FROM storage_probes WHERE object_key=? AND created_at<?",params![key,now()-300]).map_err(db_error)?;} else {tx.execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;}tx.execute("DELETE FROM storage_cleanup_retries WHERE object_key=?",[key]).map_err(db_error)?;tx.commit().map_err(db_error)?;Ok(())}).await;
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_oldest_objects_do_not_starve_later_cleanup_and_retries_are_bounded() {
+        let db = crate::db::Db::open(":memory:").unwrap();
+        let c = db.connection.lock().unwrap();
+        for i in 0..101 {
+            c.execute(
+                "INSERT INTO storage_probes VALUES(?,?)",
+                params![format!("{i:064x}"), now() - 1000 + i],
+            )
+            .unwrap();
+        }
+        let rows = cleanup_candidates(&c).unwrap();
+        assert_eq!(rows.len(), 100);
+        for (_, key, _) in rows {
+            cleanup_failed(&c, &key).unwrap();
+        }
+        let next = cleanup_candidates(&c).unwrap();
+        assert_eq!(
+            next.len(),
+            1,
+            "failed objects must not occupy every batch forever"
+        );
+        let key = format!("{:064x}", 0);
+        for _ in 0..100 {
+            cleanup_failed(&c, &key).unwrap();
+        }
+        let (attempts, at): (i64, i64) = c
+            .query_row(
+                "SELECT attempts,next_attempt FROM storage_cleanup_retries WHERE object_key=?",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(attempts, 10);
+        assert!(at <= now() + 3600);
+    }
 }

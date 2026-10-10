@@ -351,6 +351,157 @@ index 900f2a9..6837ffe 100644
  						StreamItem::Audio(i) => SyncStreamItem::Audio(i),
  						StreamItem::IdentityLevelIncreasing(i) => {
  							SyncStreamItem::IdentityLevelIncreasing(i)
+diff --git a/tsproto/Cargo.toml b/tsproto/Cargo.toml
+index b4fd1af..a7d577f 100644
+--- a/tsproto/Cargo.toml
++++ b/tsproto/Cargo.toml
+@@ -36,7 +36,7 @@ sha-1 = "0.10"
+ sha2 = "0.10"
+ thiserror = "2"
+ time = { version = "0.3", features = ["formatting"] }
+-tokio = { version = "1", features = ["macros", "net", "sync", "time"] }
++tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+ tracing = "0.1"
+ tsproto-packets = { path = "../utils/tsproto-packets", version = "0.1" }
+ tsproto-types = { path = "../utils/tsproto-types", version = "0.1" }
+diff --git a/tsproto/src/client.rs b/tsproto/src/client.rs
+index 22f0e42..35aff14 100644
+--- a/tsproto/src/client.rs
++++ b/tsproto/src/client.rs
+@@ -6,19 +6,11 @@ use std::task::{Context, Poll};
+ 
+ use base64::prelude::*;
+ use futures::prelude::*;
+-#[cfg(not(feature = "rug"))]
+-use num_bigint::BigUint;
+-#[cfg(not(feature = "rug"))]
+-use num_traits::One;
+ use rand::RngExt;
+-#[cfg(feature = "rug")]
+-use rug::Integer;
+-#[cfg(feature = "rug")]
+-use rug::integer::Order;
+ use num_traits::FromPrimitive;
+ use thiserror::Error;
+ use time::OffsetDateTime;
+-use tracing::{info, warn};
++use tracing::warn;
+ use tsproto_packets::commands::{CommandItem, CommandParser};
+ use tsproto_packets::packets::*;
+ use tsproto_types::LicenseType;
+@@ -320,30 +312,7 @@ impl Client {
+ 						let n = **n;
+ 						let random2 = **random2;
+ 
+-						// Use gmp for faster computations if it is
+-						// available.
+-						#[cfg(feature = "rug")]
+-						let y = {
+-							let mut e = Integer::new();
+-							let n = Integer::from_digits(&n[..], Order::Msf);
+-							let x = Integer::from_digits(&x[..], Order::Msf);
+-							e.set_bit(level, true);
+-							let y = x.pow_mod(&e, &n).map_err(|_| Error::RsaPuzzle)?;
+-							let mut yi = [0; 64];
+-							y.write_digits(&mut yi, Order::Msf);
+-							yi
+-						};
+-
+-						#[cfg(not(feature = "rug"))]
+-						let y = {
+-							let xi = BigUint::from_bytes_be(&x);
+-							let ni = BigUint::from_bytes_be(&n);
+-							let e = BigUint::one() << level as usize;
+-							let yi = xi.modpow(&e, &ni);
+-							info!(parent: &self.con.span, level, x = %xi, n = %ni, y = %yi,
+-								"Solve RSA puzzle");
+-							algs::biguint_to_array(&yi)
+-						};
++						let y = crate::rsa_puzzle::solve(x, n, level).await?;
+ 
+ 						// Create the command string
+ 						// omega is an ASN.1-DER encoded public key from
+diff --git a/tsproto/src/lib.rs b/tsproto/src/lib.rs
+index 0091375..56d3db1 100644
+--- a/tsproto/src/lib.rs
++++ b/tsproto/src/lib.rs
+@@ -256,3 +256,5 @@ mod identity_tests {
+ 		assert_eq!(identity.level(), 21u8);
+ 	}
+ }
++
++pub mod rsa_puzzle;
+diff --git a/tsproto/src/rsa_puzzle.rs b/tsproto/src/rsa_puzzle.rs
+new file mode 100644
+index 0000000..852f4e8
+--- /dev/null
++++ b/tsproto/src/rsa_puzzle.rs
+@@ -0,0 +1,65 @@
++//! Bounded, cancellable handshake work; never compute on an async executor.
++use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
++use std::time::{Duration, Instant};
++use num_bigint::BigUint;
++use num_traits::One;
++use tokio::sync::Semaphore;
++use crate::client::Error;
++
++const MAX_LEVEL: u32 = 100_000;
++static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
++struct Cancel(Arc<AtomicBool>);
++impl Drop for Cancel {
++    fn drop(&mut self) { self.0.store(true, Ordering::Release); }
++}
++
++pub async fn solve(x: [u8; 64], n: [u8; 64], level: u32) -> Result<[u8; 64], Error> {
++    if level > MAX_LEVEL { return Err(Error::RsaPuzzleTooHighLevel(level)); }
++    let permit = WORKERS.get_or_init(|| Arc::new(Semaphore::new(2))).clone()
++        .acquire_owned().await.map_err(|_| Error::RsaPuzzle)?;
++    let cancel = Cancel(Arc::new(AtomicBool::new(false)));
++    let flag = cancel.0.clone();
++    tokio::task::spawn_blocking(move || {
++        let _permit = permit;
++        let modulus = BigUint::from_bytes_be(&n);
++        if modulus <= BigUint::one() { return Err(Error::RsaPuzzle); }
++        let mut value = BigUint::from_bytes_be(&x) % &modulus;
++        let start = Instant::now();
++        for step in 0..level {
++            if step % 256 == 0 && (flag.load(Ordering::Acquire) || start.elapsed() > Duration::from_secs(2)) {
++                return Err(Error::RsaPuzzle);
++            }
++            value = (&value * &value) % &modulus;
++        }
++        Ok(crate::algorithms::biguint_to_array(&value))
++    }).await.map_err(|_| Error::RsaPuzzle)?
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[tokio::test]
++    async fn puzzle_math_and_untrusted_input_bounds() {
++        let mut x=[0;64]; x[63]=4;
++        let mut n=[0;64]; n[63]=17;
++        for (level, expected) in [(0,4), (1,16), (2,1)] {
++            let actual=solve(x,n,level).await.unwrap();
++            assert_eq!(actual[63],expected);
++            assert!(actual[..63].iter().all(|b| *b==0));
++        }
++        assert!(solve(x,[0;64],1).await.is_err());
++        assert!(solve(x,n,MAX_LEVEL+1).await.is_err());
++    }
++    #[tokio::test]
++    async fn async_timeout_cancels_computation_and_releases_worker() {
++        let mut x=[0;64]; x[63]=7;
++        let result=tokio::time::timeout(Duration::from_millis(1),solve(x,[255;64],MAX_LEVEL)).await;
++        assert!(result.is_err(),"an executor timer must run while the puzzle is computed");
++        tokio::time::timeout(Duration::from_secs(1),async {
++            loop {
++                if WORKERS.get().unwrap().available_permits()==2 {break;}
++                tokio::time::sleep(Duration::from_millis(10)).await;
++            }
++        }).await.unwrap();
++    }
++}
 diff --git a/utils/tsproto-types/src/crypto.rs b/utils/tsproto-types/src/crypto.rs
 index cc507a8..402a6c1 100644
 --- a/utils/tsproto-types/src/crypto.rs

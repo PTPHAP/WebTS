@@ -81,6 +81,24 @@ test('browser and Rust share an authenticated standard AES-256-GCM wire fixture'
   try{assert.deepEqual(await c.openServerMessage(JSON.stringify(f.packet),f.epoch,expected(f.envelope)),f.envelope);}finally{Date.now=original;}
 });
 async function pair(){const a=await state(1),b=await state(2);const pre=JSON.parse(b.value.engine.prekeys()),payload=JSON.parse(pre.payload);const claimed={key:payload.keys[0],bundle:{...pre,device:b.value.saved.device}};await c.checkPrekey(b.backup.publicKey,claimed);a.value.engine.outbound(b.root.curve,claimed.key);return {a,b,claimed};}
+
+test('active Olm ratchets survive long offline periods and removed peers eventually retire',async()=>{
+  const {a,b}=await pair(),peers=JSON.stringify([b.root.curve]);
+  const first=envelope();
+  await c.openMessage(await c.sealMessage(first,a.value,b.root.curve,b.value.saved.device),b.value,a.root.curve,expected(first));
+  const reply={...envelope(),sender:2,recipient:1};
+  await c.openMessage(await c.sealMessage(reply,b.value,a.root.curve,a.value.saved.device),a.value,b.root.curve,expected(reply));
+  a.value.engine.maintenance(1000,peers);
+  a.value.engine.maintenance(1000+32*86400,peers);
+  assert.equal(a.value.engine.has_session(b.root.curve),true);
+  const fresh={...envelope(),sender:2,recipient:1,text:'fresh message after a long absence'};
+  const result=await c.openMessage(await c.sealMessage(fresh,b.value,a.root.curve,a.value.saved.device),a.value,b.root.curve,expected(fresh));
+  assert.equal(result.text,fresh.text);
+  a.value.engine.maintenance(1000+32*86400,'[]');
+  a.value.engine.maintenance(1000+64*86400,'[]');
+  assert.equal(a.value.engine.has_session(b.root.curve),false);
+  a.value.engine.free();b.value.engine.free();
+});
 test('backups contain only authenticated encrypted state and require the original account and passphrase',async()=>{
   const a=await state(1);assert.doesNotMatch(JSON.stringify(a.backup),/private_key|sessions|lease/);await assert.rejects(c.unlockState(a.backup,undefined,1,a.backup.publicKey,'a wrong fixture password'));await assert.rejects(c.unlockState(a.backup,undefined,2,a.backup.publicKey,phrase));
   await c.persist(a.value);const saved=await c.loadLocal('keys','state:1');assert.doesNotMatch(JSON.stringify(saved),/lease|peerDevices|sessions/);const restored=await c.unlockState(a.backup,saved,1,a.backup.publicKey,phrase);assert.equal(restored.saved.lease,a.value.saved.lease);assert.equal(restored.engine.identity(),a.backup.publicKey);restored.engine.free();a.value.engine.free();

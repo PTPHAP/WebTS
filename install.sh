@@ -20,6 +20,12 @@ echo 'WebTS 中文安装 · 源码构建 · 保留现有数据库和部署密钥
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl git python3
+ref=${WEBTS_REF:-}
+if [[ -z "$ref" ]]; then
+  ref=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 15 https://api.github.com/repos/PTPHAP/WebTS/releases/latest | python3 -c 'import json,sys; raw=sys.stdin.buffer.read(65537); assert len(raw)<=65536; r=json.loads(raw); assert not r.get("draft") and not r.get("prerelease"); print(r["tag_name"])')
+fi
+[[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$ref" =~ ^[0-9a-f]{40}$ || "$ref" == main ]] || { echo '正式版本查询失败或版本格式无效；安装已停止。'; exit 1; }
+echo "安装源码版本：$ref（默认仅选择正式发布）"
 if ! command -v docker >/dev/null; then
   apt-get install -y docker.io
   systemctl enable --now docker
@@ -56,7 +62,11 @@ fi
 install -d -m 700 "$root" "$root/releases"
 printf 'WebTS managed installation\n' > "$root/.webts-managed"
 candidate=$(mktemp -d "$root/releases/source-XXXXXXXX")
-git -c http.sslVerify=true clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/PTPHAP/WebTS.git "$candidate"
+git init --quiet "$candidate"
+git -C "$candidate" remote add origin https://github.com/PTPHAP/WebTS.git
+git -C "$candidate" -c http.sslVerify=true fetch --depth 1 origin "$ref"
+git -C "$candidate" -c core.autocrlf=false checkout --detach FETCH_HEAD
+git -C "$candidate" -c core.autocrlf=false submodule update --init --recursive --depth 1
 test -f "$candidate/scripts/webts.py" || { echo '下载的版本缺少中文管理器，请稍后重试。'; exit 1; }
 ln -s "$candidate" "$root/current"
 cat > /usr/local/bin/webts <<'SH'

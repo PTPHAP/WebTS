@@ -71,15 +71,18 @@ fn read(app: &App, session: &Session) -> Api<Profile> {
         .unwrap_or_default())
 }
 pub async fn get(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Profile>> {
-    let session = app.session(&headers)?;
-    Ok(Json(read(&app, &session)?))
+    app.work(move |a| {
+        let session = a.session(&headers)?;
+        Ok(Json(read(a, &session)?))
+    })
+    .await
 }
 pub async fn save(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Json(mut body): Json<Profile>,
 ) -> Api<Json<Profile>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         let session = a.session(&headers)?;
         let limits = a.runtime.read().unwrap().settings.image_limits;
         body.normalize(limits)?;

@@ -28,13 +28,44 @@ async fn encrypted_opus_packet_round_trip() {
         .unwrap();
     a.sync_speakers(&[7], &at).await.unwrap();
     b.sync_speakers(&[8], &bt).await.unwrap();
-    let offer = a.peer.create_offer(None).await.unwrap();
-    assert!(offer.sdp.contains("usedtx=1"));
-    a.peer.set_local_description(offer.clone()).await.unwrap();
-    b.peer.set_remote_description(offer).await.unwrap();
-    let answer = b.peer.create_answer(None).await.unwrap();
-    b.peer.set_local_description(answer.clone()).await.unwrap();
-    a.answer(answer).await.unwrap();
+    // Exercise the gateway's offer/answer path, including its track readiness.
+    // Negotiate both sending peers rather than bypassing Media's bookkeeping.
+    async fn negotiate(
+        sender: &mut Media,
+        receiver: &mut Media,
+        events: &mut mpsc::Receiver<serde_json::Value>,
+        signals: &mpsc::Sender<serde_json::Value>,
+    ) {
+        sender.offer(signals).await.unwrap();
+        let mut candidates = Vec::new();
+        let offer: webrtc::peer_connection::RTCSessionDescription = loop {
+            let event = events.recv().await.unwrap();
+            if event["type"] == "offer" {
+                break serde_json::from_value(event["description"].clone()).unwrap();
+            }
+            if event["type"] == "ice" {
+                candidates.push(event["candidate"].clone());
+            }
+        };
+        assert!(offer.sdp.contains("usedtx=1"));
+        receiver.peer.set_remote_description(offer).await.unwrap();
+        for candidate in candidates {
+            receiver
+                .peer
+                .add_ice_candidate(serde_json::from_value(candidate).unwrap())
+                .await
+                .unwrap();
+        }
+        let answer = receiver.peer.create_answer(None).await.unwrap();
+        receiver
+            .peer
+            .set_local_description(answer.clone())
+            .await
+            .unwrap();
+        sender.answer(answer).await.unwrap();
+    }
+    negotiate(&mut a, &mut b, &mut ar, &at).await;
+    negotiate(&mut b, &mut a, &mut br, &bt).await;
     let deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(deadline);
     let mut timer = tokio::time::interval(Duration::from_millis(50));

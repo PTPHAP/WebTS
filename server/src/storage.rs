@@ -348,7 +348,7 @@ pub async fn save(
     if body.password.len() > 128 {
         return Err(Error::bad("密码输入超出限制"));
     }
-    app.work(move |a| {
+    app.expensive(move |a| {
         admin(a, &headers)?; let session = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
         body.storage.normalize();
         let mut runtime = a.runtime.write().unwrap(); let old = &runtime.settings.storage;
@@ -359,7 +359,7 @@ pub async fn save(
         }
         body.storage.validate().map_err(|_| Error::bad("仅支持公网HTTPS443的S3兼容端点；检查桶名、区域、密钥和1–30天保留期"))?;
         let _migration_guard = if !body.storage.same_bucket(old) {
-            let permit = a.friend_objects.clone().try_acquire_many_owned(2).map_err(|_| Error(StatusCode::CONFLICT,"临时对象正在传输或检测，请稍后再迁移存储桶"))?;
+            let permit = a.friend_objects.clone().try_acquire_many_owned(crate::app::OBJECT_CONCURRENCY).map_err(|_| Error(StatusCode::CONFLICT,"临时对象正在传输或检测，请稍后再迁移存储桶"))?;
             if a.db.connection.lock().unwrap().query_row("SELECT (SELECT count(*) FROM friend_messages)+(SELECT count(*) FROM storage_probes)", [], |r| r.get::<_,i64>(0)).map_err(anyhow::Error::from)? > 0 {
                 return Err(Error(StatusCode::CONFLICT, "仍有临时对象，清理完成前不能迁移存储桶；同桶Region修正、关闭新发送和凭据轮换不受此限制"));
             }
@@ -388,18 +388,9 @@ pub async fn test(
     if body.password.len() > 128 {
         return Err(Error::bad("密码输入超出限制"));
     }
-    let _permit = app
-        .friend_objects
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            Error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "存储检测或传输正在进行，请稍后重试",
-            )
-        })?;
+    let _permit = app.object_permit(&headers).await?;
     let (config, key, payload) = app
-        .work(move |a| {
+        .expensive(move |a| {
             admin(a, &headers)?;
             let s = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
             let config = a.runtime.read().unwrap().settings.storage.clone();

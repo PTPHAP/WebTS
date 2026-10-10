@@ -124,6 +124,7 @@ impl Home {
             "0bea1750e2e76f979bcf4633cb6b60c94f15ce8292b4e46ce4426b25192fd596",
             "3c9694acf55fc03f692c72f6bd83fbf668b43065539a15ac53fc0b25311c39eb",
             "6f0a4943c5fe6b230ea2c0de239572e420be575c8732bb470cb5b9e8bd0a36d1",
+            "379df4a6cc674e027ef9fb3b1216c22cf7492f7088dce551d9821ea770aa33a3",
         ]
         .contains(&hex::encode(Sha256::digest(self.terms.replace("\r\n", "\n"))).as_str())
         {
@@ -269,8 +270,11 @@ pub async fn policies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({"version":policy_version(&app.runtime.read().unwrap().settings.home)}))
 }
 pub async fn get(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Home>> {
-    settings::admin(&app, &headers)?;
-    Ok(Json(app.runtime.read().unwrap().settings.home.clone()))
+    app.work(move |a| {
+        settings::admin(a, &headers)?;
+        Ok(Json(a.runtime.read().unwrap().settings.home.clone()))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -283,7 +287,7 @@ pub async fn save(
     headers: HeaderMap,
     Json(body): Json<Update>,
 ) -> Api<Json<Home>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         settings::admin(a, &headers)?;
         let password = Zeroizing::new(body.password);
         let session = a.reauthenticate(&headers, &password)?;

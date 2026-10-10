@@ -11,6 +11,9 @@ import urllib.request
 if os.environ.get('GITHUB_ACTIONS')!='true' or os.geteuid()!=0:
     raise SystemExit('Only an isolated root GitHub Actions runner may run this fixture')
 assert not Path('/opt/webts').exists(), 'Preserve an existing installation'
+import re
+assert re.fullmatch(r'[0-9a-f]{40}', os.environ.get('GITHUB_SHA',''))
+os.environ['WEBTS_REF'] = os.environ['GITHUB_SHA']
 
 def interactive(args,replies,timeout=900):
     pid,fd=pty.fork()
@@ -39,7 +42,7 @@ def interactive(args,replies,timeout=900):
         assert position==len(replies)
     finally:os.close(fd)
 
-interactive(['bash','-c','f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'],[
+interactive(['bash','install.sh'],[
     ('网站域名','voice.example.com'),('本机公网 IPv4','8.8.8.8'),
     ('网关本机端口','18080'),('默认 TS 公网地址','ts.example.com:9987'),
     ('站长邮箱','owner@example.com'),('HTTPS：','2'),

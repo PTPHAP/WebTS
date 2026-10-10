@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $taskRoot
-git submodule update --init --recursive
+git -c core.autocrlf=false submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw 'Submodule initialization failed' }
 git -C vendor/tsclientlib apply --reverse --check ../../patches/raw-audio.patch 2>$null
 if ($LASTEXITCODE -eq 0) { Write-Output 'raw-audio patch already applied'; exit 0 }

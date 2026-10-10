@@ -1,4 +1,4 @@
-export type RatchetEngine={save:()=>string;identity:()=>string;prekeys:()=>string;has_session:(curve:string)=>boolean;outbound:(curve:string,key:string)=>void;encrypt:(curve:string,text:string)=>string;decrypt:(curve:string,packet:string)=>string;free:()=>void};
+export type RatchetEngine={save:()=>string;maintenance?:(now:number,peers:string)=>void;identity:()=>string;prekeys:()=>string;has_session:(curve:string)=>boolean;outbound:(curve:string,key:string)=>void;encrypt:(curve:string,text:string)=>string;decrypt:(curve:string,packet:string)=>string;free:()=>void};
 type EngineModule={default:(options?:{module_or_path?:BufferSource})=>Promise<unknown>;Engine:{new():RatchetEngine;restore:(text:string)=>RatchetEngine;verify:(ed:string,text:string,signature:string)=>boolean}};
 let modulePromise:Promise<EngineModule>|undefined;
 export async function cryptoModule():Promise<EngineModule>{

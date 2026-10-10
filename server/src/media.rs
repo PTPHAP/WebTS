@@ -120,7 +120,7 @@ pub fn ice_servers(app: &App, owner: i64) -> Result<Vec<RTCIceServer>> {
     }
 }
 pub async fn ice_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
-    let owner = app.session(&headers)?.user.id;
+    let owner = app.session_async(&headers).await?.user.id;
     Ok(Json(
         json!({"iceServers":ice_servers(&app,owner)?.iter().map(|s|json!({"urls":s.urls,"username":s.username,"credential":s.credential})).collect::<Vec<_>>()}),
     ))
@@ -191,6 +191,8 @@ struct Speaker {
     timestamp: u32,
     samples: u32,
     last: Instant,
+    ready: bool,
+    pending: VecDeque<(Instant, u16, Bytes)>,
 }
 pub struct Media {
     pub peer: Arc<dyn PeerConnection>,
@@ -199,6 +201,9 @@ pub struct Media {
     pub negotiating: bool,
     pub dirty: bool,
     local_ice: bool,
+    signals: mpsc::Sender<Value>,
+    offered_speakers: Vec<u16>,
+    invalid_audio_notice: Instant,
 }
 impl Media {
     pub async fn new(
@@ -244,7 +249,7 @@ impl Media {
             .with_setting_engine(settings.build())
             .with_runtime(Arc::new(TokioRuntime))
             .with_handler(Arc::new(Handler {
-                signals,
+                signals: signals.clone(),
                 audio,
                 secure: secure.clone(),
                 cancel,
@@ -268,6 +273,9 @@ impl Media {
             dirty: true,
             local_ice: app.config.allow_insecure_localhost
                 && app.config.public_url.starts_with("http://localhost:"),
+            signals,
+            offered_speakers: Vec::new(),
+            invalid_audio_notice: Instant::now() - Duration::from_secs(5),
         })
     }
     pub async fn sync_speakers(
@@ -330,6 +338,8 @@ impl Media {
                     timestamp: 0,
                     samples: 960,
                     last: Instant::now(),
+                    ready: false,
+                    pending: VecDeque::new(),
                 },
             );
             self.dirty = true;
@@ -346,6 +356,7 @@ impl Media {
             .try_send(json!({"type":"offer","description":offer}))
             .map_err(|_| anyhow::anyhow!("信令队列已满"))?;
         self.negotiating = true;
+        self.offered_speakers = self.speakers.keys().copied().collect();
         self.dirty = false;
         Ok(())
     }
@@ -355,6 +366,18 @@ impl Media {
         }
         self.peer.set_remote_description(answer).await?;
         self.negotiating = false;
+        for id in std::mem::take(&mut self.offered_speakers) {
+            let Some(speaker) = self.speakers.get_mut(&id) else {
+                continue;
+            };
+            speaker.ready = true;
+            let pending = std::mem::take(&mut speaker.pending);
+            for (at, sequence, data) in pending {
+                if at.elapsed() <= Duration::from_millis(200) {
+                    self.audio(id, sequence, &data).await?;
+                }
+            }
+        }
         Ok(())
     }
     pub async fn ice(&self, value: Value) -> Result<()> {
@@ -393,24 +416,60 @@ impl Media {
         }
         Ok(None)
     }
-    pub async fn audio(&mut self, from: u16, sequence: u16, data: &[u8]) -> Result<()> {
+    pub fn recent_speakers(&self) -> impl Iterator<Item = u16> + '_ {
+        self.speakers
+            .iter()
+            .filter(|(_, s)| s.seq.is_some() && s.last.elapsed() < Duration::from_secs(30))
+            .map(|(&id, _)| id)
+    }
+    pub async fn audio(&mut self, from: u16, sequence: u16, data: &[u8]) -> Result<bool> {
         if !self.secure.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(false);
         }
         // TS uses both empty and single-byte packets to end a speech stream.
         // This boundary is TS-specific; browser RTP Opus keeps its own validation.
         let samples = if data.len() <= 1 {
             None
         } else {
-            Some(opus_samples(data)?)
+            let Ok(samples) = opus_samples(data) else {
+                if self.invalid_audio_notice.elapsed() >= Duration::from_secs(5) {
+                    tracing::warn!("已丢弃异常Opus语音帧；连接保持，未记录音频内容");
+                    self.invalid_audio_notice = Instant::now();
+                }
+                return Ok(false);
+            };
+            Some(samples)
         };
+        if !self.speakers.contains_key(&from) {
+            if samples.is_none() || self.speakers.len() >= 128 {
+                return Ok(false);
+            }
+            // A validated off-channel whisper creates a track only when audible.
+            let mut clients: Vec<_> = self.speakers.keys().copied().collect();
+            clients.push(from);
+            self.sync_speakers(&clients, &self.signals.clone()).await?;
+        }
         let Some(s) = self.speakers.get_mut(&from) else {
-            return Ok(());
+            return Ok(false);
         };
+        if !s.ready {
+            while s
+                .pending
+                .front()
+                .is_some_and(|(at, _, _)| at.elapsed() > Duration::from_millis(200))
+            {
+                s.pending.pop_front();
+            }
+            if s.pending.len() < 8 && data.len() <= 2048 {
+                s.pending
+                    .push_back((Instant::now(), sequence, Bytes::copy_from_slice(data)));
+            }
+            return Ok(true);
+        }
         if let Some(previous) = s.seq {
             let delta = sequence.wrapping_sub(previous);
             if delta == 0 || delta >= 0x8000 {
-                return Ok(());
+                return Ok(false);
             }
             let elapsed = s.last.elapsed();
             let advance = if elapsed > Duration::from_millis(200) {
@@ -426,7 +485,7 @@ impl Media {
             // TS end markers occupy a TS sequence number but have no RTP audio.
             // Compress that intentional gap so it is not reported as packet loss.
             s.sequence_offset = s.sequence_offset.wrapping_add(1);
-            return Ok(());
+            return Ok(true);
         };
         s.samples = samples;
         let packet = Packet {
@@ -441,7 +500,7 @@ impl Media {
             payload: Bytes::copy_from_slice(data),
         };
         let _ = tokio::time::timeout(Duration::from_millis(20), s.track.write_rtp(packet)).await;
-        Ok(())
+        Ok(true)
     }
     pub async fn close(&self) {
         self.secure.store(false, Ordering::Release);
@@ -495,6 +554,28 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn malformed_received_audio_does_not_close_the_media_connection() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let mut media = Media::new(&app, 1, 0, signals, audio, cancel.clone())
+            .await
+            .unwrap();
+        media.secure.store(true, Ordering::Release);
+        let mut valid = true;
+        for packet in [&[0xff, 0][..], &[0xfb, 0], &[0xfb, 7]] {
+            valid &= media.audio(2, 1, packet).await.is_ok();
+        }
+        let stayed_secure = media.secure.load(Ordering::Acquire);
+        media.close().await;
+        assert!(
+            valid,
+            "bad Opus frames must be dropped without tearing down a recipient's connection"
+        );
+        assert!(stayed_secure && !cancel.is_cancelled());
+    }
     #[test]
     fn automatic_speech_retains_leading_packets_and_discards_expired_or_muted_audio() {
         let now = Instant::now();

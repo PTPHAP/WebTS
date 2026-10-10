@@ -255,7 +255,7 @@ pub async fn update(
     {
         return Err(Error::bad("封禁需填写原因，文本最多500字，期限最长366天"));
     }
-    app.work(move |a| {
+    app.expensive(move |a| {
         admin(a, &headers)?;
         let password = Zeroizing::new(body.password);
         let actor = a.reauthenticate(&headers, &password)?;

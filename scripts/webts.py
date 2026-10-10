@@ -14,8 +14,34 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 ROOT = Path('/opt/webts')
+
+
+def release_ref():
+    ref=os.environ.get('WEBTS_REF','')
+    if not ref:
+        try:
+            with urllib.request.urlopen('https://api.github.com/repos/PTPHAP/WebTS/releases/latest',timeout=15) as response:
+                raw=response.read(65537)
+            if len(raw)>65536:raise ValueError('Release response too large')
+            release=json.loads(raw)
+            if not isinstance(release,dict) or release.get('draft') or release.get('prerelease'):raise ValueError('Not a stable release')
+            ref=release['tag_name']
+        except (OSError,ValueError,KeyError,TypeError) as error:
+            raise ValueError('无法核实最新正式版本；现有安装未更新，请稍后重试。') from error
+    if not isinstance(ref,str) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{40}|main',ref):
+        raise ValueError('版本只能是正式标签、完整提交哈希；main仅供明确指定的测试安装。')
+    return ref
+
+
+def download_source(candidate,ref):
+    run(['git','init','--quiet',str(candidate)])
+    run(['git','-C',str(candidate),'remote','add','origin','https://github.com/PTPHAP/WebTS.git'])
+    run(['git','-C',str(candidate),'-c','http.sslVerify=true','fetch','--depth','1','origin',ref])
+    run(['git','-C',str(candidate),'-c','core.autocrlf=false','checkout','--detach','FETCH_HEAD'])
+    run(['git','-C',str(candidate),'-c','core.autocrlf=false','submodule','update','--init','--recursive','--depth','1'])
 
 
 def run(args, *, text=None, capture=False):
@@ -298,8 +324,9 @@ def admin():
 
 
 def update():
+    ref=release_ref()
     candidate=Path(tempfile.mkdtemp(prefix='source-',dir=ROOT/'releases'))
-    run(['git','-c','http.sslVerify=true','clone','--depth','1','--recurse-submodules','--shallow-submodules','https://github.com/PTPHAP/WebTS.git',str(candidate)])
+    download_source(candidate,ref)
     run(['docker','build','-t','webts:managed-candidate',str(candidate)])
     folder=backup();old=(ROOT/'current').resolve()
     rollback='webts:rollback-'+folder.name

@@ -170,7 +170,7 @@ impl Images {
                         .context("图片读取内存预算正忙，请稍后重试")?;
                     let bytes = crate::server_banner::download(&banner, max).await?;
                     let limits = request.limits;
-                    app.work(move |_| {
+                    app.expensive(move |_| {
                         let _permit = permit;
                         sanitize_with_limits(&bytes, limits)
                             .map_err(|_| Error::bad("图片格式、尺寸或内容无效"))
@@ -219,7 +219,7 @@ impl Images {
                     let mut stream = result.stream;
                     stream.read_exact(&mut bytes).await?;
                     let limits = request.limits;
-                    app.work(move |_| {
+                    app.expensive(move |_| {
                         let _permit = permit;
                         sanitize_with_limits(&bytes, limits)
                             .map_err(|_| Error::bad("图片格式、尺寸或内容无效"))

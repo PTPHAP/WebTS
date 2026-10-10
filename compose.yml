@@ -27,7 +27,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
   turn:
-    image: coturn/coturn:4.6.3
+    image: coturn/coturn:4.16.0@sha256:01fc8655e7c262fa4ccfb8dca74ff80fb372b0ee021e80370a4d3e3dd01a951e
     profiles: [turn]
     restart: unless-stopped
     network_mode: host

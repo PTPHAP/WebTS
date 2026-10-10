@@ -12,7 +12,7 @@ import type {Encrypted,Envelope,Unlocked} from './friend-crypto';
 import {friendEvents} from './friend-notifications';
 import type {FriendEvent,FriendSnapshot} from './friend-notifications';
 import type {Profile} from './ProfileSettings';
-type Me={id:number;code:string;public_key:string;storage_enabled:boolean;retention_days:number;prekeys_left:number;share_presence:boolean};
+type Me={server_time:number;id:number;code:string;public_key:string;storage_enabled:boolean;retention_days:number;prekeys_left:number;share_presence:boolean};
 type Friend={online?:boolean;locations?:FriendLocation[];id:number;name:string;about?:string;avatar_hash?:string;public_key:string;device:string;requester:number;status:number;blocked_by:number;allow_server?:boolean;peer_allow_server?:boolean;mode_epoch?:number};
 type Message={seq:number;id:string;sender:number;recipient:number;created_at:number;expires:number;burn:boolean;burn_seconds?:number|null;read_at:number|null;mode?:'e2ee'|'server';epoch?:number};
 type Display=Message&{value?:Envelope;error?:string;burnAt?:number};
@@ -79,7 +79,7 @@ export function Friends({open,inline,compact=false,display='floating',changeDisp
   async function friendship(id:number,action:string){if(ordinaryPending){setStatus('请先重试或放弃待发消息。');return;}setBusy(true);try{await api(`/friends/${id}`,{action});if(id===selected){setSelected(undefined);setRecords([]);}await refresh();}catch(e){setStatus(e instanceof Error?e.message:'操作失败');}finally{setBusy(false);}}
   async function flushOutbox(state:Unlocked){const pending=state.saved.outbox;if(!pending)return;await privateApi(state,'/messages',pending);delete state.saved.outbox;await persist(state);}
   async function send(sticker?:string){if(!me||!peer||!engine.current||operation.current)return;if(!canChat){setStatus('端到端发送需要启用设备并核对安全码；普通聊天可直接发送。');return;}if(!draft.trim()&&!image&&!sticker)return;operation.current=true;setBusy(true);setStatus('');const state=engine.current;let snapshot=state.engine.save();let savedSnapshot=structuredClone(state.saved);let stored=false;
-    try{if(!me.storage_enabled)throw new Error('管理员尚未配置私有对象存储；不会发送明文。');await flushOutbox(state);snapshot=state.engine.save();savedSnapshot=structuredClone(state.saved);const root=JSON.parse(peer.public_key),mode='e2ee' as const,epoch=peer.mode_epoch??0;
+    try{if(Number.isSafeInteger(me.server_time))state.engine.maintenance?.(me.server_time,JSON.stringify(friends.filter(f=>f.status===1&&!f.blocked_by&&f.public_key).map(f=>JSON.parse(f.public_key).curve)));if(!me.storage_enabled)throw new Error('管理员尚未配置私有对象存储；不会发送明文。');await flushOutbox(state);snapshot=state.engine.save();savedSnapshot=structuredClone(state.saved);const root=JSON.parse(peer.public_key),mode='e2ee' as const,epoch=peer.mode_epoch??0;
       if(mode==='e2ee'&&(!state.engine.has_session(root.curve)||state.saved.peerDevices[peer.id]!==peer.device)){const claimed=await privateApi<{key:string;bundle:{payload:string;signature:string;device:string}}>(state,`/${peer.id}/prekey`,{});const target=await checkPrekey(peer.public_key,claimed);state.engine.outbound(target.curve,claimed.key);state.saved.peerDevices[peer.id]=target.device;}
       const id=crypto.randomUUID(),value:Envelope={version:1,site:location.origin,id,sender:me.id,recipient:peer.id,expires:Math.floor(Date.now()/1000)+me.retention_days*86400,text:draft,image:image||undefined,sticker,burn,burn_seconds:burn?burnSeconds:undefined};
       const ciphertext=await sealMessage(value,state,root.curve,state.saved.peerDevices[peer.id]);state.saved.outbox={peer:peer.id,id,ciphertext,burn,burn_seconds:value.burn_seconds,mode,epoch};if(!burn||value.burn_seconds)state.saved.cache[id]={value,created_at:Date.now()/1000,mode,epoch};await persist(state);stored=true;setDraft('');setImage('');
@@ -88,7 +88,7 @@ export function Friends({open,inline,compact=false,display='floating',changeDisp
     if(stored)void receive().catch(e=>setStatus(e.message));
   }
   async function receive(){const state=engine.current;if(document.hidden||!document.hasFocus()||!state||!me||!peer||operation.current||!trusted||ordinary)return;operation.current=true;const target=peer.id;
-    try{const display:Display[]=[];let cacheChanged=false;
+    try{if(Number.isSafeInteger(me.server_time))state.engine.maintenance?.(me.server_time,JSON.stringify(friends.filter(f=>f.status===1&&!f.blocked_by&&f.public_key).map(f=>JSON.parse(f.public_key).curve)));const display:Display[]=[];let cacheChanged=false;
       for(const id of state.saved.readPending??[]){try{const ack=await privateApi<{expires:number}>(state,`/messages/${id}/read`,{});applyReadReceipt(state.saved.cache[id],ack.expires);state.saved.readPending=state.saved.readPending?.filter(v=>v!==id);await persist(state);}catch(e){if((e as {status?:number}).status===404){state.saved.readPending=state.saved.readPending?.filter(v=>v!==id);await persist(state);}}}
       const data=await privateApi<{messages:Message[]}>(state,`/${target}/messages${before?`?before=${before}`:''}`);
       for(const row of [...data.messages].reverse()){

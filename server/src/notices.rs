@@ -285,7 +285,7 @@ pub async fn publish(
     headers: HeaderMap,
     Json(mut draft): Json<Draft>,
 ) -> Api<Json<Value>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         admin(a, &headers)?;
         let password = Zeroizing::new(std::mem::take(&mut draft.password));
         let session = a.reauthenticate(&headers, &password)?;
@@ -354,7 +354,7 @@ pub async fn withdraw(
     Path(id): Path<i64>,
     Json(body): Json<Confirm>,
 ) -> Api<Json<Value>> {
-    app.work(move|a|{admin(a,&headers)?;let session=a.reauthenticate(&headers,&Zeroizing::new(body.password))?;let mut c=a.db.connection.lock().unwrap();let tx=c.transaction().map_err(anyhow::Error::from)?;
+    app.expensive(move|a|{admin(a,&headers)?;let session=a.reauthenticate(&headers,&Zeroizing::new(body.password))?;let mut c=a.db.connection.lock().unwrap();let tx=c.transaction().map_err(anyhow::Error::from)?;
         let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id WHERE u.id=? AND u.is_admin=1 AND u.banned_until!=-1 AND u.banned_until<=? AND s.hash=? AND s.expires>?)",params![session.user.id,now(),session.hash,now()],|r|r.get(0)).map_err(anyhow::Error::from)?;
         if !valid{return Err(Error(StatusCode::UNAUTHORIZED,"管理员登录已失效"));}
         if tx.execute("UPDATE notices SET withdrawn=1 WHERE id=?",[id]).map_err(anyhow::Error::from)?==0{return Err(Error(StatusCode::NOT_FOUND,"信件不存在"));}

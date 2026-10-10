@@ -3,9 +3,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '21 3 * * 1'
 permissions:
   contents: read
 jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check public dependency advisories (fail closed)
+        run: python3 scripts/audit-dependencies.py
   rust:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -74,7 +85,7 @@ jobs:
           docker run --rm webts:ci init-key /tmp/master.key
       - name: Real Chinese installer smoke on isolated runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: sudo --preserve-env=GITHUB_ACTIONS python3 scripts/tests/install-smoke.py
+        run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_SHA python3 scripts/tests/install-smoke.py
       - name: Verify complete source archive deployment
         run: |
           python3 scripts/package-source.py

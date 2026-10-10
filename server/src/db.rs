@@ -33,6 +33,7 @@ pub struct IdentitySecret {
 pub struct Session {
     pub user: User,
     pub hash: String,
+    pub expires: i64,
 }
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -46,7 +47,7 @@ pub fn digest(token: &str) -> String {
 
 impl Db {
     pub fn open(path: &str) -> Result<Self> {
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
           CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0);
@@ -148,6 +149,20 @@ impl Db {
                 )?;
             }
         }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS storage_cleanup_retries(object_key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,next_attempt INTEGER NOT NULL)")?;
+        if !connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('friend_prekeys') WHERE name='used_at')",
+            [],
+            |r| r.get::<_, bool>(0),
+        )? {
+            let migration = connection.transaction()?;
+            migration.execute(
+                "ALTER TABLE friend_prekeys ADD COLUMN used_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            migration.execute("UPDATE friend_prekeys SET used_at=? WHERE used=1", [now()])?;
+            migration.commit()?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -242,12 +257,27 @@ impl Db {
         Ok((id, false, value))
     }
     pub fn email_token(&self, owner: i64, purpose: &str) -> Result<String> {
+        self.issue_email_token(owner, purpose, 0)?
+            .context("令牌未创建")
+    }
+    pub fn recovery_token(&self, owner: i64) -> Result<Option<String>> {
+        self.issue_email_token(owner, "reset", 60)
+    }
+    fn issue_email_token(
+        &self,
+        owner: i64,
+        purpose: &str,
+        cooldown: i64,
+    ) -> Result<Option<String>> {
         if !matches!(purpose, "verify" | "reset") {
             bail!("令牌用途无效");
         }
         let value = token()?;
         let mut c = self.connection.lock().unwrap();
         let tx = c.transaction()?;
+        if cooldown > 0 && tx.query_row("SELECT EXISTS(SELECT 1 FROM email_tokens WHERE user_id=? AND purpose=? AND expires>?)", params![owner,purpose,now()+900-cooldown], |r| r.get::<_,bool>(0))? {
+            return Ok(None);
+        }
         if purpose == "reset" {
             let verified: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND verified=1)",
@@ -268,7 +298,7 @@ impl Db {
             params![digest(&value), owner, purpose, now() + 900],
         )?;
         tx.commit()?;
-        Ok(value)
+        Ok(Some(value))
     }
     pub fn resend_verification(&self, email: &str) -> Result<Option<String>> {
         let mut c = self.connection.lock().unwrap();
@@ -373,8 +403,12 @@ impl Db {
         }
         let hash = digest(value);
         let c = self.connection.lock().unwrap();
-        let user = c.query_row("SELECT u.id,u.email,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?", params![hash,now(),now()], |r| Ok(User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?})).optional()?;
-        Ok(user.map(|user| Session { user, hash }))
+        let user = c.query_row("SELECT u.id,u.email,u.is_admin,s.expires FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?", params![hash,now(),now()], |r| Ok((User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?},r.get(3)?))).optional()?;
+        Ok(user.map(|(user, expires)| Session {
+            user,
+            hash,
+            expires,
+        }))
     }
     pub fn revoke(&self, owner: i64, hash: Option<&str>) -> Result<()> {
         let c = self.connection.lock().unwrap();
@@ -512,6 +546,66 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spent_legacy_prekeys_receive_one_upgrade_grace_period() {
+        let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let dir = tempfile::tempdir_in(cache).unwrap();
+        let path = dir.path().join("legacy.db");
+        let path = path.to_str().unwrap();
+        let db = Db::open(path).unwrap();
+        let (owner, _, _) = db.register("legacy@example.com", "fixture hash").unwrap();
+        db.connection.lock().unwrap().execute("INSERT INTO friend_prekeys(user_id,key,device,bundle,used) VALUES(?,'old-key','old-device','old-bundle',1)", [owner]).unwrap();
+        db.connection
+            .lock()
+            .unwrap()
+            .execute("ALTER TABLE friend_prekeys DROP COLUMN used_at", [])
+            .unwrap();
+        drop(db);
+        let before = now();
+        let db = Db::open(path).unwrap();
+        let timestamp: i64 = db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT used_at FROM friend_prekeys", [], |r| r.get(0))
+            .unwrap();
+        assert!(timestamp >= before);
+        drop(db);
+        let db = Db::open(path).unwrap();
+        assert_eq!(
+            timestamp,
+            db.connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT used_at FROM friend_prekeys", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap()
+        );
+    }
+    #[test]
+    fn recovery_cooldown_preserves_the_first_link_and_is_per_account() {
+        let db = accounts();
+        let first = db.recovery_token(1).unwrap().unwrap();
+        assert!(db.recovery_token(1).unwrap().is_none());
+        assert!(db.recovery_token(2).unwrap().is_some());
+        db.consume_email_token(&first, "reset", Some("new hash"))
+            .unwrap();
+        let next = db.recovery_token(1).unwrap().unwrap();
+        db.connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE email_tokens SET expires=expires-61 WHERE user_id=1",
+                [],
+            )
+            .unwrap();
+        assert!(db.recovery_token(1).unwrap().is_some());
+        assert!(
+            db.consume_email_token(&next, "reset", Some("another hash"))
+                .is_err()
+        );
+    }
     fn accounts() -> Db {
         let db = Db::open(":memory:").unwrap();
         for email in ["a@example.com", "b@example.com"] {

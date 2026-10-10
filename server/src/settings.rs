@@ -224,15 +224,18 @@ pub async fn get_settings(
     State(app): State<std::sync::Arc<App>>,
     headers: HeaderMap,
 ) -> Api<Json<Value>> {
-    admin(&app, &headers)?;
-    Ok(Json(app.runtime.read().unwrap().settings.admin_view()))
+    app.work(move |a| {
+        admin(a, &headers)?;
+        Ok(Json(a.runtime.read().unwrap().settings.admin_view()))
+    })
+    .await
 }
 pub async fn save_settings(
     State(app): State<std::sync::Arc<App>>,
     headers: HeaderMap,
     Json(mut body): Json<Update>,
 ) -> Api<Json<Value>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         admin(a, &headers)?;
         let password = Zeroizing::new(body.password);
         let session = a.reauthenticate(&headers, &password)?;

@@ -1,6 +1,6 @@
 //! A thin browser binding. Olm v1 performs all key agreement and Double Ratchet operations.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use vodozemac::{
     Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature,
     olm::{Account, AccountPickle, OlmMessage, Session, SessionConfig, SessionPickle},
@@ -23,6 +23,10 @@ struct Saved {
     sessions: HashMap<String, SessionPickle>,
     peers: HashMap<String, String>,
     active: HashMap<String, String>,
+    #[serde(default)]
+    activity: HashMap<String, u64>,
+    #[serde(default)]
+    clock: u64,
 }
 #[wasm_bindgen]
 pub struct Engine {
@@ -30,6 +34,9 @@ pub struct Engine {
     sessions: HashMap<String, Session>,
     peers: HashMap<String, String>,
     active: HashMap<String, String>,
+    activity: HashMap<String, u64>,
+    clock: u64,
+    touched: HashSet<String>,
 }
 #[wasm_bindgen]
 impl Engine {
@@ -40,6 +47,9 @@ impl Engine {
             sessions: HashMap::new(),
             peers: HashMap::new(),
             active: HashMap::new(),
+            activity: HashMap::new(),
+            clock: 0,
+            touched: HashSet::new(),
         }
     }
     pub fn restore(text: &str) -> Result<Engine, JsValue> {
@@ -47,7 +57,11 @@ impl Engine {
             return Err(error("size"));
         }
         let s: Saved = serde_json::from_str(text).map_err(error)?;
-        if s.sessions.len() > 256 || s.peers.len() > 256 || s.active.len() > 132 {
+        if s.sessions.len() > 256
+            || s.peers.len() > 256
+            || s.active.len() > 132
+            || s.activity.len() > 256
+        {
             return Err(error("size"));
         }
         Ok(Self {
@@ -59,6 +73,9 @@ impl Engine {
                 .collect(),
             peers: s.peers,
             active: s.active,
+            activity: s.activity,
+            clock: s.clock,
+            touched: HashSet::new(),
         })
     }
     pub fn save(&self) -> Result<String, JsValue> {
@@ -71,6 +88,8 @@ impl Engine {
                 .collect(),
             peers: self.peers.clone(),
             active: self.active.clone(),
+            activity: self.activity.clone(),
+            clock: self.clock,
         })
         .map_err(error)?;
         if text.len() > 8 * 1024 * 1024 {
@@ -110,6 +129,43 @@ impl Engine {
     pub fn has_session(&self, peer_curve: &str) -> bool {
         self.active.contains_key(peer_curve)
     }
+    // Stored messages live at most 30 days. Leave a one-day grace period;
+    // old pickles without timestamps start that grace only on first maintenance.
+    pub fn maintenance(&mut self, now_seconds: f64, current_peers: &str) -> Result<(), JsValue> {
+        if !now_seconds.is_finite() || !(0.0..=1e12).contains(&now_seconds) {
+            return Err(error("clock"));
+        }
+        if current_peers.len() > 16384 {
+            return Err(error("peers"));
+        }
+        let current: HashSet<String> = serde_json::from_str(current_peers).map_err(error)?;
+        if current.len() > 128 {
+            return Err(error("peers"));
+        }
+        self.clock = self.clock.max(now_seconds as u64);
+        for id in std::mem::take(&mut self.touched) {
+            self.activity.insert(id, self.clock);
+        }
+        for id in self.sessions.keys() {
+            self.activity.entry(id.clone()).or_insert(self.clock);
+        }
+        let cutoff = self.clock.saturating_sub(31 * 86400);
+        // A current peer can send fresh normal Olm messages after a long absence.
+        // Expiry of stored messages alone does not obsolete its active ratchet.
+        let live: HashSet<_> = self
+            .active
+            .iter()
+            .filter(|(peer, _)| current.contains(*peer))
+            .map(|(_, id)| id.clone())
+            .collect();
+        self.sessions.retain(|id, _| {
+            live.contains(id) || self.activity.get(id).is_some_and(|at| *at >= cutoff)
+        });
+        self.peers.retain(|id, _| self.sessions.contains_key(id));
+        self.activity.retain(|id, _| self.sessions.contains_key(id));
+        self.active.retain(|_, id| self.sessions.contains_key(id));
+        Ok(())
+    }
     pub fn outbound(&mut self, peer_curve: &str, one_time_key: &str) -> Result<(), JsValue> {
         if self.sessions.len() >= 256 {
             return Err(error("sessions"));
@@ -126,6 +182,7 @@ impl Engine {
         self.peers.insert(id.clone(), peer_curve.into());
         self.active.insert(peer_curve.into(), id.clone());
         self.sessions.insert(id, session);
+        self.touched.insert(self.active[peer_curve].clone());
         Ok(())
     }
     pub fn encrypt(&mut self, peer_curve: &str, text: &str) -> Result<String, JsValue> {
@@ -138,6 +195,7 @@ impl Engine {
             .ok_or_else(|| error("session"))?;
         let session = self.sessions.get_mut(id).ok_or_else(|| error("session"))?;
         let message = session.encrypt(text).map_err(error)?;
+        self.touched.insert(id.clone());
         serde_json::to_string(&serde_json::json!({"session":id,"message":message})).map_err(error)
     }
     pub fn decrypt(&mut self, peer_curve: &str, packet: &str) -> Result<String, JsValue> {
@@ -176,6 +234,7 @@ impl Engine {
         } else {
             return Err(error("unknown session"));
         };
+        self.touched.insert(p.session.clone());
         self.active.insert(peer_curve.into(), p.session);
         String::from_utf8(plaintext).map_err(error)
     }
@@ -189,6 +248,39 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expired_ratchets_retire_without_erasing_live_or_legacy_sessions() {
+        let mut a = Engine::new();
+        let mut b = Engine::new();
+        let peers = serde_json::to_string(&vec![b.account.curve25519_key().to_base64()]).unwrap();
+        a.maintenance(1000.0, &peers).unwrap();
+        session(&mut a, &mut b);
+        a.maintenance(1000.0, &peers).unwrap();
+        let original = a.active[&b.account.curve25519_key().to_base64()].clone();
+        session(&mut a, &mut b);
+        a.maintenance(2000.0, &peers).unwrap();
+        a.maintenance((32 * 86400 + 2000) as f64, &peers).unwrap();
+        assert!(!a.sessions.contains_key(&original));
+        assert_eq!(a.sessions.len(), 1);
+        let mut saved: serde_json::Value = serde_json::from_str(&a.save().unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("activity");
+        saved.as_object_mut().unwrap().remove("clock");
+        let mut restored = Engine::restore(&saved.to_string()).unwrap();
+        restored.maintenance(1_900_000_000.0, &peers).unwrap();
+        assert_eq!(
+            restored.sessions.len(),
+            1,
+            "legacy state must not lose ratchets on upgrade"
+        );
+        assert!(restored.maintenance(f64::NAN, &peers).is_err());
+        restored
+            .maintenance((1_900_000_000 + 32 * 86400) as f64, "[]")
+            .unwrap();
+        assert!(
+            restored.sessions.is_empty(),
+            "removed peer ratchets eventually retire"
+        );
+    }
     fn session(a: &mut Engine, b: &mut Engine) {
         let pre: serde_json::Value = serde_json::from_str(&b.prekeys().unwrap()).unwrap();
         let payload = pre["payload"].as_str().unwrap();

@@ -8,7 +8,7 @@
 apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
-安装器下载本仓库与固定协议子模块，通过 Docker 从源码构建。首次构建需要时间与网络；它不要求下载 Release 包，不创建演示账号，不内置邮箱、身份或密钥。HTTPS 下载失败时停止，不禁用证书验证。非 root 请先 `sudo -i`。
+安装器查询 GitHub 最新非预发布的正式版本，下载该标签与固定协议子模块，通过 Docker 从源码构建。首次构建需要时间与网络；它不要求下载 Release 二进制包，不创建演示账号，不内置邮箱、身份或密钥。版本查询或 HTTPS 下载失败时停止，不自动改用开发分支，不禁用证书验证。非 root 请先 `sudo -i`。
 
 安装目录 `/opt/webts`，管理入口 `/usr/local/bin/webts`。若这些位置已有非本项目文件，安装会停止。不会安装或修改 TS 服务，不调整现有防火墙或覆盖其他网站代理。安装缺少的系统依赖时使用发行版签名软件源；已有 Docker 不会被重装。
 
@@ -79,3 +79,7 @@ QQ 邮箱常用 `smtp.qq.com`、`465`，使用邮箱设置生成的 SMTP 授权�
 自动更新只切换 WebTS 自己的程序与容器，不运行 `docker system prune`、不删其他容器，也不清理旧备份。出现错误先查看 `webts logs`；完整手动部署、TURN、备份恢复和配置说明见 [DEPLOYMENT.md](DEPLOYMENT.md)。手机语音、TS6、TURN 长连接及容量目标仍需独立验收。
 
 站点图标不要求在终端上传：验证站长并登录后，进入 **站点管理 → 外观、协议与公告**，裁剪并发布站点图标。站点图标与真实 TS 服务器图标独立。首次构建失败时，安装器保留待完成的公开配置；再次执行 setup 会先完成配置再启动，不把站长注册邮箱自动公开。
+
+## 更新版本选择
+
+`webts update` 默认选择最新正式版本。测试环境可显式设置 `WEBTS_REF=main`；固定版本可用 `WEBTS_REF=v1.0.1` 或完整40位提交哈希。GitHub版本查询失败时保留现有安装；先备份数据库和主密钥，在独立环境验证兼容性后更新正式站点。

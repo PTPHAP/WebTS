@@ -205,7 +205,7 @@ fn failure(pending: Pending, message: &'static str) -> Completed {
     }
 }
 async fn normalize(app: &Arc<App>, bytes: Vec<u8>, limits: ImageLimits) -> Result<Vec<u8>> {
-    app.work(move |_| {
+    app.expensive(move |_| {
         sanitize_with_limits(&bytes, limits)
             .map_err(|_| Error::bad("头像格式、尺寸或体积不符合站点图片限制"))
     })
@@ -225,7 +225,7 @@ pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     if !matches!(
         reader.format(),
-        Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif)
+        Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP)
     ) {
         bail!("unsupported avatar format");
     }
@@ -346,6 +346,17 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn native_webp_bot_avatar_is_reencoded_as_bounded_png() {
+        let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([50, 80, 130, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::WebP).unwrap();
+        let output = sanitize(encoded.get_ref()).unwrap();
+        assert!(output.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(output.len() <= MAX_UPLOAD);
+        assert_eq!(image::load_from_memory(&output).unwrap().width(), 32);
+    }
+
     #[test]
     fn native_gif_avatar_is_shown_as_safe_static_png() {
         let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([50, 80, 130, 255]));

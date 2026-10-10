@@ -15,6 +15,18 @@ manager=importlib.util.module_from_spec(spec);spec.loader.exec_module(manager)
 
 
 class ManagementTests(unittest.TestCase):
+    def test_updates_default_to_a_validated_stable_release_without_shell_interpolation(self):
+        with patch.dict(os.environ,{'WEBTS_REF':''}),patch.object(manager.urllib.request,'urlopen',return_value=io.BytesIO(b'{"tag_name":"v1.0.2","draft":false,"prerelease":false}')):
+            self.assertEqual(manager.release_ref(),'v1.0.2')
+        for ref in ['--upload-pack=evil','v1.0.2; rm -rf /','feature branch','v1.0.2-rc1']:
+            with patch.dict(os.environ,{'WEBTS_REF':ref}),self.assertRaises(ValueError):manager.release_ref()
+        with patch.dict(os.environ,{'WEBTS_REF':'main'}):self.assertEqual(manager.release_ref(),'main')
+        with patch.object(manager,'run') as run:
+            manager.download_source(self.root/'candidate','v1.0.2')
+        commands=[call.args[0] for call in run.call_args_list]
+        self.assertIn('v1.0.2',commands[2])
+        self.assertEqual(commands[3][-2:],['--detach','FETCH_HEAD'])
+
     def setUp(self):
         temp=Path(__file__).resolve().parents[2]/'.cache/tmp';temp.mkdir(parents=True,exist_ok=True)
         self.folder=tempfile.TemporaryDirectory(dir=temp)

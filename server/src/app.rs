@@ -21,9 +21,9 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex, RwLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tower_http::services::{ServeDir, ServeFile};
 use zeroize::Zeroizing;
 
@@ -35,17 +35,72 @@ pub struct App {
     pub sockets: Arc<Semaphore>,
     pub image_bytes: Arc<Semaphore>,
     pub friend_objects: Arc<Semaphore>,
+    object_queue: Arc<Semaphore>,
+    object_accounts: Arc<Mutex<HashMap<i64, usize>>>,
     workers: Arc<Semaphore>,
-    limits: Mutex<HashMap<(IpAddr, bool), (Instant, u32)>>,
+    cpu_workers: Arc<Semaphore>,
+    work_queue: Arc<Semaphore>,
+    cpu_queue: Arc<Semaphore>,
+    limits: Mutex<Limits>,
     mail: mpsc::Sender<Mail>,
     pub runtime: Arc<RwLock<crate::settings::Runtime>>,
     dummy_hash: String,
+}
+pub const OBJECT_CONCURRENCY: u32 = 8;
+#[derive(Hash, PartialEq, Eq)]
+enum RateKey {
+    Ip(IpAddr, &'static str),
+    Account(i64, &'static str),
+    Subject(String, &'static str),
+}
+struct Limits {
+    entries: HashMap<RateKey, (Instant, u32)>,
+    swept: Instant,
+}
+impl Limits {
+    fn check(&mut self, key: RateKey, window: u64, cap: u32) -> Option<u64> {
+        if self.swept.elapsed() >= Duration::from_secs(10) {
+            self.entries
+                .retain(|_, (start, _)| start.elapsed().as_secs() < 600);
+            self.swept = Instant::now();
+        }
+        if self.entries.len() >= 16384 && !self.entries.contains_key(&key) {
+            return Some(10);
+        }
+        let entry = self.entries.entry(key).or_insert((Instant::now(), 0));
+        if entry.0.elapsed().as_secs() >= window {
+            *entry = (Instant::now(), 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        (entry.1 > cap).then(|| window.saturating_sub(entry.0.elapsed().as_secs()).max(1))
+    }
+}
+struct ObjectAccount {
+    accounts: Arc<Mutex<HashMap<i64, usize>>>,
+    owner: i64,
+}
+impl Drop for ObjectAccount {
+    fn drop(&mut self) {
+        let mut accounts = self.accounts.lock().unwrap();
+        if let Some(count) = accounts.get_mut(&self.owner) {
+            *count -= 1;
+            if *count == 0 {
+                accounts.remove(&self.owner);
+            }
+        }
+    }
+}
+pub struct ObjectPermit {
+    _account: ObjectAccount,
+    _queue: OwnedSemaphorePermit,
+    _global: OwnedSemaphorePermit,
 }
 struct Mail {
     email: String,
     purpose: &'static str,
     token: Zeroizing<String>,
 }
+#[derive(Debug)]
 pub struct Error(pub StatusCode, pub &'static str);
 impl Error {
     pub fn bad(message: &'static str) -> Self {
@@ -62,7 +117,16 @@ impl From<anyhow::Error> for Error {
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({"error":self.1}))).into_response()
+        let mut response = (self.0, Json(json!({"error":self.1}))).into_response();
+        if matches!(
+            self.0,
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+        ) {
+            response
+                .headers_mut()
+                .insert("retry-after", HeaderValue::from_static("3"));
+        }
+        response
     }
 }
 pub type Api<T> = std::result::Result<T, Error>;
@@ -159,12 +223,20 @@ impl App {
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
             image_bytes: Arc::new(Semaphore::new(128 * 1024)),
-            friend_objects: Arc::new(Semaphore::new(2)),
+            friend_objects: Arc::new(Semaphore::new(OBJECT_CONCURRENCY as usize)),
+            object_queue: Arc::new(Semaphore::new(32)),
+            object_accounts: Arc::new(Mutex::new(HashMap::new())),
             config,
             db,
             vault,
-            workers: Arc::new(Semaphore::new(2)),
-            limits: Mutex::new(HashMap::new()),
+            workers: Arc::new(Semaphore::new(8)),
+            cpu_workers: Arc::new(Semaphore::new(2)),
+            work_queue: Arc::new(Semaphore::new(64)),
+            cpu_queue: Arc::new(Semaphore::new(16)),
+            limits: Mutex::new(Limits {
+                entries: HashMap::new(),
+                swept: Instant::now(),
+            }),
             mail,
             runtime,
             dummy_hash: password::hash(&crate::vault::token()?)?,
@@ -174,18 +246,97 @@ impl App {
         self: &Arc<Self>,
         f: impl FnOnce(&App) -> Api<T> + Send + 'static,
     ) -> Api<T> {
-        let permit = self
-            .workers
-            .clone()
+        self.run_work(self.workers.clone(), self.work_queue.clone(), f)
+            .await
+    }
+    async fn run_work<T: Send + 'static>(
+        self: &Arc<Self>,
+        pool: Arc<Semaphore>,
+        queue: Arc<Semaphore>,
+        f: impl FnOnce(&App) -> Api<T> + Send + 'static,
+    ) -> Api<T> {
+        let queued = queue
             .try_acquire_owned()
-            .map_err(|_| Error(StatusCode::TOO_MANY_REQUESTS, "服务正忙，请稍后重试"))?;
+            .map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "服务排队已满，请稍后重试"))?;
+        let permit = tokio::time::timeout(Duration::from_secs(3), pool.acquire_owned())
+            .await
+            .map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "服务等待超时，请稍后重试"))?
+            .map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "服务正在停止"))?;
         let app = self.clone();
         tokio::task::spawn_blocking(move || {
+            let _queued = queued;
             let _permit = permit;
             f(&app)
         })
         .await
         .map_err(|_| Error(StatusCode::INTERNAL_SERVER_ERROR, "操作失败"))?
+    }
+    pub async fn expensive<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&App) -> Api<T> + Send + 'static,
+    ) -> Api<T> {
+        self.run_work(self.cpu_workers.clone(), self.cpu_queue.clone(), f)
+            .await
+    }
+    pub async fn session_async(self: &Arc<Self>, headers: &HeaderMap) -> Api<Session> {
+        let headers = headers.clone();
+        self.work(move |a| a.session(&headers)).await
+    }
+    fn credential_limit(&self, email: &str, bucket: &'static str) -> Api<()> {
+        if self
+            .limits
+            .lock()
+            .unwrap()
+            .check(RateKey::Subject(crate::db::digest(email), bucket), 600, 30)
+            .is_some()
+        {
+            return Err(Error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "此邮箱请求过于频繁，请稍后重试",
+            ));
+        }
+        Ok(())
+    }
+    pub async fn object_permit(self: &Arc<Self>, headers: &HeaderMap) -> Api<ObjectPermit> {
+        let owner = self.session_async(headers).await?.user.id;
+        let queued = self.object_queue.clone().try_acquire_owned().map_err(|_| {
+            Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "临时存储排队已满，请稍后重试",
+            )
+        })?;
+        {
+            let mut accounts = self.object_accounts.lock().unwrap();
+            let count = accounts.entry(owner).or_default();
+            if *count >= 2 {
+                return Err(Error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "此账号有消息正在传输，请稍后重试",
+                ));
+            }
+            *count += 1;
+        }
+        let account = ObjectAccount {
+            accounts: self.object_accounts.clone(),
+            owner,
+        };
+        let global = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.friend_objects.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "临时存储等待超时，请稍后重试",
+            )
+        })?
+        .map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "临时存储正在停止"))?;
+        Ok(ObjectPermit {
+            _account: account,
+            _queue: queued,
+            _global: global,
+        })
     }
     pub fn session(&self, headers: &HeaderMap) -> Api<Session> {
         let cookie_name = self.cookie_name();
@@ -428,33 +579,63 @@ async fn guard(
     } else {
         peer
     };
-    let auth = request.uri().path().contains("/auth/")
-        || (mutation
-            && (request.uri().path().contains("/admin/")
-                || request.uri().path().ends_with("/friends/key")
-                || request.uri().path().ends_with("/friends/device")
-                || request.uri().path().ends_with("/encryption")
-                || request.uri().path().ends_with("/profile")));
-    let window = if auth { 600 } else { 60 };
-    let cap = if auth { 30 } else { 240 };
-    let limited = {
-        let mut map = app.limits.lock().unwrap();
-        map.retain(|_, (start, _)| start.elapsed().as_secs() < 600);
-        if map.len() >= 4096 && !map.contains_key(&(ip, auth)) {
-            true
-        } else {
-            let entry = map.entry((ip, auth)).or_insert((Instant::now(), 0));
-            if entry.0.elapsed().as_secs() >= window {
-                *entry = (Instant::now(), 0);
-            }
-            entry.1 += 1;
-            entry.1 > cap
+    // A coarse ingress ceiling still bounds abuse from many accounts, without
+    // sharing one small business quota between everyone behind a NAT.
+    let ingress = app
+        .limits
+        .lock()
+        .unwrap()
+        .check(RateKey::Ip(ip, "ingress"), 60, 24000);
+    if let Some(wait) = ingress {
+        return rate_response(wait);
+    }
+    let path = request
+        .uri()
+        .path()
+        .strip_prefix("/api")
+        .unwrap_or(request.uri().path());
+    let (bucket, window, cap, by_ip) = match path {
+        "/auth/login" => ("login", 600, 300, true),
+        "/auth/register" => ("register", 600, 100, true),
+        "/auth/forgot" => ("recovery-mail", 600, 100, true),
+        "/auth/resend" => ("verification-mail", 600, 100, true),
+        "/auth/reset" => ("reset", 600, 100, true),
+        "/auth/verify" => ("verify", 600, 600, true),
+        "/auth/logout" | "/auth/logout-all" => ("logout", 60, 30, false),
+        _ if mutation
+            && (path.contains("/admin/")
+                || path.ends_with("/friends/key")
+                || path.ends_with("/friends/device")
+                || path.ends_with("/encryption")) =>
+        {
+            ("sensitive", 600, 30, false)
         }
+        _ if mutation => ("write", 60, 120, false),
+        _ => ("read", 60, 240, false),
     };
-    if limited {
-        return Error(StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后重试").into_response();
+    let key = if !by_ip && request.headers().contains_key("cookie") {
+        match app.session_async(request.headers()).await {
+            Ok(s) => RateKey::Account(s.user.id, bucket),
+            Err(error) if error.0 == StatusCode::UNAUTHORIZED => RateKey::Ip(ip, bucket),
+            Err(error) => return error.into_response(),
+        }
+    } else {
+        RateKey::Ip(ip, bucket)
+    };
+    let limited = app.limits.lock().unwrap().check(key, window, cap);
+    if let Some(wait) = limited {
+        return rate_response(wait);
     }
     next.run(request).await
+}
+fn rate_response(wait: u64) -> Response {
+    let mut response =
+        Error(StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后重试").into_response();
+    response.headers_mut().insert(
+        "retry-after",
+        HeaderValue::from_str(&wait.to_string()).unwrap(),
+    );
+    response
 }
 fn email(value: &str) -> Api<String> {
     let value = value.trim().to_ascii_lowercase();
@@ -524,7 +705,9 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
     Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"smtp_ready":app.smtp_ready()}))
 }
 async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
-    Ok(Json(json!({"user":app.session(&headers)?.user})))
+    Ok(Json(
+        json!({"user":app.session_async(&headers).await?.user}),
+    ))
 }
 async fn register(
     State(app): State<Arc<App>>,
@@ -540,7 +723,8 @@ async fn register(
         ));
     }
     let email = email(&body.email)?;
-    app.work(move |a| {
+    app.credential_limit(&email, "register")?;
+    app.expensive(move |a| {
         let runtime=a.runtime.read().unwrap();
         if body.policy_version!=crate::site::policy_version(&runtime.settings.home){return Err(Error(StatusCode::CONFLICT,"协议已更新，请重新阅读并勾选同意"));}
         let p = Zeroizing::new(body.password);
@@ -562,7 +746,8 @@ async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -
         return Err(Error::bad("请先阅读并同意隐私政策与使用协议及免责声明"));
     }
     let email = email(&body.email)?;
-    app.work(move |a| {
+    app.credential_limit(&email, "login")?;
+    app.expensive(move |a| {
         let runtime=a.runtime.read().unwrap();
         if body.policy_version!=crate::site::policy_version(&runtime.settings.home){return Err(Error(StatusCode::CONFLICT,"协议已更新，请重新阅读并勾选同意"));}
         let found = a.db.password(&email)?;
@@ -608,6 +793,7 @@ async fn resend(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
         ));
     }
     let email = email(&body.email)?;
+    app.credential_limit(&email, "verification-mail")?;
     app.work(move |a| {
         let permit = a.mail.try_reserve().map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "邮件服务繁忙，请稍后再试"))?;
         if let Some(token) = a.db.resend_verification(&email)? { permit.send(Mail {email, purpose:"verify", token:Zeroizing::new(token)}); }
@@ -622,6 +808,7 @@ async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
         ));
     }
     let email = email(&body.email)?;
+    app.credential_limit(&email, "recovery-mail")?;
     app.work(move |a| {
         if a.mail.capacity() == 0 {
             return Err(Error(
@@ -629,8 +816,9 @@ async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
                 "邮件队列繁忙，请稍后重试",
             ));
         }
-        if let Some((id, _, true)) = a.db.password(&email)? {
-            let token = a.db.email_token(id, "reset")?;
+        if let Some((id, _, true)) = a.db.password(&email)?
+            && let Some(token) = a.db.recovery_token(id)?
+        {
             // Queue capacity can change after the check; keep unknown and known
             // accounts indistinguishable if another sender fills the last slot.
             let _ = a.queue_mail(email, "reset", token);
@@ -642,7 +830,7 @@ async fn forgot(State(app): State<Arc<App>>, Json(body): Json<EmailBody>) -> Api
     .await
 }
 async fn reset(State(app): State<Arc<App>>, Json(body): Json<ResetBody>) -> Api<Json<Value>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         let p = Zeroizing::new(body.password);
         let hash = password::hash(&p).map_err(|_| Error::bad("密码需要12至128字节"))?;
         let owner =
@@ -696,7 +884,7 @@ async fn create_identity(
     Json(body): Json<IdentityBody>,
 ) -> Api<Json<Value>> {
     let name = name(&body.name)?;
-    app.work(move |a| {
+    app.expensive(move |a| {
         let owner = a.session(&headers)?.user.id;
         let value = tsclientlib::Identity::create();
         let id = a.db.add_identity(owner, &name, &value, &a.vault)?;
@@ -713,7 +901,7 @@ async fn import_identity(
     Json(body): Json<ImportBody>,
 ) -> Api<Json<Value>> {
     let name = name(&body.name)?;
-    app.work(move |a| {
+    app.expensive(move |a| {
         let owner = a.session(&headers)?.user.id;
         let text = Zeroizing::new(body.identity);
         let value = identity::parse(&text)
@@ -743,7 +931,7 @@ async fn delete_identity(
     Path(id): Path<String>,
     Json(body): Json<PasswordBody>,
 ) -> Api<Json<Value>> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         let p = Zeroizing::new(body.password);
         let owner = a.reauthenticate(&headers, &p)?.user.id;
         a.db.delete_identity(owner, &id)
@@ -759,7 +947,7 @@ async fn export_identity(
     Path(id): Path<String>,
     Json(body): Json<PasswordBody>,
 ) -> Api<Response> {
-    app.work(move |a| {
+    app.expensive(move |a| {
         let p = Zeroizing::new(body.password);
         let owner = a.reauthenticate(&headers, &p)?.user.id;
         let record =
@@ -782,7 +970,218 @@ async fn export_identity(
     })
     .await
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    pub(crate) fn fixture() -> (tempfile::TempDir, Arc<App>, HeaderMap) {
+        let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("audit-fixture-")
+            .tempdir_in(cache)
+            .unwrap();
+        let key = dir.path().join("key");
+        std::fs::write(&key, "11".repeat(32)).unwrap();
+        let mut config: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        config.database = ":memory:".into();
+        config.master_key_file = key.to_str().unwrap().into();
+        let app = App::new(config).unwrap();
+        for email in ["audit-a@example.com", "audit-b@example.com"] {
+            let (_, _, verify) = app.db.register(email, "fixture hash").unwrap();
+            app.db.consume_email_token(&verify, "verify", None).unwrap();
+        }
+        let token = app.db.create_session(1, false, "fixture hash").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", format!("webts_dev={token}").parse().unwrap());
+        headers.insert("origin", "http://localhost:8080".parse().unwrap());
+        (dir, app, headers)
+    }
+
+    #[tokio::test]
+    async fn shared_ip_accounts_do_not_consume_each_others_read_budget() {
+        let (_dir, app, first) = fixture();
+        let token = app.db.create_session(2, false, "fixture hash").unwrap();
+        let mut second = first.clone();
+        second.insert("cookie", format!("webts_dev={token}").parse().unwrap());
+        let router = router(app);
+        for headers in [first, second] {
+            for _ in 0..150 {
+                let mut request = Request::builder()
+                    .uri("/api/servers")
+                    .body(Body::empty())
+                    .unwrap();
+                *request.headers_mut() = headers.clone();
+                let response = router.clone().oneshot(request).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "another account behind the same IP must not exhaust this account's quota"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn credential_limits_do_not_share_one_email_budget_across_accounts() {
+        let (_dir, app, _) = fixture();
+        for index in 0..100 {
+            app.credential_limit(&format!("member{index}@example.com"), "login")
+                .unwrap();
+        }
+        for _ in 0..30 {
+            app.credential_limit("victim@example.com", "login").unwrap();
+        }
+        assert_eq!(
+            app.credential_limit("victim@example.com", "login")
+                .unwrap_err()
+                .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        app.credential_limit("another@example.com", "login")
+            .unwrap();
+        app.credential_limit("victim@example.com", "recovery-mail")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_is_not_blocked_by_an_exhausted_verification_bucket() {
+        let (_dir, app, headers) = fixture();
+        let router = router(app.clone());
+        let mut exhausted = false;
+        for _ in 0..1000 {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/auth/verify")
+                .header("content-type", "application/json")
+                .body(Body::from("{\"token\":\"invalid\"}"))
+                .unwrap();
+            request.headers_mut().extend(headers.clone());
+            if router.clone().oneshot(request).await.unwrap().status()
+                == StatusCode::TOO_MANY_REQUESTS
+            {
+                exhausted = true;
+                break;
+            }
+        }
+        assert!(exhausted);
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/logout")
+            .body(Body::empty())
+            .unwrap();
+        *request.headers_mut() = headers.clone();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(app.session(&headers).is_err());
+    }
+
+    #[tokio::test]
+    async fn ordinary_work_remains_available_while_expensive_jobs_are_busy() {
+        let (_dir, app, _) = fixture();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let (started, mut ready) = mpsc::channel(2);
+        let mut jobs = Vec::new();
+        for _ in 0..2 {
+            let app = app.clone();
+            let barrier = barrier.clone();
+            let started = started.clone();
+            jobs.push(tokio::spawn(async move {
+                app.expensive(move |_| {
+                    started.blocking_send(()).unwrap();
+                    barrier.wait();
+                    Ok(())
+                })
+                .await
+            }));
+        }
+        ready.recv().await.unwrap();
+        ready.recv().await.unwrap();
+        let ordinary = app.work(|_| Ok(())).await;
+        barrier.wait();
+        for job in jobs {
+            job.await.unwrap().unwrap();
+        }
+        assert!(
+            ordinary.is_ok(),
+            "CPU jobs must not reject unrelated short work"
+        );
+    }
+
+    #[tokio::test]
+    async fn object_transfer_limits_are_per_account_and_cancel_safe() {
+        let (_dir, app, first) = fixture();
+        let token = app.db.create_session(2, false, "fixture hash").unwrap();
+        let mut second = first.clone();
+        second.insert("cookie", format!("webts_dev={token}").parse().unwrap());
+        let first_job = app.object_permit(&first).await.unwrap();
+        let second_job = app.object_permit(&first).await.unwrap();
+        assert_eq!(
+            app.object_permit(&first).await.err().unwrap().0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let other_account = app.object_permit(&second).await.unwrap();
+        drop((first_job, second_job, other_account));
+        assert!(app.object_accounts.lock().unwrap().is_empty());
+        let all = app
+            .friend_objects
+            .clone()
+            .acquire_many_owned(OBJECT_CONCURRENCY)
+            .await
+            .unwrap();
+        let task_app = app.clone();
+        let waiting = tokio::spawn(async move { task_app.object_permit(&first).await });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        waiting.abort();
+        assert!(waiting.await.err().unwrap().is_cancelled());
+        drop(all);
+        assert!(app.object_accounts.lock().unwrap().is_empty());
+        assert_eq!(
+            app.friend_objects.available_permits(),
+            OBJECT_CONCURRENCY as usize
+        );
+        assert_eq!(app.object_queue.available_permits(), 32);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // Intentionally reproduces the opposing lock order.
+    async fn friend_refresh_waiting_for_configuration_does_not_hold_database_lock() {
+        let (_dir, app, headers) = fixture();
+        {
+            let db = app.db.connection.lock().unwrap();
+            db.execute(
+                "INSERT INTO friend_keys(user_id,code,public_key) VALUES(1,'a',''),(2,'b','')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO friendships(lo,hi,requester,status,created_at) VALUES(1,2,1,1,0)",
+                [],
+            )
+            .unwrap();
+        }
+        let settings = app.runtime.write().unwrap();
+        let request_app = app.clone();
+        let job =
+            tokio::spawn(async move { crate::friends::list(State(request_app), headers).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let available = app.db.connection.try_lock().is_ok();
+        drop(settings);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), job)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_ok());
+        assert!(
+            available,
+            "configuration contention must not lock the database and deadlock a settings writer"
+        );
+    }
+}
 async fn servers(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
-    app.session(&headers)?;
+    app.session_async(&headers).await?;
     Ok(Json(app.runtime.read().unwrap().settings.public()))
 }

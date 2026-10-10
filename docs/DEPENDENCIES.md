@@ -493,3 +493,7 @@
 | [zmij](https://crates.io/crates/zmij/1.0.23) | 1.0.23 | MIT |
 | [zune-core](https://crates.io/crates/zune-core/0.5.3) | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | [zune-jpeg](https://crates.io/crates/zune-jpeg/0.5.15) | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
+
+## 公开依赖安全公告检查
+
+运行 `python3 scripts/audit-dependencies.py` 查询Cargo.lock与NPM锁文件中的公开包名/版本。CI在提交、PR和每周执行，包含已知受影响版本的正向控制；公告命中、网络失败及未读取分页均使检查失败。不会上传源码、站点配置或用户数据；本地协议补丁、容器镜像与未知漏洞不在该接口的覆盖范围，仍需单独审查。

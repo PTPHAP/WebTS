@@ -14,6 +14,9 @@ export class Voice {
   private timer?: number;
   private qualityTimer?: number;
   private noiseNode?: NoiseProcessor;
+  private captureGain?:GainNode;
+  private processingRevision=0;
+  private processingTask?:Promise<void>;
   private settings:AudioSettings={...defaultAudioSettings};
   private receivers=new Map<string,ReturnType<typeof createReceiver>>();
   private receiveTimer?:number;
@@ -89,32 +92,17 @@ export class Voice {
     if (generation !== this.generation) { stream?.getTracks().forEach(t=>t.stop()); return; }
     this.stream=stream;
     let sendStream=stream;
-    let processing:string=this.settings.noise;
-    if(stream&&(this.settings.noise==='rnnoise'||this.settings.gain!==1)) {
+    if(stream) {
       const context=this.context!;
       const source=context.createMediaStreamSource(stream),gain=context.createGain(),destination=context.createMediaStreamDestination();
-      this.captureSource=source;this.captureInput=gain;this.processed=destination.stream;gain.gain.value=this.settings.gain;gain.connect(destination);
-      const voiceOnly=this.settings.voiceOnly===true;
-      const noiseFailed=()=>{this.captureSource?.disconnect();this.noiseNode?.destroy();this.noiseNode=undefined;this.processingBlocked=true;gain.gain.value=0;this.update();this.event({type:'audio_processing',noise:'blocked',actual:this.stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message:'本地降噪与发言检测不可用，已暂停麦克风发送；仍可收听。请重新连接重试，或断开后关闭降噪并使用按键发言。'});return 'blocked';};
-      if(this.settings.noise==='rnnoise') {
-        try {
-          const {createNoise}=await import('./noise');const node=await createNoise(context,this.settings.keyboard,voiceOnly,this.settings.strength);
-          if(generation!==this.generation){node.destroy();return;}
-          this.noiseNode=node;this.gated=true;this.speech=node.speaking===true;node.onspeech=enabled=>{if(generation!==this.generation)return;window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(enabled){this.speech=true;this.update();}else this.speechTimer=window.setTimeout(()=>{if(generation!==this.generation)return;this.speech=false;this.update();},60);};this.captureInput=node.input;source.connect(node.input);node.output.connect(gain);processing=node.mode;
-          if(node.warning)this.event({type:'notice',message:node.warning});
-          node.onchange=message=>{if(generation!==this.generation)return;this.event({type:'audio_processing',noise:node.mode,voice_only:voiceOnly,actual:this.stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message});};
-          node.onerror=()=>{if(generation!==this.generation)return;noiseFailed();};
-          this.typingKey=e=>{if(generation===this.generation&&this.mode==='open'&&this.settings.typing&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing)this.noiseNode?.typing();};window.addEventListener?.('keydown',this.typingKey);
-          this.typingClick=()=>{if(generation===this.generation&&this.mode==='open'&&this.settings.typing)this.noiseNode?.typing();};window.addEventListener?.('pointerdown',this.typingClick);
-        } catch {
-          if(generation!==this.generation)return;
-          processing=noiseFailed();
-        }
-      } else source.connect(gain);
+      this.captureSource=source;this.captureGain=gain;this.captureInput=gain;this.processed=destination.stream;gain.gain.value=0;gain.connect(destination);
+      const processing=this.refreshProcessing(true);this.processingTask=processing;await processing;if(this.processingTask===processing)this.processingTask=undefined;
       context.resume().catch(()=>{});sendStream=destination.stream;
+      this.typingKey=e=>{if(generation===this.generation&&this.mode==='open'&&this.settings.typing&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing)this.noiseNode?.typing();};window.addEventListener?.('keydown',this.typingKey);
+      this.typingClick=()=>{if(generation===this.generation&&this.mode==='open'&&this.settings.typing)this.noiseNode?.typing();};window.addEventListener?.('pointerdown',this.typingClick);
     }
     if(generation!==this.generation){sendStream?.getTracks().forEach(t=>t.stop());return;}
-    this.event({type:'audio_processing',noise:listenOnly?'listen':processing,voice_only:this.settings.noise==='rnnoise'&&this.settings.voiceOnly&&!this.processingBlocked,actual:this.stream?.getAudioTracks()[0].getSettings?.()});
+    this.event({type:'audio_processing',noise:listenOnly?'listen':this.processingBlocked?'blocked':this.noiseNode?.mode??this.settings.noise,voice_only:this.settings.noise==='rnnoise'&&this.settings.voiceOnly&&!this.processingBlocked,actual:this.stream?.getAudioTracks()[0].getSettings?.()});
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
     const qualityPeer=this.peer;let reading=false;
     this.qualityTimer=window.setInterval(async()=>{if(reading||!qualityPeer.getStats)return;reading=true;try{const report=await qualityPeer.getStats();if(generation===this.generation)this.event({type:'quality',...connectionQuality(report)});}catch{if(generation===this.generation)this.event({type:'quality'});}finally{reading=false;}},2000);
@@ -220,7 +208,52 @@ export class Voice {
   setAway(enabled:boolean,text=''){if(this.pendingAway)return;this.away=enabled;this.awayMessage=enabled?text:'';this.pressed=false;this.update();if(this.ready){this.sendTransmit();this.sendAway();}this.event({type:'away',enabled,text:this.awayMessage});}
   press(value:boolean){this.pressed=value;this.update();}
   setMode(mode:'ptt'|'open'){this.mode=mode;this.pressed=false;this.update();if(this.ready)this.sendTransmit();}
-  configure(settings:AudioSettings){this.settings={...defaultAudioSettings,...settings};this.applyAudio();}
+  private async refreshProcessing(initial=false){
+    const generation=this.generation,context=this.context,gain=this.captureGain;
+    if(!context||!gain||!this.captureSource)return;
+    for(;;){
+      const revision=this.processingRevision,settings={...this.settings};let node:NoiseProcessor|undefined;
+      try{
+        if(settings.noise==='rnnoise'){const {createNoise}=await import('./noise');node=await createNoise(context,settings.keyboard,settings.voiceOnly,settings.strength);}
+        if(generation!==this.generation){node?.destroy();return;}
+        if(revision!==this.processingRevision){node?.destroy();continue;}
+        const source=this.captureSource;if(!source){node?.destroy();return;}
+        const previous=this.noiseNode;source.disconnect();
+        try{if(node){node.output.connect(gain);source.connect(node.input);}else source.connect(gain);}
+        catch(error){source.disconnect();source.connect(previous?.input??gain);throw error;}
+        this.noiseNode=node;this.captureInput=node?.input??gain;previous?.destroy();
+        this.processingBlocked=false;gain.gain.value=this.settings.gain;this.gated=!!node;this.speech=node?.speaking===true;
+        window.clearTimeout(this.speechTimer);this.speechTimer=undefined;
+        if(node){const current=node;
+          current.onspeech=enabled=>{if(generation!==this.generation||this.noiseNode!==current)return;window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(enabled){this.speech=true;this.update();}else this.speechTimer=window.setTimeout(()=>{if(generation!==this.generation||this.noiseNode!==current)return;this.speech=false;this.update();},60);};
+          current.onchange=message=>{if(generation!==this.generation||this.noiseNode!==current)return;this.event({type:'audio_processing',noise:current.mode,voice_only:settings.voiceOnly,actual:this.stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message});};
+          current.onerror=()=>{if(generation!==this.generation||this.noiseNode!==current)return;this.captureSource?.disconnect();current.destroy();this.noiseNode=undefined;this.processingBlocked=true;gain.gain.value=0;this.speech=false;this.update();if(this.ready)this.sendTransmit();this.event({type:'audio_processing',noise:'blocked',actual:this.stream?.getAudioTracks()[0].getSettings?.()});this.event({type:'notice',message:'降噪处理停止，已暂停麦克风发送；频道与收听保持。可在当前频道重新选择降噪方案重试。'});};
+          if(current.warning)this.event({type:'notice',message:current.warning});
+        }
+        this.update();if(this.ready)this.sendTransmit();
+        this.event({type:'audio_processing',noise:node?.mode??'off',voice_only:settings.noise==='rnnoise'&&settings.voiceOnly,actual:this.stream?.getAudioTracks()[0].getSettings?.()});return;
+      }catch{
+        node?.destroy();if(generation!==this.generation)return;if(revision!==this.processingRevision)continue;
+        if(initial){this.processingBlocked=true;gain.gain.value=0;this.update();}
+        this.event({type:'audio_processing',noise:this.processingBlocked?'blocked':this.noiseNode?.mode??'off',actual:this.stream?.getAudioTracks()[0].getSettings?.()});
+        this.event({type:'notice',message:initial?'本地降噪不可用，已暂停麦克风发送；频道与收听保持，可直接切换处理方案重试。':'降噪方案加载失败，保留原处理链；频道与收听保持，可重新选择方案重试。'});return;
+      }
+    }
+  }
+  async configure(settings:AudioSettings){
+    const before=this.settings;this.settings={...defaultAudioSettings,...settings};this.applyAudio();
+    if(this.captureGain&&!this.processingBlocked)this.captureGain.gain.value=this.settings.gain;
+    if(['noise','keyboard','voiceOnly','strength'].some(key=>before[key as keyof AudioSettings]!==this.settings[key as keyof AudioSettings])||this.processingBlocked){
+      this.processingRevision++;
+      if(this.captureGain){if(!this.processingTask){const generation=this.generation;const task=(async()=>{let revision;do{revision=this.processingRevision;await this.refreshProcessing();}while(generation===this.generation&&revision!==this.processingRevision);})();this.processingTask=task;void task.finally(()=>{if(this.processingTask===task)this.processingTask=undefined;});}await this.processingTask;}
+    }
+    const track=this.stream?.getAudioTracks()[0],generation=this.generation;
+    if(track&&(before.echo!==this.settings.echo||before.autoGain!==this.settings.autoGain)){
+      try{await track.applyConstraints({echoCancellation:this.settings.echo,noiseSuppression:false,autoGainControl:this.settings.autoGain});}
+      catch{if(generation===this.generation)this.event({type:'notice',message:'设备暂未接受回声消除或增益设置，保留实际采集状态；频道与收听保持。'});}
+      if(generation===this.generation)this.event({type:'audio_processing',noise:this.processingBlocked?'blocked':this.noiseNode?.mode??'off',voice_only:this.settings.voiceOnly&&!this.processingBlocked,actual:track.getSettings?.()});
+    }
+  }
   outputVolume(value:number){this.settings.volume=Math.max(0,Math.min(1,value));this.applyAudio();}
   setMute(muted:boolean,deafened:boolean){this.muted=muted;this.deafened=deafened;this.update();this.applyAudio();this.send({type:'mute',muted,deafened});}
   volume(client:number,value:number){this.volumes.set(client,value);this.applyAudio();}
@@ -236,5 +269,5 @@ export class Voice {
     this.retryTimer=window.setTimeout(async()=>{this.retryTimer=undefined;try{await this.open();}catch(error){this.event({type:'error',message:error instanceof Error?error.message:'重连失败'});this.event({type:'reconnecting',active:false});}},delay);
   }
   close(){this.away=false;this.awayMessage="";this.confirmedAway={enabled:false,text:""};this.event({type:"away",enabled:false,text:""});window.clearTimeout(this.retryTimer);this.retryTimer=undefined;this.intent=undefined;this.retryCount=0;this.lastChannel=undefined;this.currentChannel=undefined;this.restoreChannel=undefined;this.dispose();}
-  private dispose(){window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  private dispose(){this.processingRevision++;this.processingTask=undefined;this.captureGain=undefined;window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

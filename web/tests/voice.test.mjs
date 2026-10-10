@@ -45,6 +45,54 @@ function browser(microphoneError) {
   };
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
+
+test('AI processing switches live without replacing the connection or microphone track',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+ await env.message({type:'state',own:1,members:[{id:1,channel:9,away:false}],channels:[{id:9}]});
+ const socket=env.sockets[0],track=env.tracks[0],input=env.captured[0],old=env.processors[0];
+ await voice.configure({noise:'rnnoise',keyboard:false,gain:1,voiceOnly:false});
+ assert.equal(env.processors.at(-1).mode,'rnnoise');assert.equal(old.destroyed,true);
+ assert.equal(env.sockets.length,1);assert.equal(socket.readyState,1);assert.equal(env.tracks[0],track);assert.equal(input.stopped,false);
+ await voice.configure({noise:'off',keyboard:false,gain:1});assert.equal(env.processors.at(-1).destroyed,true);
+ await voice.configure({noise:'rnnoise',keyboard:true,gain:.7});assert.equal(env.processors.at(-1).mode,'keyboard');
+ assert.equal(env.sockets.length,1);assert.equal(env.requests(),1);assert.ok(!events.some(e=>e.type==='disconnected'));
+ voice.close();
+});
+
+test('failed live AI replacement keeps the previous processor and current channel',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
+ const old=env.processors[0];globalThis.loadFixtureNoise=async()=>({createNoise:async()=>{throw Error('model unavailable');}});
+ await voice.configure({noise:'rnnoise',keyboard:false,gain:1});
+ assert.equal(old.destroyed,undefined);assert.equal(env.sockets[0].readyState,1);assert.equal(env.requests(),1);
+ assert.ok(events.some(e=>e.type==='notice'&&/保留/.test(e.message)));voice.close();
+});
+
+test('rapid live settings coalesce to the latest scheme, including an immediate off switch',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+ const off=voice.configure({...voice.settings,noise:'off'}),on=voice.configure({...voice.settings,noise:'rnnoise',keyboard:false});await Promise.all([off,on]);
+ assert.equal(voice.noiseNode.mode,'rnnoise');
+ let release;const created=[];globalThis.loadFixtureNoise=async()=>({createNoise:async(_,keyboard)=>{const node={input:{},output:{connect(){}},mode:keyboard?'keyboard':'rnnoise',destroy(){this.destroyed=true;}};created.push(node);if(created.length===1)await new Promise(r=>release=r);return node;}});
+ const first=voice.configure({...voice.settings,keyboard:true});for(let i=0;i<5;i++)await Promise.resolve();
+ const latest=voice.configure({...voice.settings,keyboard:false,strength:.5});release();await Promise.all([first,latest]);
+ assert.equal(created[0].destroyed,true);assert.equal(voice.noiseNode.mode,'rnnoise');assert.equal(env.sockets.length,1);voice.close();
+});
+
+test('late live model load after close is released without resurrecting transmission',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);let release;
+ const node={input:{},output:{connect(){}},mode:'rnnoise',destroy(){this.destroyed=true;}};
+ globalThis.loadFixtureNoise=async()=>({createNoise:()=>new Promise(r=>release=r)});
+ const task=voice.configure({...voice.settings,keyboard:false});for(let i=0;i<5;i++)await Promise.resolve();voice.close();release(node);await task;
+ assert.equal(node.destroyed,true);assert.equal(env.sockets.length,1);assert.equal(voice.noiseNode,undefined);assert.equal(voice.sendTrack,undefined);
+});
+
+test('live gain and echo changes retain the model and mute; stale callbacks cannot reopen capture',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+ const old=voice.noiseNode,callback=old.onspeech;let applied;env.captured[0].applyConstraints=async value=>{applied=value;};
+ voice.setMute(true,false);await voice.configure({...voice.settings,gain:.6,echo:false,autoGain:false});
+ assert.equal(voice.noiseNode,old);assert.equal(voice.captureGain.gain.value,.6);assert.equal(applied.echoCancellation,false);assert.equal(applied.noiseSuppression,false);assert.equal(voice.sendTrack.enabled,false);
+ await voice.configure({...voice.settings,keyboard:false});callback(true);assert.equal(voice.speech,false);assert.equal(voice.sendTrack.enabled,false);
+ voice.close();
+});
 test('AFK pauses both PTT and free speech, preserves mute and restores state after reconnect',async()=>{
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));
   await voice.connect({identity:'fixture'},'',false);
@@ -356,10 +404,10 @@ test('late microphone recovery after disconnect or device change releases the st
     voice.close();
   }
 });
-test('unprocessed microphone recovery replaces only the outgoing sender track',async()=>{
+test('unprocessed microphone recovery preserves the stable outgoing destination track',async()=>{
   const env=browser(),voice=new Voice(()=>{});voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);
   const socket=voice.socket,old=voice.sendTrack;env.captured[0].readyState='ended';env.captured[0].onended();await voice.microphoneTask;
-  assert.equal(voice.socket,socket);assert.notEqual(voice.sendTrack,old);assert.equal(old.stopped,true);assert.equal(voice.sendTrack.enabled,true);voice.close();
+  assert.equal(voice.socket,socket);assert.equal(voice.sendTrack,old);assert.equal(old.stopped,false);assert.equal(env.captured[0].stopped,true);assert.equal(voice.sendTrack.enabled,true);voice.close();
 });
 
 test('capture timeout releases late microphone and permission denial stays paused until explicit recovery',async()=>{

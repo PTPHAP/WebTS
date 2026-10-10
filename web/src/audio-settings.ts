@@ -2,7 +2,7 @@ export type AudioSettings = {noise:'off'|'rnnoise';keyboard:boolean;voiceOnly:bo
 export const defaultAudioSettings:AudioSettings={noise:'rnnoise',keyboard:true,voiceOnly:false,echo:true,autoGain:true,gain:1,volume:1,strength:1,receiveAutoGain:true,ducking:.35,typing:true};
 export function processingLabel(noise:unknown,actual:unknown,voiceOnly=false):string {
   if(noise==='listen')return '仅收听';
-  if(noise==='blocked')return '降噪与发言检测不可用 · 麦克风发送已暂停，请重新连接';
+  if(noise==='blocked')return '降噪与发言检测不可用 · 麦克风发送已暂停，可在当前频道切换方案重试';
   const settings=actual&&typeof actual==='object'?actual as MediaTrackSettings:{};
   const state=(value:unknown)=>value===true?'已启用':value===false?'未启用':'设备未报告';
   const label=noise==='keyboard'?'本地 AI 智能增强 · GTCRN':noise==='rnnoise'?'本地 AI 轻量保真 · RNNoise':'降噪已关闭';

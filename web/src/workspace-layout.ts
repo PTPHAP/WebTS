@@ -1,4 +1,5 @@
 export const panelIds=['channels','chat','members'] as const;
+export const phoneLayoutQuery='(max-width:760px) and (hover:none) and (pointer:coarse)';
 export type PanelId=typeof panelIds[number];
 export type Layout={order:PanelId[];widths:Record<PanelId,number>};
 export const defaultLayout:Layout={order:[...panelIds],widths:{channels:30,chat:48,members:22}};

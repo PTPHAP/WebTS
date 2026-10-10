@@ -324,6 +324,17 @@ async fn friendships_require_acceptance_and_keys_are_immutable_and_signed() {
         .0,
         StatusCode::FORBIDDEN
     );
+    assert_eq!(
+        call(&app, "/friends", None, &b, "", ORIGIN).await.1["friends"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        call(&app, "/friends", None, &a, "", ORIGIN).await.1["friends"][0]["status"],
+        2
+    );
 }
 #[tokio::test]
 async fn expired_objects_burn_ack_and_account_isolation_are_enforced_before_bucket_access() {
@@ -377,6 +388,10 @@ async fn expired_objects_burn_ack_and_account_isolation_are_enforced_before_buck
         StatusCode::NOT_FOUND
     );
     assert_eq!(
+        call(&app, "/friends", None, &b, "", ORIGIN).await.1["unread"],
+        1
+    );
+    assert_eq!(
         call(
             &app,
             &format!("/friends/messages/{mid}/read"),
@@ -422,6 +437,84 @@ async fn expired_objects_burn_ack_and_account_isolation_are_enforced_before_buck
             None,
             &b,
             &lease,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let queued = "d041b157-319f-4bf3-970e-7a04e30bd070";
+    app.db.connection.lock().unwrap().execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn) VALUES(?,?,?,?,?,0,?,1,0)",rusqlite::params![queued,ai,bi,queued,"hash",web_ts::db::now()+3600]).unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(&mut be, device, &lease)),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{ai}/messages"),
+            None,
+            &b,
+            &lease,
+            ORIGIN
+        )
+        .await
+        .1["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let new_lease = "e".repeat(64);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(
+                &mut be,
+                "e041b157-319f-4bf3-970e-7a04e30bd070",
+                &new_lease
+            )),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{ai}/messages"),
+            None,
+            &b,
+            &new_lease,
+            ORIGIN
+        )
+        .await
+        .1["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/messages/{queued}"),
+            None,
+            &b,
+            &new_lease,
             ORIGIN
         )
         .await

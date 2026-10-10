@@ -114,6 +114,12 @@ pub async fn activate(
         if !webts_crypto::Engine::verify(root["ed"].as_str().unwrap_or(""),&body.payload,&body.signature){return Err(Error::bad("一次性公钥的身份签名无效"));}
         // The peer independently verifies this signature against their pinned identity.
         let bundle=json!({"payload":body.payload,"signature":body.signature,"device":body.device}).to_string();
+        let old_device:String=tx.query_row("SELECT device FROM friend_keys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
+        if !old_device.is_empty()&&old_device!=body.device {
+            // A backup-based device lacks old ratchets. Do not deliver late old-device
+            // packets into a new session for the same public identity.
+            tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE sender=? OR recipient=?",params![now(),s.user.id,s.user.id]).map_err(db_error)?;
+        }
         tx.execute("UPDATE friend_keys SET device=?,lease_hash=? WHERE user_id=?",params![body.device,crate::db::digest(&body.lease),s.user.id]).map_err(db_error)?;
         tx.execute("DELETE FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id]).map_err(db_error)?;
         let count:i64=tx.query_row("SELECT count(*) FROM friend_prekeys WHERE user_id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
@@ -195,7 +201,7 @@ pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<V
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let mut statement=db.prepare("SELECT u.id,COALESCE(json_extract(p.data,'$.display_name'),''),k.public_key,f.requester,f.status,f.blocked_by,k.device FROM friendships f JOIN users u ON u.id=CASE WHEN f.lo=? THEN f.hi ELSE f.lo END JOIN friend_keys k ON k.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id WHERE (f.lo=? OR f.hi=?) AND (f.status!=2 OR f.blocked_by=?) AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=? ORDER BY f.status,u.id LIMIT 132").map_err(db_error)?;
         let rows=statement.query_map(params![s.user.id,s.user.id,s.user.id,s.user.id,now()],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,"public_key":r.get::<_,String>(2)?,"requester":r.get::<_,i64>(3)?,"status":r.get::<_,i64>(4)?,"blocked_by":r.get::<_,i64>(5)?,"device":r.get::<_,String>(6)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
-        let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1",params![s.user.id,now()],|r|r.get(0)).map_err(db_error)?;
+        let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
         Ok(Json(json!({"friends":rows,"unread":unread})))
     }).await
 }

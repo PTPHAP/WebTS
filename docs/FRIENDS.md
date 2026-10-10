@@ -75,3 +75,5 @@ cd web && npm ci && npm test && npm run build
 Windows使用项目本地工具链及 `scripts/build-crypto.ps1`；先安装 wasm-bindgen 0.2.129，或通过 `WEBTS_WASM_BINDGEN` 指定其可执行文件。WASM按需加载，不在进入首页时初始化棘轮。
 
 依据：[Olm/vodozemac](https://github.com/matrix-org/vodozemac)、[标准Olm说明](https://spec.matrix.org/latest/olm-megolm/olm/)、[Olm v2实验边界](https://matrix.org/blog/2026/02/analysis-of-reported-issues-in-vodozemac/)、[AWS生命周期](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html)。
+
+新私信设备从身份备份接管时，与该账号有关的旧临时消息立即过期并尝试删除，避免旧设备的迟到密文进入新会话；需要保留的内容请在切换前自行处理。重新解锁原设备不会清除旧消息。已解密副本不能撤回。

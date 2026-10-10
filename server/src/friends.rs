@@ -380,8 +380,8 @@ pub async fn messages(
 ) -> Api<Json<Value>> {
     app.work(move |a| {
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?; device(&db,&s,&headers)?;accepted(&db,s.user.id,peer)?;
-        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
-        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut query=db.prepare("SELECT seq,id,sender,recipient,created_at,expires,read_at,burn,mode,mode_epoch,burn_seconds FROM friend_messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND ready=1 AND expires>? AND (?=0 OR seq<?) ORDER BY seq DESC LIMIT 30").map_err(db_error)?;
+        let rows=query.query_map(params![s.user.id,peer,peer,s.user.id,now(),page.before,page.before],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"sender":r.get::<_,i64>(2)?,"recipient":r.get::<_,i64>(3)?,"created_at":r.get::<_,i64>(4)?,"expires":r.get::<_,i64>(5)?,"read_at":r.get::<_,Option<i64>>(6)?,"burn":r.get::<_,bool>(7)?,"mode":r.get::<_,String>(8)?,"epoch":r.get::<_,i64>(9)?,"burn_seconds":r.get::<_,Option<i64>>(10)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         Ok(Json(json!({"messages":rows})))
     }).await
 }
@@ -393,6 +393,8 @@ pub struct Send {
     ciphertext: String,
     #[serde(default)]
     burn: bool,
+    #[serde(default)]
+    burn_seconds: Option<i64>,
     #[serde(default = "default_mode")]
     mode: String,
     #[serde(default)]
@@ -407,7 +409,9 @@ pub async fn send(
     Json(mut body): Json<Send>,
 ) -> Api<Json<Value>> {
     let ciphertext = Zeroizing::new(std::mem::take(&mut body.ciphertext));
-    if !uuid(&body.id)
+    if body.burn_seconds.is_some_and(|s| {
+        !body.burn || ![60, 600, 1800, 3600, 43200, 86400, 172800, 345600, 604800].contains(&s)
+    }) || !uuid(&body.id)
         || body.epoch < 0
         || ciphertext.len() > MAX_CIPHERTEXT
         || !matches!(body.mode.as_str(), "e2ee" | "server")
@@ -433,6 +437,7 @@ pub async fn send(
     };
     let check_device = target_device.clone();
     let burn = body.burn;
+    let burn_seconds = body.burn_seconds;
     let mode = body.mode.clone();
     let epoch = body.epoch;
     let validation = ciphertext.clone();
@@ -441,12 +446,16 @@ pub async fn send(
     } else {
         format!("{}:{burn}:{mode}:{epoch}", ciphertext.as_str())
     });
-    let hash = crate::db::digest(&input);
+    let hash = crate::db::digest(&if let Some(seconds) = burn_seconds {
+        Zeroizing::new(format!("{}:burn_seconds:{seconds}", input.as_str()))
+    } else {
+        input
+    });
     let (owner,key,duplicate,storage)=app.work(move |a| {
         let s=current(a,&check_headers)?;let runtime=a.runtime.read().unwrap();
         let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&check_headers)?; accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&mode,epoch)?;
-        if mode=="server" {crate::friend_content::validate(&validation,&a.config.origin(),&id,s.user.id,peer,burn,epoch)?;}
+        if mode=="server" {crate::friend_content::validate(&validation,&a.config.origin(),&id,s.user.id,peer,(burn,burn_seconds),epoch)?;}
         if !storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"管理员尚未启用私有对象存储，私信不会降级为明文"));}
         if mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=check_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备发生变化，请重新建立加密会话"));}}
         let existing:Option<(i64,i64,String,String,bool,i64,i64)>=db.query_row("SELECT sender,recipient,object_key,content_hash,ready,expires,created_at FROM friend_messages WHERE id=?",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(db_error)?;
@@ -458,7 +467,7 @@ pub async fn send(
         if total>=10000||own>=1000||recent>=20{return Err(Error(StatusCode::TOO_MANY_REQUESTS,"临时消息容量或发送频率达到上限"));}
         let key=token()?;
         let days=storage.retention_days.max(1);
-        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,mode,mode_epoch) VALUES(?,?,?,?,?,?,?,0,?,?,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn,mode,epoch]).map_err(db_error)?;
+        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,mode,mode_epoch,burn_seconds) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn,mode,epoch,burn_seconds]).map_err(db_error)?;
         Ok((s.user.id,key,false,storage))
     }).await?;
     if !duplicate {
@@ -564,8 +573,9 @@ pub async fn read(
         let s=current(a,&headers)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;device(&db,&s,&headers)?;
         let peer:Option<i64>=db.query_row("SELECT sender FROM friend_messages WHERE id=? AND recipient=? AND ready=1 AND (expires>? OR (burn=1 AND read_at IS NOT NULL))",params![id,s.user.id,now()],|r|r.get(0)).optional().map_err(db_error)?;
         accepted(&db,s.user.id,peer.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在"))?)?;
-        db.execute("UPDATE friend_messages SET read_at=COALESCE(read_at,?),expires=CASE WHEN burn=1 THEN min(expires,?) ELSE expires END WHERE id=? AND recipient=?",params![now(),now(),id,s.user.id]).map_err(db_error)?;
-        Ok(Json(json!({"message":"已读"})))
+        db.execute("UPDATE friend_messages SET read_at=COALESCE(read_at,?),expires=CASE WHEN burn=1 AND read_at IS NULL THEN min(expires,?+COALESCE(burn_seconds,0)) ELSE expires END WHERE id=? AND recipient=?",params![now(),now(),id,s.user.id]).map_err(db_error)?;
+        let (read_at,expires):(i64,i64)=db.query_row("SELECT read_at,expires FROM friend_messages WHERE id=? AND recipient=?",params![id,s.user.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+        Ok(Json(json!({"message":"已读","read_at":read_at,"expires":expires})))
     }).await
 }
 pub fn start_cleanup(app: Arc<App>) {

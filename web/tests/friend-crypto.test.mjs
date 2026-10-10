@@ -17,6 +17,34 @@ globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result
 async function state(id){const backup=await c.createIdentity(id,phrase);const value=await c.unlockState(backup,undefined,id,backup.publicKey,phrase);return {backup,value,root:JSON.parse(backup.publicKey)};}
 function envelope(id=crypto.randomUUID(),burn=false){return {version:1,site:'https://fixture.example',id,sender:1,recipient:2,expires:Math.floor(Date.now()/1000)+86400,text:'你好 hello 🎧',image:'data:image/jpeg;base64,c2FmZQ==',sticker:'hello',burn};}
 const expected=v=>({site:v.site,id:v.id,sender:v.sender,recipient:v.recipient,burn:v.burn});
+test('selected read-and-burn duration is authenticated in both encryption modes',async()=>{
+  const {a,b}=await pair();
+  for(const seconds of [60,600,1800,3600,43200,86400,172800,345600,604800]){
+    const value={...envelope(undefined,true),burn_seconds:seconds};
+    const context={...expected(value),burn_seconds:seconds};
+    const cipher=await c.sealMessage(value,a.value,b.root.curve,b.value.saved.device);
+    const checkpoint=b.value.engine.save();
+    await assert.rejects(c.openMessage(cipher,b.value,a.root.curve,{...context,burn_seconds:seconds===60?600:60}));
+    b.value.engine.free();b.value.engine=m.Engine.restore(checkpoint);
+    assert.equal((await c.openMessage(cipher,b.value,a.root.curve,context)).burn_seconds,seconds);
+    const server=await c.sealServerMessage(value,2);
+    await assert.rejects(c.openServerMessage(server,2,{...context,burn_seconds:0}));
+    assert.equal((await c.openServerMessage(server,2,context)).burn_seconds,seconds);
+  }
+  for(const seconds of [-1,0,59,61,604801,1.5,'60'])assert.throws(()=>c.validEnvelope({...envelope(undefined,true),burn_seconds:seconds},{...expected(envelope()),burn:true,burn_seconds:seconds}));
+  const plain={...envelope(),burn_seconds:60};assert.throws(()=>c.validEnvelope(plain,{...expected(plain),burn_seconds:60}));
+  a.value.engine.free();b.value.engine.free();
+});
+test('timed burn cache remains encrypted across reload and is pruned at its first read deadline',async()=>{
+  const a=await state(31),now=Date.now(),value={...envelope(undefined,true),sender:31,burn_seconds:600};
+  a.value.saved.cache[value.id]={value,created_at:now/1000,burnAt:now+600000};
+  await c.persist(a.value);const stored=await c.loadLocal('keys','state:31');
+  assert.ok(!JSON.stringify(stored).includes(value.text));
+  const restored=await c.unlockState(a.backup,stored,31,a.backup.publicKey,phrase);
+  assert.equal(restored.saved.cache[value.id].burnAt,now+600000);
+  restored.saved.cache[value.id].burnAt=now-1;await c.persist(restored);assert.equal(restored.saved.cache[value.id],undefined);
+  restored.engine.free();a.value.engine.free();
+});
 test('automatic non-extractable AES-256 device keys restore encrypted state without an extra passphrase',async()=>{
   const identity=await c.createAutomaticIdentity(11);await c.saveLocal('keys','identity:11',identity);
   const deviceKey=await c.loadLocal('keys','device:11');assert.equal(deviceKey.extractable,false);assert.equal(deviceKey.algorithm.length,256);await assert.rejects(crypto.subtle.exportKey('raw',deviceKey));
@@ -108,6 +136,20 @@ test('UI durable outbox retries identical ciphertext without rolling back or dup
 });
 test('UI persists incoming ratchet before failed burn acknowledgement and retries without decrypting twice',async()=>{
  const {a,b}=await pair();const first=envelope();await c.openMessage(await c.sealMessage(first,a.value,b.root.curve,b.value.saved.device),b.value,a.root.curve,expected(first));const v={...envelope(undefined,true),sender:2,recipient:1,text:'burn fixture'};const ciphertext=await c.sealMessage(v,b.value,a.root.curve,a.value.saved.device);const row={seq:1,id:v.id,sender:2,recipient:1,created_at:Date.now()/1000,expires:v.expires,burn:true,read_at:null};let failed=true,acked=false,rows=[];
- const globals={me:{id:1},peer:{id:2,public_key:b.backup.publicKey},trusted:true,engine:{current:a.value},operation:{current:false},alive:{current:true},selectedRef:{current:2},recordsRef:{current:rows},before:0,location:{origin:v.site},openMessage:c.openMessage,persist:c.persist,cryptoModule:c.cryptoModule,refresh:async()=>{},finishOperation(){globals.operation.current=false;},setStatus(){},setRecords(update){rows=update(rows);globals.recordsRef.current=rows;},privateApi:async(state,path)=>{if(path==='/2/messages')return {messages:acked?[]:[row]};if(path===`/messages/${v.id}`)return {ciphertext};assert.equal(path,`/messages/${v.id}/read`);const saved=await c.unlockState(a.backup,await c.loadLocal('keys','state:1'),1,a.backup.publicKey,phrase);assert.deepEqual(saved.saved.readPending,[v.id]);saved.engine.free();if(failed)throw Error('synthetic ACK timeout');acked=true;return {};} };
+ const globals={applyReadReceipt:c.applyReadReceipt,validEnvelope:c.validEnvelope,me:{id:1},peer:{id:2,public_key:b.backup.publicKey},trusted:true,engine:{current:a.value},operation:{current:false},alive:{current:true},selectedRef:{current:2},recordsRef:{current:rows},before:0,location:{origin:v.site},openMessage:c.openMessage,persist:c.persist,cryptoModule:c.cryptoModule,refresh:async()=>{},finishOperation(){globals.operation.current=false;},setStatus(){},setRecords(update){rows=update(rows);globals.recordsRef.current=rows;},privateApi:async(state,path)=>{if(path==='/2/messages')return {messages:acked?[]:[row]};if(path===`/messages/${v.id}`)return {ciphertext};assert.equal(path,`/messages/${v.id}/read`);const saved=await c.unlockState(a.backup,await c.loadLocal('keys','state:1'),1,a.backup.publicKey,phrase);assert.deepEqual(saved.saved.readPending,[v.id]);saved.engine.free();if(failed)throw Error('synthetic ACK timeout');acked=true;return {};} };
  const {receive}=componentFunctions(['receive'],globals);await receive();assert.equal(rows[0].value.text,'burn fixture');assert.deepEqual([...a.value.saved.readPending],[v.id]);assert.equal(a.value.saved.cache[v.id],undefined);failed=false;await receive();assert.equal(acked,true);assert.equal(a.value.saved.readPending.length,0);assert.equal(rows.length,1);assert.equal(rows[0].value.text,'burn fixture');await assert.rejects(c.openMessage(ciphertext,a.value,b.root.curve,expected(v)));a.value.engine.free();b.value.engine.free();
+});
+test('timed burn receipt survives reload without ratchet replay and server metadata cannot extend or change its policy',async()=>{
+ const {a,b}=await pair();const first=envelope();await c.openMessage(await c.sealMessage(first,a.value,b.root.curve,b.value.saved.device),b.value,a.root.curve,expected(first));
+ const v={...envelope(undefined,true),sender:2,recipient:1,text:'timed burn fixture',burn_seconds:600};const ciphertext=await c.sealMessage(v,b.value,a.root.curve,a.value.saved.device);
+ let row={seq:1,id:v.id,sender:2,recipient:1,created_at:Date.now()/1000,expires:v.expires,burn:true,burn_seconds:600,read_at:null},rows=[],downloads=0;
+ const globals={applyReadReceipt:c.applyReadReceipt,validEnvelope:c.validEnvelope,me:{id:1},peer:{id:2,public_key:b.backup.publicKey},trusted:true,engine:{current:a.value},operation:{current:false},alive:{current:true},selectedRef:{current:2},recordsRef:{current:rows},before:0,location:{origin:v.site},openMessage:c.openMessage,persist:c.persist,cryptoModule:c.cryptoModule,refresh:async()=>{},finishOperation(){globals.operation.current=false;},setStatus(){},setRecords(update){rows=update(rows);globals.recordsRef.current=rows;},privateApi:async(_s,path)=>{if(path==='/2/messages')return {messages:[row]};if(path===`/messages/${v.id}`){downloads++;return {ciphertext};}assert.equal(path,`/messages/${v.id}/read`);row={...row,read_at:Math.floor(Date.now()/1000),expires:Math.floor(Date.now()/1000)+600};return {expires:row.expires,read_at:row.read_at};} };
+ const {receive}=componentFunctions(['receive'],globals);await receive();assert.equal(rows[0].value.text,v.text);const deadline=rows[0].burnAt;
+ const restored=await c.unlockState(a.backup,await c.loadLocal('keys','state:1'),1,a.backup.publicKey,phrase);globals.engine.current=restored;rows=[];globals.recordsRef.current=rows;await receive();assert.equal(downloads,1);assert.equal(rows[0].value.text,v.text);assert.equal(rows[0].burnAt,deadline);
+ row={...row,expires:row.expires+10000};await receive();assert.equal(rows[0].burnAt,deadline);
+ row={...row,burn_seconds:604800};await receive();assert.equal(rows[0].value,undefined);assert.match(rows[0].error,/不匹配/);
+ const sent={...envelope(undefined,true),burn_seconds:600};restored.saved.cache[sent.id]={value:sent,created_at:Date.now()/1000};
+ row={seq:2,id:sent.id,sender:1,recipient:2,created_at:Date.now()/1000,expires:Math.floor(Date.now()/1000)+599,burn:true,burn_seconds:600,read_at:Math.floor(Date.now()/1000)};
+ await receive();const reopened=await c.unlockState(a.backup,await c.loadLocal('keys','state:1'),1,a.backup.publicKey,phrase);assert.equal(reopened.saved.cache[sent.id].burnAt,row.expires*1000);reopened.engine.free();
+ restored.engine.free();a.value.engine.free();b.value.engine.free();
 });

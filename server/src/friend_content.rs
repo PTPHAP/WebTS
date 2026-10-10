@@ -39,6 +39,7 @@ struct Envelope {
     image: Option<String>,
     sticker: Option<String>,
     burn: bool,
+    burn_seconds: Option<i64>,
 }
 impl Drop for Envelope {
     fn drop(&mut self) {
@@ -54,6 +55,7 @@ struct Context<'a> {
     sender: i64,
     recipient: i64,
     burn: bool,
+    burn_seconds: Option<i64>,
     epoch: i64,
 }
 pub fn validate(
@@ -62,9 +64,10 @@ pub fn validate(
     id: &str,
     sender: i64,
     recipient: i64,
-    burn: bool,
+    burn_policy: (bool, Option<i64>),
     epoch: i64,
 ) -> Api<()> {
+    let (burn, burn_seconds) = burn_policy;
     validate_at(
         text,
         &Context {
@@ -73,6 +76,7 @@ pub fn validate(
             sender,
             recipient,
             burn,
+            burn_seconds,
             epoch,
         },
         now(),
@@ -85,6 +89,7 @@ fn validate_at(text: &str, expected: &Context<'_>, clock: i64) -> Api<()> {
         sender,
         recipient,
         burn,
+        burn_seconds,
         epoch,
     } = *expected;
     let bad = || Error::bad("服务器可解密消息必须为绑定当前会话的AES-256-GCM密文");
@@ -118,6 +123,10 @@ fn validate_at(text: &str, expected: &Context<'_>, clock: i64) -> Api<()> {
         || value.sender != sender
         || value.recipient != recipient
         || value.burn != burn
+        || value.burn_seconds != burn_seconds
+        || burn_seconds.is_some_and(|s| {
+            !burn || ![60, 600, 1800, 3600, 43200, 86400, 172800, 345600, 604800].contains(&s)
+        })
         || value.expires <= clock
         || value.expires > clock + 31 * 86400
         || value.text.encode_utf16().count() > 4096
@@ -154,6 +163,7 @@ mod tests {
             sender: 1,
             recipient: 2,
             burn: false,
+            burn_seconds: None,
             epoch: 4,
         }
     }
@@ -212,7 +222,10 @@ mod tests {
         let key = STANDARD.decode(p["key"].as_str().unwrap()).unwrap();
         let iv = STANDARD.decode(p["iv"].as_str().unwrap()).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
-        let aad = "webts-server-content-v1:https://fixture.example:a041b157-319f-4bf3-970e-7a04e30bd070:1:2:false:4";
+        let aad = format!(
+            "webts-server-content-v1:https://fixture.example:a041b157-319f-4bf3-970e-7a04e30bd070:1:2:{}:4",
+            value["burn"]
+        );
         let ciphertext = cipher
             .encrypt(
                 Nonce::from_slice(&iv),
@@ -224,6 +237,46 @@ mod tests {
             .unwrap();
         p["content"] = json!(STANDARD.encode(ciphertext));
         p.to_string()
+    }
+    #[test]
+    fn chosen_burn_duration_is_authenticated_and_cannot_be_assigned_to_ordinary_messages() {
+        let f = fixture();
+        let clock = f["clock"].as_i64().unwrap();
+        for seconds in [60, 600, 1800, 3600, 43200, 86400, 172800, 345600, 604800] {
+            let mut value = f["envelope"].clone();
+            value["burn"] = json!(true);
+            value["burn_seconds"] = json!(seconds);
+            let context = Context {
+                burn: true,
+                burn_seconds: Some(seconds),
+                ..expected()
+            };
+            let packet = authenticated_packet(&value);
+            assert!(validate_at(&packet, &context, clock).is_ok());
+            assert!(
+                validate_at(
+                    &packet,
+                    &Context {
+                        burn_seconds: Some(0),
+                        ..context
+                    },
+                    clock
+                )
+                .is_err()
+            );
+            value["burn"] = json!(false);
+            assert!(
+                validate_at(
+                    &authenticated_packet(&value),
+                    &Context {
+                        burn: false,
+                        ..context
+                    },
+                    clock
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn even_authenticated_plaintext_must_match_the_bound_identity_and_size_policy() {

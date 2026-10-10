@@ -127,6 +127,10 @@ impl Db {
         for (column, definition) in [
             ("mode", "TEXT NOT NULL DEFAULT 'e2ee'"),
             ("mode_epoch", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "burn_seconds",
+                "INTEGER CHECK(burn_seconds IN(60,600,1800,3600,43200,86400,172800,345600,604800))",
+            ),
         ] {
             let exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('friend_messages') WHERE name=?)",

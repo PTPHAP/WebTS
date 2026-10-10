@@ -846,6 +846,95 @@ async fn expired_objects_burn_ack_and_account_isolation_are_enforced_before_buck
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn chosen_burn_timer_starts_once_on_recipient_read_and_never_extends_retention() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "timer-alice@example.invalid");
+    let (bi, b) = user(&app, "timer-bob@example.invalid");
+    let ae = webts_crypto::Engine::new();
+    let mut be = webts_crypto::Engine::new();
+    register(&app, &a, &ae).await;
+    register(&app, &b, &be).await;
+    for seconds in [-1, 0, 59, 61, 604801] {
+        let ciphertext=json!({"version":1,"device":"b041b157-319f-4bf3-970e-7a04e30bd070","packet":"opaque","iv":"AQEBAQEBAQEBAQEB","content":"AAAA"}).to_string();
+        assert_eq!(call(&app,"/friends/messages",Some(json!({"peer":bi,"id":"c041b157-319f-4bf3-970e-7a04e30bd070","ciphertext":ciphertext,"burn":true,"burn_seconds":seconds})),&a,"",ORIGIN).await.0,StatusCode::BAD_REQUEST);
+    }
+    let lease = "b".repeat(64);
+    let device = "c041b157-319f-4bf3-970e-7a04e30bd070";
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(&mut be, device, &lease)),
+            &b,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    {
+        let db = app.db.connection.lock().unwrap();
+        db.execute(
+            "INSERT INTO friendships VALUES(?,?,?,1,0,0)",
+            rusqlite::params![ai, bi, ai],
+        )
+        .unwrap();
+    }
+    for seconds in [60, 600, 1800, 3600, 43200, 86400, 172800, 345600, 604800] {
+        let id = format!("{seconds:08x}-319f-4bf3-970e-7a04e30bd070");
+        let cap = web_ts::db::now() + 4000;
+        app.db.connection.lock().unwrap().execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,burn_seconds) VALUES(?,?,?,?,?,0,?,1,1,?)",rusqlite::params![id,ai,bi,id,"hash",cap,seconds]).unwrap();
+        let path = format!("/friends/messages/{id}/read");
+        let (status, ack) = call(&app, &path, Some(json!({})), &b, &lease, ORIGIN).await;
+        assert_eq!(status, StatusCode::OK);
+        let read = ack["read_at"].as_i64().unwrap();
+        assert_eq!(ack["expires"], cap.min(read + seconds));
+        let again = call(&app, &path, Some(json!({})), &b, &lease, ORIGIN)
+            .await
+            .1;
+        assert_eq!(again["read_at"], ack["read_at"]);
+        assert_eq!(again["expires"], ack["expires"]);
+        let list = call(
+            &app,
+            &format!("/friends/{ai}/messages"),
+            None,
+            &b,
+            &lease,
+            ORIGIN,
+        )
+        .await
+        .1;
+        let row = list["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap();
+        assert_eq!(row["burn_seconds"], seconds);
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE friend_messages SET expires=1 WHERE id=?", [&id])
+            .unwrap();
+        assert_eq!(
+            call(
+                &app,
+                &format!("/friends/messages/{id}"),
+                None,
+                &b,
+                &lease,
+                ORIGIN
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
 #[tokio::test]
 async fn removing_requests_does_not_reset_account_rate_limits() {
     let (_root, app) = setup();

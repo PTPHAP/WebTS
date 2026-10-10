@@ -4,11 +4,19 @@ let modulePromise:Promise<EngineModule>|undefined;
 export async function cryptoModule():Promise<EngineModule>{
   modulePromise??=(async()=>{const path='/crypto/webts_crypto.js';const m=await import(/* @vite-ignore */ path) as EngineModule;await m.default();return m;})();return modulePromise;
 }
-export type Envelope={version:1;site:string;id:string;sender:number;recipient:number;expires:number;text:string;image?:string;sticker?:string;burn:boolean};
+export const burnDurations=[[60,'1分钟'],[600,'10分钟'],[1800,'30分钟'],[3600,'1小时'],[43200,'12小时'],[86400,'24小时'],[172800,'2天'],[345600,'4天'],[604800,'7天']] as const;
+export type Envelope={version:1;site:string;id:string;sender:number;recipient:number;expires:number;text:string;image?:string;sticker?:string;burn:boolean;burn_seconds?:number};
+type MessageIdentity=Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'|'burn_seconds'>;
 export type Encrypted={version:1;account:number;kind:'identity'|'state';publicKey:string;salt:string;iv:string;data:string;automatic?:boolean};
-export type Cache={value:Envelope;created_at:number;mode?:'e2ee'|'server';epoch?:number};
-export type Saved={engine:string;device:string;lease:string;previousLease?:string;peerDevices:Record<string,string>;cache:Record<string,Cache>;readPending?:string[];outbox?:{peer:number;id:string;ciphertext:string;burn:boolean;mode?:'e2ee'|'server';epoch?:number}};
+export type Cache={value:Envelope;created_at:number;mode?:'e2ee'|'server';epoch?:number;burnAt?:number};
+export type Saved={engine:string;device:string;lease:string;previousLease?:string;peerDevices:Record<string,string>;cache:Record<string,Cache>;readPending?:string[];outbox?:{peer:number;id:string;ciphertext:string;burn:boolean;burn_seconds?:number;mode?:'e2ee'|'server';epoch?:number}};
 export type Unlocked={engine:RatchetEngine;record:Encrypted;key:CryptoKey;saved:Saved};
+export function applyReadReceipt(cache:Cache|undefined,expires:number):void{
+  if(!cache?.value.burn_seconds)return;
+  if(!Number.isSafeInteger(expires)||expires<=0)throw new Error('已读截止时间无效');
+  cache.value.expires=Math.min(cache.value.expires,expires);
+  cache.burnAt=Math.min(cache.burnAt??Infinity,expires*1000);
+}
 const utf8=new TextEncoder();
 export function b64(bytes:Uint8Array):string{let s='';for(let i=0;i<bytes.length;i+=4096)s+=String.fromCharCode(...bytes.subarray(i,i+4096));return btoa(s);}
 export function unb64(text:string):Uint8Array<ArrayBuffer>{return Uint8Array.from(atob(text),c=>c.charCodeAt(0));}
@@ -60,7 +68,7 @@ export async function unlockState(identity:Encrypted,local:Encrypted|undefined,a
 }
 export async function persist(state:Unlocked):Promise<void>{
   state.saved.engine=state.engine.save();const now=Date.now()/1000;
-  const entries=Object.entries(state.saved.cache).filter(([,v])=>!v.value.burn&&v.value.expires>now).sort((a,b)=>a[1].created_at-b[1].created_at).slice(-60);
+  const entries=Object.entries(state.saved.cache).filter(([,v])=>(!v.value.burn||v.value.burn_seconds!==undefined)&&v.value.expires>now&&(!v.burnAt||v.burnAt>now*1000)).sort((a,b)=>a[1].created_at-b[1].created_at).slice(-60);
   let bytes=0;
   state.saved.cache=Object.fromEntries(entries.reverse().filter(([,v])=>{const size=utf8.encode(JSON.stringify(v)).byteLength;if(bytes+size>2*1024*1024)return false;bytes+=size;return true;}));
   state.record=await protect(state.record,state.key,JSON.stringify(state.saved));await saveLocal('keys',`state:${state.record.account}`,state.record);
@@ -70,8 +78,9 @@ export async function checkPrekey(identity:string,claimed:{key:string;bundle:{pa
   const m=await cryptoModule(),root=JSON.parse(identity),payload=JSON.parse(claimed.bundle.payload);
   if(payload.identity!==identity||!Array.isArray(payload.keys)||!payload.keys.includes(claimed.key)||!m.Engine.verify(root.ed,claimed.bundle.payload,claimed.bundle.signature))throw new Error('对方一次性公钥签名或身份不匹配，已停止发送');return {curve:root.curve,device:claimed.bundle.device};
 }
-export function validEnvelope(value:unknown,expected:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>):Envelope{
+export function validEnvelope(value:unknown,expected:MessageIdentity):Envelope{
   const v=value as Envelope;
+  if(v?.burn_seconds!==expected.burn_seconds||v?.burn_seconds!==undefined&&(!v.burn||!burnDurations.some(([seconds])=>seconds===v.burn_seconds)))throw new Error('阅后即焚时长不匹配');
   if(!v||v.version!==1||v.site!==expected.site||v.id!==expected.id||v.sender!==expected.sender||v.recipient!==expected.recipient||v.burn!==expected.burn||!Number.isSafeInteger(v.expires)||v.expires>Date.now()/1000+31*86400||v.expires<=0||typeof v.text!=='string'||v.text.length>4096||v.image!==undefined&&(typeof v.image!=='string'||v.image.length>170000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(v.image))||v.sticker!==undefined&&(typeof v.sticker!=='string'||v.sticker.length>32))throw new Error('消息身份、有效期或图片格式不匹配');return v;
 }
 const messageContext=(v:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>)=>utf8.encode(`webts-olm-content-v1:${v.site}:${v.id}:${v.sender}:${v.recipient}:${v.burn}`);
@@ -82,7 +91,7 @@ export async function sealMessage(value:Envelope,state:Unlocked,curve:string,dev
   const secret={version:1,site:value.site,id:value.id,sender:value.sender,recipient:value.recipient,burn:value.burn,key:b64(keyBytes),iv:b64(iv),device};keyBytes.fill(0);
   const packet=state.engine.encrypt(curve,JSON.stringify(secret));return JSON.stringify({version:1,device,packet,iv:b64(iv),content:b64(new Uint8Array(data))});
 }
-export async function openMessage(ciphertext:string,state:Unlocked,curve:string,expected:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>):Promise<Envelope>{
+export async function openMessage(ciphertext:string,state:Unlocked,curve:string,expected:MessageIdentity):Promise<Envelope>{
   if(ciphertext.length>384*1024)throw new Error('密文超过安全上限');const outer=JSON.parse(ciphertext);
   if(outer.version!==1||outer.device!==state.saved.device||typeof outer.packet!=='string')throw new Error('消息属于之前的私信设备，当前设备无法读取');
   const secret=JSON.parse(state.engine.decrypt(curve,outer.packet));
@@ -102,7 +111,7 @@ export async function sealServerMessage(value:Envelope,epoch:number):Promise<str
   // This key deliberately reaches the site over HTTPS. This mode is not E2EE.
   return JSON.stringify({version:1,mode:'server',epoch,key:encoded,iv:b64(iv),content:b64(new Uint8Array(data))});
 }
-export async function openServerMessage(ciphertext:string,epoch:number,expected:Pick<Envelope,'site'|'id'|'sender'|'recipient'|'burn'>):Promise<Envelope>{
+export async function openServerMessage(ciphertext:string,epoch:number,expected:MessageIdentity):Promise<Envelope>{
   if(ciphertext.length>384*1024)throw new Error('密文超过安全上限');const outer=JSON.parse(ciphertext);
   if(outer.version!==1||outer.mode!=='server'||outer.epoch!==epoch||typeof outer.key!=='string'||typeof outer.iv!=='string'||typeof outer.content!=='string')throw new Error('服务器可解密消息的模式不匹配');
   const raw=unb64(outer.key),iv=unb64(outer.iv);if(raw.length!==32||iv.length!==12)throw new Error('必须使用AES-256-GCM');

@@ -3,7 +3,23 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 const code=ts.transpileModule(await readFile(new URL('../src/workspace-layout.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
-const {defaultLayout,readLayout,reorderPanels,resizePanels,phoneLayoutQuery}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const {defaultLayout,readLayout,reorderPanels,resizePanels,phoneLayoutQuery,compactLayout,minimumWorkspaceWidth,readPanelOrder}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+
+test('explicit compact or column choice is independent of viewport and mobile order is separate',()=>{
+  for(const phone of [true,false]){
+    assert.equal(compactLayout('columns',phone),false);assert.equal(compactLayout('compact',phone),true);
+    assert.equal(compactLayout(null,phone),phone);
+  }
+  const mobile=readPanelOrder(['members','channels','chat']);assert.deepEqual(mobile,['members','channels','chat']);
+  mobile.pop();assert.deepEqual(defaultLayout.order,['channels','chat','members']);
+  for(const bad of [null,['members','members','chat'],['__proto__','chat','channels'],['chat','channels']])assert.deepEqual(readPanelOrder(bad),defaultLayout.order);
+});
+test('column layout has usable panel widths at every saved proportion without changing order',()=>{
+  for(const layout of [defaultLayout,resizePanels(defaultLayout,0,-1000),resizePanels(defaultLayout,1,1000)]){
+    const width=minimumWorkspaceWidth(layout);
+    assert.ok(width*layout.widths.channels/100>=280);assert.ok(width*layout.widths.chat/100>=360);assert.ok(width*layout.widths.members/100>=240);
+  }
+});
 
 test('narrow mouse-driven desktop windows do not become the phone layout',()=>{
   const matches=(width,hover,pointer)=>String(phoneLayoutQuery)

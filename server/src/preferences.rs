@@ -94,6 +94,12 @@ fn valid(key: &str, v: &Value) -> bool {
                     _ => false,
                 })
         }),
+        "mobileLayout" => v.as_array().is_some_and(|a| {
+            a.len() == 3
+                && ["channels", "chat", "members"]
+                    .iter()
+                    .all(|id| a.iter().filter(|v| v.as_str() == Some(id)).count() == 1)
+        }),
         "layout" => v.as_object().is_some_and(|o| {
             o.len() == 2
                 && o.get("order").and_then(Value::as_array).is_some_and(|a| {
@@ -134,7 +140,7 @@ pub async fn update(
     let Some(patch) = body.patch.as_object() else {
         return Err(Error::bad("偏好格式无效"));
     };
-    if patch.len() > 11
+    if patch.len() > 12
         || body.patch.to_string().len() > 16384
         || patch.iter().any(|(k, v)| !valid(k, v))
     {
@@ -151,6 +157,21 @@ pub async fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mobile_order_contains_only_unique_non_secret_panels() {
+        assert!(valid(
+            "mobileLayout",
+            &json!(["members", "chat", "channels"])
+        ));
+        for bad in [
+            json!(["chat", "chat", "channels"]),
+            json!(["chat", "members", "secret"]),
+            json!(["chat"]),
+            json!({"order":[]} ),
+        ] {
+            assert!(!valid("mobileLayout", &bad));
+        }
+    }
     #[test]
     fn channel_folds_are_non_secret_bounded_server_scoped_preferences() {
         assert!(valid(

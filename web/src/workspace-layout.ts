@@ -3,6 +3,15 @@ export const phoneLayoutQuery='(max-width:760px) and (hover:none) and (pointer:c
 export type PanelId=typeof panelIds[number];
 export type Layout={order:PanelId[];widths:Record<PanelId,number>};
 export const defaultLayout:Layout={order:[...panelIds],widths:{channels:30,chat:48,members:22}};
+export function readPanelOrder(value:unknown):PanelId[] {
+  return Array.isArray(value)&&value.length===3&&new Set(value).size===3&&value.every(id=>panelIds.includes(id))?[...value]:[...panelIds];
+}
+export function compactLayout(saved:unknown,phone:boolean):boolean {
+  return saved==='compact'||(saved!=='columns'&&phone);
+}
+export function minimumWorkspaceWidth(layout:Layout):number {
+  return Math.ceil(Math.max(280/layout.widths.channels,360/layout.widths.chat,240/layout.widths.members)*100);
+}
 export function readLayout(value:unknown):Layout {
   const fallback=()=>({order:[...defaultLayout.order],widths:{...defaultLayout.widths}});
   if(!value||typeof value!=='object')return fallback();

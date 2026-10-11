@@ -6,8 +6,9 @@ export const defaultLayout:Layout={order:[...panelIds],widths:{channels:30,chat:
 export function readPanelOrder(value:unknown):PanelId[] {
   return Array.isArray(value)&&value.length===3&&new Set(value).size===3&&value.every(id=>panelIds.includes(id))?[...value]:[...panelIds];
 }
-export function compactLayout(_saved:unknown,phone:boolean):boolean {
-  return phone;
+export function compactLayout(_saved:unknown,phone:boolean,device?:Pick<Navigator,'userAgent'|'maxTouchPoints'>&{userAgentData?:{mobile?:boolean}}):boolean {
+  const agent=device?.userAgent??'';
+  return phone||device?.userAgentData?.mobile===true||/Android|iPhone|iPad|iPod|Mobile/i.test(agent)||(device?.maxTouchPoints??0)>1&&/Macintosh/i.test(agent);
 }
 export function minimumWorkspaceWidth(layout:Layout):number {
   return Math.ceil(Math.max(280/layout.widths.channels,360/layout.widths.chat,240/layout.widths.members)*100);

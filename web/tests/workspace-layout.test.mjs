@@ -1,9 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import vm from 'node:vm';
 import ts from 'typescript';
 const code=ts.transpileModule(await readFile(new URL('../src/workspace-layout.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 const {defaultLayout,readLayout,reorderPanels,resizePanels,phoneLayoutQuery,compactLayout,minimumWorkspaceWidth,readPanelOrder}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const main=await readFile(new URL('../src/main.tsx',import.meta.url),'utf8');
+const phoneInitializer=main.match(/const\[phone\]=useState\((.*?)\);const scrollClickGuard/)[1];
+function initialPhone(device,pointer=false){
+  return vm.runInNewContext(`(${phoneInitializer})()`,{compactLayout,phoneLayoutQuery,matchMedia:()=>({matches:pointer}),navigator:device});
+}
+
+test('phone browsers remain compact when their pointer query reports desktop capabilities',()=>{
+  for(const device of [
+    {userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',maxTouchPoints:5},
+    {userAgent:'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36',maxTouchPoints:5},
+    {userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15',maxTouchPoints:5},
+    {userAgent:'Mozilla/5.0',maxTouchPoints:0,userAgentData:{mobile:true}},
+  ])assert.equal(initialPhone(device),true,device.userAgent);
+});
+test('desktop browsers and touch laptops retain columns regardless of window size',()=>{
+  for(const device of [
+    {userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',maxTouchPoints:0,userAgentData:{mobile:false}},
+    {userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',maxTouchPoints:10},
+    {userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',maxTouchPoints:0},
+    {userAgent:'Mozilla/5.0 (X11; Linux x86_64)',maxTouchPoints:0},
+  ])assert.equal(initialPhone(device),false,device.userAgent);
+  assert.equal(initialPhone({userAgent:'Mozilla/5.0',maxTouchPoints:5},true),true);
+});
 
 test('phone layout ignores legacy mode overrides and mobile order is separate',()=>{
   for(const phone of [true,false]){

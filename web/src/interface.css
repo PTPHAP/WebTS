@@ -256,15 +256,16 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .context-menu button {border-radius:10px; min-height:38px;}
 
 /* Touch-first devices use pages; desktop windows retain their columns. */
-.app[data-layout=mobile] {height:var(--viewport-height,100dvh); padding-bottom:calc(76px + env(safe-area-inset-bottom));}
-.app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(76px + env(safe-area-inset-bottom));}
+.app[data-layout=mobile] {height:var(--viewport-height,100dvh); padding-bottom:calc(64px + env(safe-area-inset-bottom));}
+.app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(64px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile].public-app {height:auto; padding-bottom:0;}
-.app[data-layout=mobile]>.topbar {height:auto; min-height:54px; padding:6px 10px; gap:6px;}
-.app[data-layout=mobile]:has(.workspace-shell)>.topbar {height:auto; min-height:54px; padding:6px 10px;}
+.app[data-layout=mobile]>.topbar {height:auto; min-height:50px; padding:2px 10px; gap:6px;}
+.app[data-layout=mobile]:has(.workspace-shell)>.topbar {height:auto; min-height:50px; padding:2px 10px;}
 .app[data-layout=mobile] .brand strong {font-size:19px; max-width:160px;}
 .app[data-layout=mobile] .brand-note {display:none;}
 .app[data-layout=mobile] .top-actions {gap:6px;}
-.app[data-layout=mobile] .topbar .icon-button {width:36px; height:36px; min-height:36px; border-radius:11px;}
+.app[data-layout=mobile] .topbar .icon-button {width:44px; height:44px; min-height:44px; border-radius:11px;}
+.app[data-layout=mobile] .topbar .account-button {min-height:44px;}
 .app[data-layout=mobile] .mobile-page-title {display:none;}
 .app[data-layout=mobile] .mobile-page-title small {font-size:9px; letter-spacing:1.3px; margin-bottom:4px;}
 .app[data-layout=mobile] .mobile-page-title strong {font-size:19px;}
@@ -277,17 +278,18 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .workspace-viewport>.workspace {display:flex; min-width:0!important; grid-template-columns:none!important; width:100%;}
 .app[data-layout=mobile] .workspace-pane {display:none; border:0;}
 .app[data-layout=mobile] .mobile-channels .pane-channels,.app[data-layout=mobile] .mobile-chat .pane-chat,.app[data-layout=mobile] .mobile-members .pane-members {display:flex; animation:panel-reveal .24s var(--ease);}
-.app[data-layout=mobile] .workspace-pane>.sidebar {padding:6px 10px; border:0;}
-.app[data-layout=mobile] .channels-panel .server-card {padding:8px 10px; border-radius:12px; margin-bottom:2px; gap:10px;}
+.app[data-layout=mobile] .workspace-pane>.sidebar {padding:4px 10px; border:0;}
+.app[data-layout=mobile] .channels-panel .server-card {padding:6px 10px; min-height:48px; border-radius:12px; margin-bottom:2px; gap:8px;}
 .app[data-layout=mobile] .channels-panel .server-mark {width:32px; height:32px; border-radius:10px;}
 .app[data-layout=mobile] .channels-panel .server-card strong {font-size:14px;}
+.app[data-layout=mobile] .channels-panel .server-card p {margin-top:0; font-size:10px; line-height:1.4;}
 .app[data-layout=mobile] .channels-panel .server-card small {display:none;}
 .app[data-layout=mobile] .channels-panel>.section-label {padding:0 4px; margin:2px 0; min-height:36px;}
 .app[data-layout=mobile] .connection-selectors>summary {padding:8px 4px; min-height:36px;}
 .app[data-layout=mobile] .channels-panel>.connect-area {display:none;}
 .app[data-layout=mobile] .channels-panel:has(.connection-selectors[open])>.connect-area {display:flex;}
 .app[data-layout=mobile] .channels-panel>.channel-list {border:0; border-radius:0; padding:2px; background:transparent; margin-bottom:6px; scrollbar-gutter:auto;}
-.app[data-layout=mobile] .channel-line>.channel {font-size:14px; min-height:46px;}
+.app[data-layout=mobile] .channel-line>.channel {font-size:14px; min-height:44px; margin:0;}
 .app[data-layout=mobile] .member-row {font-size:13px; min-height:44px;}
 .app[data-layout=mobile] .channel-fold,.app[data-layout=mobile] .channel-actions {min-width:40px; min-height:44px;}
 .app[data-layout=mobile] .channel-line {gap:0;}
@@ -296,24 +298,27 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] dialog label.checkbox {min-height:44px; align-items:center;}
 .app[data-layout=mobile] .friend-settings-sheet .secondary {min-height:44px; width:100%;}
 .app[data-layout=mobile] .chat-notice {top:64px; font-size:11px;}
-.app[data-layout=mobile] .mobile-channel-selection {border-radius:14px; padding:10px; margin-top:4px; background:var(--surface);}
+.app[data-layout=mobile] .mobile-channel-selection {border-radius:12px; padding:4px 8px; margin-top:2px; background:var(--surface);}
 .app[data-layout=mobile] .connect-area {margin-top:8px; padding-top:10px;}
 .app[data-layout=mobile] .connect-area>button {min-height:42px;}
-.app[data-layout=mobile] .chat-heading {padding:14px 16px; min-height:72px;}
+.app[data-layout=mobile] .chat-heading {padding:8px 12px; min-height:56px;}
 .app[data-layout=mobile] .chat-heading h1 {font-size:19px; margin-top:0;}
 .app[data-layout=mobile] .chat-tabs {padding:4px 10px; gap:4px; min-height:44px; height:auto; flex-wrap:wrap;}
 .app[data-layout=mobile] .chat-tabs button {font-size:11px; min-height:34px; padding:7px 9px;}
-.app[data-layout=mobile] .messages {padding:16px; gap:18px; scrollbar-gutter:auto;}
-.app[data-layout=mobile] .composer {margin:6px 10px 10px; min-height:50px; padding-left:12px;}
+.app[data-layout=mobile] .messages {padding:10px 12px; gap:10px; scrollbar-gutter:auto;}
+.app[data-layout=mobile] .composer {margin:4px 10px 6px; min-height:50px; padding:3px 4px 3px 10px; gap:6px;}
+.app[data-layout=mobile] .composer>button {width:44px; height:44px; flex-shrink:0;}
+.app[data-layout=mobile] .composer>.sticker-picker>button {width:44px; height:44px;}
 .app[data-layout=mobile] input,.app[data-layout=mobile] select,.app[data-layout=mobile] textarea {font-size:16px;}
-.app[data-layout=mobile] .voice-bar {display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:18px 50px; padding:6px 10px; min-height:84px; gap:4px;}
-.app[data-layout=mobile] .voice-status strong {font-size:11px; max-width:none; line-height:18px;}
-.app[data-layout=mobile] .voice-controls {gap:3px; padding:3px; width:100%; margin:0;}
+.app[data-layout=mobile] .voice-bar {display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:16px 46px; padding:4px 10px; min-height:72px; gap:2px;}
+.app[data-layout=mobile] .voice-status strong {font-size:11px; max-width:none; line-height:16px;}
+.app[data-layout=mobile] .voice-controls {gap:3px; padding:0; width:100%; margin:0;}
 .app[data-layout=mobile] .voice-controls .icon-button {width:44px; height:44px; flex-shrink:0;}
 .app[data-layout=mobile] .voice-controls .ptt {font-size:10px; padding:7px; flex:1; width:0; min-width:0; min-height:44px; max-width:none; margin:0; justify-content:center;}
 .app[data-layout=mobile] .voice-controls .mobile-disconnect {display:inline-flex; color:var(--danger);}
-.app[data-layout=mobile] .mobile-navigation {height:calc(70px + env(safe-area-inset-bottom)); bottom:6px; left:10px; right:10px; padding:5px 6px calc(5px + env(safe-area-inset-bottom)); border:1px solid var(--border); border-radius:22px; background:var(--panel); box-shadow:0 6px 28px #06132718; z-index:20;}
-.app[data-layout=mobile] .mobile-navigation button {min-height:54px; border:0; position:relative; padding:5px 2px; border-radius:16px; gap:4px; color:var(--muted);}
+.app[data-layout=mobile] .mobile-navigation {height:calc(58px + env(safe-area-inset-bottom)); bottom:6px; left:10px; right:10px; padding:5px 6px calc(5px + env(safe-area-inset-bottom)); border:1px solid var(--border); border-radius:18px; background:var(--panel); box-shadow:0 6px 28px #06132718; z-index:20;}
+.app[data-layout=mobile] .mobile-navigation button {min-height:44px; border:0; position:relative; padding:2px; border-radius:12px; gap:2px; color:var(--muted);}
+.app[data-layout=mobile] .mobile-navigation button svg {width:20px; height:20px;}
 .app[data-layout=mobile] .mobile-navigation button.active {background:var(--accent-bg); color:var(--accent);}
 .app[data-layout=mobile] .mobile-navigation button strong {font-size:10px; white-space:nowrap;}
 .app[data-layout=mobile] .mobile-navigation button::before {display:none;}
@@ -326,7 +331,7 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .admin-tabs {padding:4px; gap:3px;}
 .app[data-layout=mobile] .admin-tabs button {font-size:12px; min-height:40px; padding:9px 12px;}
 .app[data-layout=mobile] .friends-mobile-page {margin:0; border:0; border-radius:0; overflow:hidden;}
-.app[data-layout=mobile] .friends-list {padding:12px; gap:10px;}
+.app[data-layout=mobile] .friends-list {padding:8px 10px; gap:6px;}
 .app[data-layout=mobile] .friends-list header small {display:none;}
 .app[data-layout=mobile] .friends-list h2 {font-size:22px;}
 .app[data-layout=mobile] .friend-self {gap:10px;}
@@ -334,22 +339,23 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .friend-tools>summary::after {content:'+'; color:var(--accent); font-size:18px;}
 .app[data-layout=mobile] .friend-tools[open]>summary::after {content:'−';}
 .app[data-layout=mobile] .friend-tools-body {padding:12px 0; gap:12px;}
-.app[data-layout=mobile] .friend-row {padding:10px; min-height:58px;}
-.app[data-layout=mobile] .friend-heading {padding:8px 10px; min-height:60px;}
-.app[data-layout=mobile] .friend-heading small {margin-bottom:3px;}
+.app[data-layout=mobile] .friend-row {padding:6px 10px; min-height:52px;}
+.app[data-layout=mobile] .friend-heading {padding:4px 10px; min-height:52px;}
+.app[data-layout=mobile] .friend-heading small {margin-bottom:1px;}
 .app[data-layout=mobile] .friend-heading h2 {font-size:17px;}
 .app[data-layout=mobile] .friend-location>summary {padding:6px 12px; min-height:32px; font-size:11px;}
 .app[data-layout=mobile] .friend-conversation>[role=alert] {font-size:12px; padding:6px 12px; max-height:64px; overflow:auto; flex-shrink:0;}
 .app[data-layout=mobile] .friend-compose-options {padding:0 10px; gap:6px;}
 .app[data-layout=mobile] .friend-burn-settings>summary {min-height:44px; padding:8px 10px;}
 .app[data-layout=mobile] .friend-burn-sheet {width:calc(100vw - 40px); padding:16px;}
-.app[data-layout=mobile] .friend-composer {margin:6px 10px 10px;}
-.app[data-layout=mobile] .friend-messages {padding:14px; scrollbar-gutter:auto;}
-.app[data-layout=mobile] .friend-message {max-width:92%; padding:12px 14px;}
+.app[data-layout=mobile] .friend-composer {margin:4px 10px 6px;}
+.app[data-layout=mobile] .friend-messages {padding:10px; gap:10px; scrollbar-gutter:auto;}
+.app[data-layout=mobile] .friend-message {max-width:92%; padding:8px 10px;}
 .app[data-layout=mobile] .activity-alert {top:12px; left:12px; right:12px; max-width:calc(100% - 24px);}
-.app[data-layout=mobile] .client-home {padding:20px 16px;}
-.app[data-layout=mobile] .connection-steps section {display:flex; align-items:flex-start; padding:18px;}
-.app[data-layout=mobile] .connection-steps .step-number,.app[data-layout=mobile] .connection-steps h3 {margin-bottom:8px;}
+.app[data-layout=mobile] .client-home {padding:12px; gap:12px;}
+.app[data-layout=mobile] .connection-steps {gap:8px;}
+.app[data-layout=mobile] .connection-steps section {display:flex; align-items:flex-start; padding:12px;}
+.app[data-layout=mobile] .connection-steps .step-number,.app[data-layout=mobile] .connection-steps h3 {margin-bottom:4px;}
 .app[data-layout=mobile] .workspace-guide p {grid-template-columns:20px 76px minmax(0,1fr); font-size:11px;}
 .app[data-layout=desktop] .mobile-navigation,.app[data-layout=desktop] .mobile-page-title {display:none;}
 .app[data-layout=desktop] .topbar {min-width:0;}
@@ -423,10 +429,11 @@ dialog[open],.friends-panel {animation:surface-reveal .3s var(--ease);}
   .layout-toolbar {min-height:38px; padding-top:4px; padding-bottom:4px;}
   .workspace-jump {display:none;}
   .app[data-layout=mobile] .mobile-page-title {display:none;}
-  .app[data-layout=mobile] .chat-heading {min-height:48px; padding:8px 12px;}
+  .app[data-layout=mobile] .chat-heading {min-height:44px; padding:4px 12px;}
   .app[data-layout=mobile] .chat-heading p {display:none;}
+  .app[data-layout=mobile] .messages {padding:4px 12px;}
   .app[data-layout=mobile] .mobile-navigation {height:calc(56px + env(safe-area-inset-bottom));}
-  .app[data-layout=mobile] .mobile-navigation button {min-height:40px;}
+  .app[data-layout=mobile] .mobile-navigation button {min-height:44px;}
   .app[data-layout=mobile] .mobile-navigation button span {display:none;}
   .app[data-layout=mobile] {padding-bottom:calc(62px + env(safe-area-inset-bottom));}
   .app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(62px + env(safe-area-inset-bottom));}

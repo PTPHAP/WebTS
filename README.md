@@ -29,13 +29,13 @@ WebTS 是独立开源的 **TeamSpeak 网页客户端与协议网关**。成员�
 <details>
 <summary>查看手机频道与站点首页</summary>
 
-<p align="center"><img src="docs/images/webts-mobile.png" width="320" alt="WebTS 1.0.6 手机频道列表与语音控制" /></p>
+<p align="center"><img src="docs/images/webts-mobile.png" width="320" alt="WebTS 当前源码的手机紧凑频道列表与语音控制" /></p>
 
 ![WebTS 1.0.6 可自定义站点首页](docs/images/webts-home.png)
 
 </details>
 
-<sub>桌面和手机截图使用 1.0.6 的真实界面与合成演示数据；首页展示已部署站点的公开页面。站名、图标和公告可自定义；界面截图不代表协议、语音或加密验收。</sub>
+<sub>桌面截图使用 1.0.6，手机截图使用当前源码的紧凑布局，两者均为真实界面与合成演示数据；首页展示已部署站点的公开页面。手机新布局尚未包含在 1.0.6 安装包中。站名、图标和公告可自定义；界面截图不代表协议、语音或加密验收。</sub>
 
 ## 一条命令开始
 

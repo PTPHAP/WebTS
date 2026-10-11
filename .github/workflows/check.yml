@@ -11,6 +11,7 @@ permissions:
   contents: read
 jobs:
   dependencies:
+    if: github.event_name != 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -20,6 +21,7 @@ jobs:
       - name: Check public dependency advisories (fail closed)
         run: python3 scripts/audit-dependencies.py
   rust:
+    if: github.event_name != 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -79,6 +81,7 @@ jobs:
           if-no-files-found: error
           path: web/dist
   docker:
+    if: github.event_name != 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -128,6 +131,7 @@ jobs:
             .cache/webts-*-docker-linux-x64.tar.gz
             .cache/SHA256SUMS_DOCKER
   windows:
+    if: github.event_name != 'release'
     needs: rust
     runs-on: windows-2025
     timeout-minutes: 45
@@ -169,7 +173,6 @@ jobs:
             .cache/windows-release/SHA256SUMS_WINDOWS
   release-assets:
     if: github.event_name == 'release'
-    needs: [dependencies, rust, docker, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -178,8 +181,23 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Require successful checks for this exact release commit
+        id: verified-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          run_id=$(gh run list --workflow check.yml --branch main --event push --status success --limit 30 --json headSha,databaseId --jq ".[] | select(.headSha == \"$sha\") | .databaseId" | head -n 1)
+          test -n "$run_id"
+          mkdir -p .cache
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" > .cache/verified-jobs.json
+          python3 -c 'import json; jobs=json.load(open(".cache/verified-jobs.json"))["jobs"]; expected={"dependencies","rust","docker","windows"}; selected=[j for j in jobs if j["name"] in expected]; assert len(selected)==4 and {j["name"] for j in selected}==expected and all(j["conclusion"]=="success" for j in selected)'
+          echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.verified-run.outputs.run-id }}
           pattern: webts-release-*
           path: .cache/release-assets
           merge-multiple: true

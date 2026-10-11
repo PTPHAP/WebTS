@@ -9,7 +9,7 @@ export const imageLimitFields:{key:keyof ImageLimits;label:string;min:number;max
   {key:'channel_requests',label:'每个连接每10秒最多读取频道图片数',min:1,max:32},
   {key:'avatar_download_kib',label:'TS 成员头像原文件大小（KiB）',min:16,max:512},
   {key:'avatar_upload_kib',label:'保存与上传头像大小（KiB）',min:8,max:128},
-  {key:'avatar_dimension',label:'头像解码最大边长（px）',min:96,max:1024},
+  {key:'avatar_dimension',label:'上传头像解码最大边长（px）',min:96,max:1024},
   {key:'avatar_source_mib',label:'本地裁剪前头像原文件大小（MiB）',min:1,max:8},
 ];
 export function readImageLimits(value:unknown):ImageLimits {

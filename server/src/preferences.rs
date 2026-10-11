@@ -24,6 +24,29 @@ fn valid(key: &str, v: &Value) -> bool {
         "theme" => matches!(v.as_str(), Some("light" | "dark")),
         "mode" => matches!(v.as_str(), Some("open" | "ptt")),
         "friendsDisplay" => matches!(v.as_str(), Some("floating" | "docked")),
+        "channelFolds" => v.as_object().is_some_and(|servers| {
+            servers.len() <= 4
+                && servers.iter().all(|(uid, ids)| {
+                    !uid.is_empty()
+                        && uid.len() <= 64
+                        && uid
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b))
+                        && ids.as_array().is_some_and(|ids| {
+                            ids.len() <= 128
+                                && ids.iter().all(|id| {
+                                    id.as_u64()
+                                        .is_some_and(|id| (1..=9_007_199_254_740_991).contains(&id))
+                                })
+                                && ids
+                                    .iter()
+                                    .filter_map(Value::as_u64)
+                                    .collect::<std::collections::HashSet<_>>()
+                                    .len()
+                                    == ids.len()
+                        })
+                })
+        }),
         "pttKey" => v.as_str().is_some_and(|s| {
             s.len() <= 12
                 && (s
@@ -111,8 +134,8 @@ pub async fn update(
     let Some(patch) = body.patch.as_object() else {
         return Err(Error::bad("偏好格式无效"));
     };
-    if patch.len() > 10
-        || body.patch.to_string().len() > 4096
+    if patch.len() > 11
+        || body.patch.to_string().len() > 16384
         || patch.iter().any(|(k, v)| !valid(k, v))
     {
         return Err(Error::bad("偏好包含无效值或不允许同步的数据"));
@@ -123,4 +146,32 @@ pub async fn update(
         if !(body.initialize&&old.is_some()){for (k,v) in body.patch.as_object().unwrap(){data[k]=v.clone();}tx.execute("INSERT INTO account_preferences(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",params![s.user.id,data.to_string()]).map_err(anyhow::Error::from)?;}
         tx.commit().map_err(anyhow::Error::from)?;Ok(Json(json!({"account":s.user.id,"initialized":true,"preferences":data})))
     }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn channel_folds_are_non_secret_bounded_server_scoped_preferences() {
+        assert!(valid(
+            "channelFolds",
+            &json!({"serverA":[1,2,3],"serverB":[1]})
+        ));
+        for bad in [
+            json!({"serverA":[1,1]}),
+            json!({"serverA":[0]}),
+            json!({"serverA":[-1]}),
+            json!({"serverA":[1.5]}),
+            json!({"serverA":[9007199254740992u64]}),
+            json!({"serverA":["secret"]}),
+            json!({"http://host":[1]}),
+            json!({"serverA":vec![1u64;129]}),
+        ] {
+            assert!(!valid("channelFolds", &bad));
+        }
+        assert!(!valid(
+            "channelFolds",
+            &json!({"a":[],"b":[],"c":[],"d":[],"e":[]})
+        ));
+    }
 }

@@ -11,7 +11,7 @@ let channelSiblings;
 try{const source=await readFile(new URL('../src/channel-order.ts',import.meta.url),'utf8');const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;({channelSiblings}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`));}catch(e){if(e.code!=='ENOENT')throw e;}
 const spacerSource=await readFile(new URL('../src/ts-text.ts',import.meta.url),'utf8');
 const {channelSpacer}=await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(spacerSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64')}`);
-function render(channels,parent=0){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members:[]},own:{},inspectedChannel:undefined,Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children})});}
+function render(channels,parent=0,folded=[],members=[],extra={}){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members},own:{},inspectedChannel:undefined,selected:undefined,avatars:{},speaking:{},Avatar:()=>{},foldScope:'serverA',foldedChannels:new Set(folded),Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children}),...extra});}
 const channels=[{id:10,parent:0,order:30},{id:20,parent:0,order:10},{id:30,parent:0,order:0},{id:4,parent:30,order:90},{id:90,parent:30,order:0}];
 test('actual channel tree follows predecessor IDs instead of numeric order',()=>{assert.deepEqual(Array.from(render(channels),n=>n.props.key),[30,10,20]);});
 test('nested siblings keep their own TS order and follow live repositioning',()=>{
@@ -22,4 +22,23 @@ test('nested siblings keep their own TS order and follow live repositioning',()=
 test('missing predecessors or cycles never hide channels or loop forever',()=>{
   const broken=[{id:7,parent:0,order:99},{id:2,parent:0,order:7},{id:3,parent:0,order:4},{id:4,parent:0,order:3}];
   const result=Array.from(render(broken),n=>n.props.key);assert.equal(result.length,4);assert.equal(new Set(result).size,4);assert.deepEqual(result.slice(0,2),[7,2]);
+});
+function buttons(nodes){const out=[];function visit(n){if(Array.isArray(n))return n.forEach(visit);if(!n||typeof n!=='object')return;if(n.tag==='button')out.push(n);n.children?.forEach(visit);}visit(nodes);return out;}
+test('folding a channel hides both its members and descendants while leaving siblings usable',()=>{
+  const members=[{id:1,channel:30,name:'Native member'}];
+  const open=buttons(render(channels,0,[],members));
+  const closed=buttons(render(channels,0,[30],members));
+  assert.ok(open.some(n=>n.props.className.includes('member-row')));
+  assert.equal(closed.filter(n=>n.props.className.includes('member-row')).length,0);
+  assert.equal(closed.filter(n=>n.props.className.split(' ').includes('channel')).length,3);
+  const toggle=closed.find(n=>n.props.className==='channel-fold');
+  assert.equal(toggle.props['aria-expanded'],false);
+});
+
+test('phone channel selection stays in the tree and fold button never joins a channel',()=>{
+  const calls=[];
+  const controls=buttons(render(channels,0,[],[],{phone:true,setServerOverview:()=>{},setInspectedChannel:id=>calls.push(['preview',id]),setSelected:()=>{},voice:{current:{send:()=>{}}},setMobile:()=>assert.fail('phone preview must not replace the tree'),toggleChannel:id=>calls.push(['fold',id]),move:()=>assert.fail('a fold must not join a channel')}));
+  controls.find(n=>n.props.className.split(' ').includes('channel')).props.onClick();
+  controls.find(n=>n.props.className==='channel-fold').props.onClick();
+  assert.deepEqual(calls,[['preview',30],['fold',30]]);
 });

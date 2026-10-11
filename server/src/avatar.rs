@@ -1,10 +1,7 @@
-use crate::{
-    app::{App, Error},
-    settings::ImageLimits,
-};
+use crate::{app::App, settings::ImageLimits};
 use anyhow::{Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::{ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use md5::{Digest, Md5};
 use std::{
     collections::HashMap,
@@ -110,7 +107,7 @@ impl Avatars {
             bail!("头像超过站点限制（{}KiB）", limits.avatar_upload_kib);
         }
         self.tasks.spawn(async move {
-            Completed::UploadReady(request, normalize(&app, bytes, limits).await)
+            Completed::UploadReady(request, normalize(&app, bytes, limits, false).await)
         });
         Ok(())
     }
@@ -145,7 +142,7 @@ impl Avatars {
                     if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(&target.hash) {
                         bail!("头像版本已变化，请重新加载");
                     }
-                    normalize(&app, bytes, limits).await
+                    normalize(&app, bytes, limits, true).await
                 };
                 let result = tokio::time::timeout(Duration::from_secs(5), data)
                     .await
@@ -204,51 +201,90 @@ fn failure(pending: Pending, message: &'static str) -> Completed {
         }
     }
 }
-async fn normalize(app: &Arc<App>, bytes: Vec<u8>, limits: ImageLimits) -> Result<Vec<u8>> {
-    app.expensive(move |_| {
-        sanitize_with_limits(&bytes, limits)
-            .map_err(|_| Error::bad("头像格式、尺寸或体积不符合站点图片限制"))
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!(e.1))
+async fn normalize(
+    app: &Arc<App>,
+    bytes: Vec<u8>,
+    limits: ImageLimits,
+    native: bool,
+) -> Result<Vec<u8>> {
+    app.expensive(move |_| Ok(sanitize_image(&bytes, limits, native)))
+        .await
+        .map_err(|e| anyhow::anyhow!(e.1))?
 }
 pub fn sanitize(bytes: &[u8]) -> Result<Vec<u8>> {
     sanitize_with_limits(bytes, ImageLimits::default())
 }
 pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>> {
+    sanitize_image(bytes, limits, false)
+}
+fn sanitize_image(bytes: &[u8], limits: ImageLimits, native: bool) -> Result<Vec<u8>> {
     limits.validate()?;
     if bytes.is_empty()
         || bytes.len() > limits.avatar_download_kib.max(limits.avatar_upload_kib) as usize * 1024
     {
-        bail!("invalid avatar size");
+        bail!("头像为空或超过站点文件体积限制");
     }
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     if !matches!(
         reader.format(),
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP)
     ) {
-        bail!("unsupported avatar format");
+        bail!("头像格式不支持，仅接受 PNG、JPEG、GIF、WebP");
     }
     let mut decode_limits = Limits::default();
-    decode_limits.max_image_width = Some(limits.avatar_dimension);
-    decode_limits.max_image_height = Some(limits.avatar_dimension);
-    decode_limits.max_alloc = Some(16 * 1024 * 1024);
-    reader.limits(decode_limits);
-    let image = reader.decode()?;
-    for size in [256, 128, 96] {
+    let source_dimension = if native {
+        4096
+    } else {
+        limits.avatar_dimension
+    };
+    let allocation = if native {
+        32 * 1024 * 1024
+    } else {
+        16 * 1024 * 1024
+    };
+    decode_limits.max_image_width = Some(source_dimension);
+    decode_limits.max_image_height = Some(source_dimension);
+    decode_limits.max_alloc = Some(allocation);
+    reader.limits(decode_limits.clone());
+    let mut decoder = reader.into_decoder().map_err(avatar_decode_error)?;
+    let (width, height) = decoder.dimensions();
+    if width == 0
+        || height == 0
+        || u64::from(width) * u64::from(height) > 8_000_000
+        || decoder.total_bytes() > allocation
+    {
+        bail!("头像解码资源超限：原图最多 800 万像素，需使用较小图片");
+    }
+    // Match ImageReader::decode: reserve the output buffer before assigning decoder scratch space.
+    decode_limits
+        .reserve(decoder.total_bytes())
+        .map_err(avatar_decode_error)?;
+    decoder
+        .set_limits(decode_limits)
+        .map_err(avatar_decode_error)?;
+    let image = DynamicImage::from_decoder(decoder).map_err(avatar_decode_error)?;
+    for size in [256, 128, 96, 64, 48, 32] {
         let size = size
             .min(limits.avatar_dimension)
             .min(image.width().max(image.height()));
         let mut output = Cursor::new(Vec::new());
         image
             .thumbnail(size, size)
-            .write_to(&mut output, ImageFormat::Png)?;
+            .write_to(&mut output, ImageFormat::Png)
+            .map_err(|_| anyhow::anyhow!("头像转换失败，请使用其他图片"))?;
         let output = output.into_inner();
         if output.len() <= limits.avatar_upload_kib as usize * 1024 {
             return Ok(output);
         }
     }
-    bail!("avatar cannot fit size limit")
+    bail!("头像压缩后仍超过站点保存体积限制")
+}
+fn avatar_decode_error(error: image::ImageError) -> anyhow::Error {
+    if matches!(error, image::ImageError::Limits(_)) {
+        anyhow::anyhow!("头像解码尺寸或内存超限，请使用较小图片")
+    } else {
+        anyhow::anyhow!("头像无法解码：图片损坏或格式不受支持")
+    }
 }
 
 #[cfg(test)]
@@ -256,68 +292,79 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn in_flight_avatar_uses_request_policy_after_hot_reload() {
-        let directory = tempfile::tempdir().unwrap();
-        let key = directory.path().join("master.key");
-        std::fs::write(&key, hex::encode([42; 32])).unwrap();
-        let config: crate::config::Config =
-            toml::from_str(include_str!("../../config.example.toml")).unwrap();
-        let app = App::new(crate::config::Config {
-            database: directory.path().join("db").to_string_lossy().into_owned(),
-            master_key_file: key.to_string_lossy().into_owned(),
-            ..config
-        })
-        .unwrap();
-        let limits = ImageLimits {
-            avatar_dimension: 1024,
-            ..Default::default()
-        };
-        let image = image::RgbImage::from_pixel(700, 1, image::Rgb([30, 70, 120]));
-        let mut encoded = Cursor::new(Vec::new());
-        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
-        let bytes = encoded.into_inner();
-        let mut avatars = Avatars::default();
-        avatars.pending.insert(
-            1,
-            (
-                Pending::Download {
-                    target: Target {
-                        client: 1,
-                        uid: "fixture".into(),
-                        hash: format!("{:x}", Md5::digest(&bytes)),
-                    },
-                    limits,
-                },
-                Instant::now(),
-            ),
-        );
-        app.runtime.write().unwrap().settings.image_limits = ImageLimits::default();
-        assert!(
-            sanitize_with_limits(&bytes, app.runtime.read().unwrap().settings.image_limits)
-                .is_err()
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let sender = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
-            .await
-            .unwrap();
-        let (receiver, _) = listener.accept().await.unwrap();
-        let size = bytes.len() as u64;
-        let writer = tokio::spawn(async move {
-            let mut sender = sender;
-            sender.write_all(&bytes).await.unwrap();
-        });
-        avatars.downloaded(
-            1,
-            FileDownloadResult {
-                size,
-                stream: receiver,
+        for limits in [
+            ImageLimits {
+                avatar_dimension: 1024,
+                ..Default::default()
             },
-            app,
-        );
-        match avatars.tasks.join_next().await.unwrap().unwrap() {
-            Completed::Download(_, result) => assert!(result.unwrap().starts_with(b"\x89PNG")),
-            _ => panic!("expected avatar download"),
+            ImageLimits::default(),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let key = directory.path().join("master.key");
+            std::fs::write(&key, hex::encode([42; 32])).unwrap();
+            let config: crate::config::Config =
+                toml::from_str(include_str!("../../config.example.toml")).unwrap();
+            let app = App::new(crate::config::Config {
+                database: directory.path().join("db").to_string_lossy().into_owned(),
+                master_key_file: key.to_string_lossy().into_owned(),
+                ..config
+            })
+            .unwrap();
+            let image = image::RgbImage::from_pixel(1024, 1024, image::Rgb([30, 70, 120]));
+            let mut encoded = Cursor::new(Vec::new());
+            image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+            let bytes = encoded.into_inner();
+            let mut avatars = Avatars::default();
+            avatars.pending.insert(
+                1,
+                (
+                    Pending::Download {
+                        target: Target {
+                            client: 1,
+                            uid: "fixture".into(),
+                            hash: format!("{:x}", Md5::digest(&bytes)),
+                        },
+                        limits,
+                    },
+                    Instant::now(),
+                ),
+            );
+            app.runtime.write().unwrap().settings.image_limits = ImageLimits::default();
+            assert!(
+                sanitize_with_limits(&bytes, app.runtime.read().unwrap().settings.image_limits)
+                    .is_err()
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let sender = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (receiver, _) = listener.accept().await.unwrap();
+            let size = bytes.len() as u64;
+            let writer = tokio::spawn(async move {
+                let mut sender = sender;
+                sender.write_all(&bytes).await.unwrap();
+            });
+            avatars.downloaded(
+                1,
+                FileDownloadResult {
+                    size,
+                    stream: receiver,
+                },
+                app,
+            );
+            match avatars.tasks.join_next().await.unwrap().unwrap() {
+                Completed::Download(_, result) => {
+                    let png = result.expect(
+                        "a native avatar must be safely resized before applying display dimensions",
+                    );
+                    let decoded = image::load_from_memory(&png).unwrap();
+                    assert_eq!((decoded.width(), decoded.height()), (256, 256));
+                    assert!(png.len() <= limits.avatar_upload_kib as usize * 1024);
+                }
+                _ => panic!("expected avatar download"),
+            }
+            writer.await.unwrap();
         }
-        writer.await.unwrap();
     }
     #[test]
     fn configurable_avatar_dimensions_preserve_reencoding_and_hard_caps() {
@@ -385,5 +432,71 @@ mod tests {
         let decoded = image::load_from_memory(&normalized).unwrap();
         assert_eq!(decoded.width(), 256);
         assert_eq!(decoded.height(), 256);
+    }
+    #[test]
+    fn native_large_formats_and_small_output_budget_remain_bounded() {
+        let image = image::RgbImage::from_pixel(1024, 1024, image::Rgb([30, 70, 120]));
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Gif,
+            ImageFormat::WebP,
+        ] {
+            let mut encoded = Cursor::new(Vec::new());
+            image.write_to(&mut encoded, format).unwrap();
+            let png = sanitize_image(encoded.get_ref(), ImageLimits::default(), true).unwrap();
+            let decoded = image::load_from_memory(&png).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (256, 256));
+            assert!(png.len() <= MAX_UPLOAD);
+        }
+        let noise = image::RgbImage::from_fn(128, 128, |x, y| {
+            let n = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663);
+            image::Rgb([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        noise.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        let png = sanitize_image(
+            encoded.get_ref(),
+            ImageLimits {
+                avatar_upload_kib: 8,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert!(png.len() <= 8192);
+    }
+    #[test]
+    fn native_compatibility_does_not_bypass_resource_or_content_limits() {
+        use image::ImageEncoder;
+        let limits = ImageLimits::default();
+        assert!(sanitize_image(b"<svg onload='alert(1)'/>", limits, true).is_err());
+        assert!(sanitize_image(&vec![0; MAX_DOWNLOAD + 1], limits, true).is_err());
+        assert!(sanitize_image(b"\x89PNG\r\n\x1a\ninvalid", limits, true).is_err());
+        for (width, height) in [(4097, 1), (2900, 2900)] {
+            let image = image::RgbImage::from_pixel(width, height, image::Rgb([30, 70, 120]));
+            let mut encoded = Cursor::new(Vec::new());
+            image::codecs::png::PngEncoder::new_with_quality(
+                &mut encoded,
+                image::codecs::png::CompressionType::Best,
+                image::codecs::png::FilterType::Adaptive,
+            )
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+            assert!(encoded.get_ref().len() <= MAX_DOWNLOAD);
+            let error = sanitize_image(encoded.get_ref(), limits, true)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("解码"), "unexpected rejection: {error}");
+        }
+        let image = image::RgbImage::from_pixel(1024, 1024, image::Rgb([30, 70, 120]));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        assert!(sanitize_with_limits(encoded.get_ref(), limits).is_err());
     }
 }

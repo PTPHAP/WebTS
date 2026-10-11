@@ -14,3 +14,12 @@ test('fold history is bounded even after many servers and channels',()=>{
   assert.equal(Object.keys(value).length,4);
   for(const ids of Object.values(value)){assert.equal(ids.length,128);assert.equal(new Set(ids).size,128);assert.equal(ids.at(-1),300);}
 });
+
+test('server names resembling object properties cannot inherit arrays or alter object prototypes',()=>{
+  for(const server of ['constructor','toString','__proto__']){
+    const next=toggleChannelFold({},server,1);
+    assert.equal(Object.hasOwn(next,server),true);assert.deepEqual(next[server],[1]);
+    assert.deepEqual(toggleChannelFold(next,server,1),{});
+    assert.equal(Object.getPrototypeOf(next),Object.prototype);
+  }
+});

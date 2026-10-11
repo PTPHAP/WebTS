@@ -4,6 +4,8 @@
 
 自动安装支持 **Debian 12、Ubuntu 24.04 的 Linux 服务器**。在服务器 SSH/控制台的 root 终端执行：
 
+这是 **Docker Compose 部署的中文引导入口**；Windows 原生运行包请看 [Windows 一键下载与初始化](WINDOWS.md)，已有 Docker 可选 [预构建镜像安装](DOCKER.md)。
+
 ```bash
 apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
@@ -82,4 +84,4 @@ QQ 邮箱常用 `smtp.qq.com`、`465`，使用邮箱设置生成的 SMTP 授权�
 
 ## 更新版本选择
 
-`webts update` 默认选择最新正式版本。测试环境可显式设置 `WEBTS_REF=main`；固定版本可用 `WEBTS_REF=v1.0.5` 或完整40位提交哈希。GitHub版本查询失败时保留现有安装；先备份数据库和主密钥，在独立环境验证兼容性后更新正式站点。
+`webts update` 默认选择最新正式版本。测试环境可显式设置 `WEBTS_REF=main`；固定版本可用 `WEBTS_REF=v1.0.6` 或完整40位提交哈希。GitHub版本查询失败时保留现有安装；先备份数据库和主密钥，在独立环境验证兼容性后更新正式站点。

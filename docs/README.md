@@ -6,8 +6,8 @@
 | --- | --- |
 | [安装教程](INSTALL.md) | 一条命令、中文引导、证书、邮箱验证、站长开通、`webts` 菜单 |
 | [配置教程](CONFIGURATION.md) | 域名/IP/端口、SMTP、默认 TS、自定义连接、网页后台热加载、TURN |
-| [Docker 安装](DOCKER.md) | 镜像归档、Compose、站长权限与更新 |
-| [Windows 安装](WINDOWS.md) | 中文初始化、本机运行、停服备份与人工更新 |
+| [Docker 安装](DOCKER.md) | 一键中文引导、预构建镜像下载与校验、Compose、站长权限与更新 |
+| [Windows 安装](WINDOWS.md) | 一次粘贴下载并校验运行包、中文初始化、HTTPS、停服备份与更新 |
 | [发布验收门槛](RELEASE-GATES.md) | 发布包检查、E2EE 转正式条件与后续顺序 |
 | [部署与维护](DEPLOYMENT.md) | Docker、systemd、构建、反向代理、备份恢复与 Windows 开发 |
 | [支持范围与常见问题](SUPPORT.md) | 平台、浏览器、TS3/TS6、已实现功能与验证边界 |

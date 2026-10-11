@@ -2,7 +2,7 @@
 
 [文档中心](README.md) · [一条命令安装](INSTALL.md) · [配置教程](CONFIGURATION.md) · [隐私政策](../PRIVACY.md)
 
-WebTS 0.1为可启动的预览版。先在独立环境小规模验证，再向社区开放。TS3/TS6原生客户端兼容、真实邮件送达和容量目标需另行验收。
+当前正式核心范围与实验功能见 [支持范围](SUPPORT.md)；安装、长时间语音、恢复和容量按实际部署环境验证。新增 [Docker 安装](DOCKER.md)、[Windows 中文运行工具](WINDOWS.md) 和 [发布门槛](RELEASE-GATES.md) 正在本地验证，运行包以实际发布资产为准。
 
 推荐通过 [一条命令安装与中文 `webts` 管理菜单](INSTALL.md) 完成首次部署、邮箱与站长权限配置。以下保留手动部署方法。
 
@@ -19,12 +19,12 @@ WebTS 0.1为可启动的预览版。先在独立环境小规模验证，再向�
 
 ## Linux构建包
 
-从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载 `webts-1.0.0-linux-x64`。解压ZIP后计算tar包SHA-256，与SHA256SUMS对应行比较；只有构建通过才生成包。
+从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载对应版本的 Linux 资产；新版流程名为 `webts-release-linux`。解压ZIP后计算tar包SHA-256，与附带校验文件对应行比较；新版使用 `SHA256SUMS_LINUX`，旧版使用 `SHA256SUMS`。只有构建通过才生成包。
 
 ```sh
-sha256sum webts-1.0.0-linux-x64.tar.gz
-tar -xzf webts-1.0.0-linux-x64.tar.gz
-cd webts-1.0.0-linux-x64
+sha256sum webts-1.0.6-linux-x64.tar.gz
+tar -xzf webts-1.0.6-linux-x64.tar.gz
+cd webts-1.0.6-linux-x64
 umask 077
 mkdir -p data secrets
 ./web-ts init-key secrets/master.key
@@ -39,7 +39,7 @@ systemd部署：创建专用webts用户，将包放入/opt/webts，给该用户d
 
 ## Docker Compose（Linux）
 
-采用host网络保留UDP候选地址，不适用于Docker Desktop常规Windows网络。已有80/443服务时复用现有HTTPS代理，为新网站单独增加域名规则，避免抢占端口。
+采用 Linux host 网络保留 UDP 候选地址；Docker Desktop 需另行启用并验证，当前只将 Linux 部署纳入容器语音验证范围。已有80/443服务时复用现有HTTPS代理，为新网站单独增加域名规则，避免抢占端口。
 
 旧首个 Release 包已撤下，使用一条命令安装或下方递归克隆源码。不建议使用 GitHub 自动生成的 “Source code” 归档，它不包含协议子模块。构建会应用随仓库补丁，没有预设账号、数据库、部署密钥或真实邮箱配置。
 
@@ -51,7 +51,7 @@ cp deploy/config.production.toml config.local.toml
 # WEBTS_DOMAIN与public_url必须对应；填写真实TS与SMTP。
 sudo install -d -m 700 -o 10001 -g 10001 data secrets
 docker compose build webts
-docker run --rm -v "$PWD/secrets:/app/secrets" webts:1.0.0 init-key /app/secrets/master.key
+docker run --rm -v "$PWD/secrets:/app/secrets" webts:local init-key /app/secrets/master.key
 # 填写SMTP密码文件，让UID10001可读；文件权限0600。
 docker compose up -d webts caddy
 docker compose logs --tail 50 webts
@@ -78,7 +78,7 @@ Caddy自动申请公开HTTPS证书，DNS与80/443必须可达。数据库卷可�
 
 ```sh
 ./web-ts grant-admin config.local.toml owner@example.com
-# Docker：docker compose exec webts /app/web-ts grant-admin /app/config.local.toml owner@example.com
+# Docker：docker compose exec webts /usr/local/bin/web-ts grant-admin /app/config.local.toml owner@example.com
 ```
 
 此命令只提升已验证的现有账号。普通注册不会自动成为管理员，网站角色不会增加 TS 权限。登录后点击顶部“站点管理”，设置 SMTP、服务器列表和默认项，并选择是否允许已登录用户连接自定义公网地址。自定义连接初始关闭；首次账号注册仍需在部署配置中提供 SMTP。
@@ -136,7 +136,7 @@ HTTP仅用于明确允许的localhost开发，且仅监听回环地址。远程�
 
 恢复：停止实例，放回数据库与**原主密钥**，检查部署用户权限，启动后验证测试身份UID与连接。恢复后撤销旧会话或让用户退出全部设备。丢失主密钥不能用账号密码或邮件找回TS私钥。首版暂无在线密钥轮换，禁止生成新密钥替换旧密钥。
 
-升级：停服务、分离备份数据库和密钥，替换程序与web/dist，保留配置、data、secrets。先跑独立账号的登录、身份与通话检查，再开放用户访问。预览版升级前检查版本说明和迁移要求。
+升级：停服务、分离备份数据库和密钥，替换程序与web/dist，保留配置、data、secrets。先跑独立账号的登录、身份与通话检查，再开放用户访问。升级前检查版本说明和迁移要求。
 
 ## 故障排查
 

@@ -44,9 +44,6 @@ label {font-size:13px; gap:8px;}
 /* The header stays inside the viewport; only the multi-column canvas scrolls. */
 .workspace-shell {padding:0 12px 12px; overflow:hidden;}
 .layout-toolbar {background:transparent; border:0; padding:10px 2px; min-height:52px; gap:10px;}
-.layout-mode {display:inline-flex; padding:3px; gap:3px; border:1px solid var(--border); background:var(--surface); border-radius:12px; flex-shrink:0;}
-.layout-mode button {padding:6px 12px; min-height:30px; border-radius:8px; font-size:12px; color:var(--muted);}
-.layout-mode button[aria-pressed=true] {background:var(--panel); color:var(--accent); box-shadow:0 2px 6px #0001;}
 .layout-caption {font-size:11px; flex:1; color:var(--muted);}
 .layout-customize {display:inline-flex; align-items:center; gap:10px; padding:8px 12px; min-height:36px; border:1px solid var(--border); background:var(--panel); border-radius:11px; font-size:12px;}
 .layout-customize[aria-pressed=true] {color:var(--accent); background:var(--accent-bg);}
@@ -114,12 +111,17 @@ label {font-size:13px; gap:8px;}
 .composer:focus-within {border-color:var(--accent);}
 .composer input {font-size:14px;}
 .composer>button {width:38px; height:38px; border-radius:12px;}
-.voice-bar {min-height:78px; padding:14px 18px; background:var(--panel); gap:12px;}
-.voice-status strong {font-size:12px;}
+.voice-bar {min-height:78px; padding:14px 18px; background:var(--panel); gap:12px; flex-wrap:wrap;}
+.voice-status {flex:1 0 160px; overflow:hidden;}
+.voice-status>.avatar {flex-shrink:0;}
+.voice-status strong {font-size:12px; overflow:hidden; text-overflow:ellipsis;}
 .voice-status small {font-size:10px;}
-.voice-controls {gap:5px; padding:4px; background:var(--surface); border-radius:14px;}
+.voice-controls {gap:5px; padding:4px; background:var(--surface); border-radius:14px; flex-shrink:0;}
 .voice-controls .icon-button {height:36px; width:36px; border-radius:10px;}
-.ptt {min-height:36px; border-radius:10px; margin-left:0; padding:8px 10px; font-size:11px; background:var(--panel);}
+.ptt {min-height:36px; width:150px; flex-shrink:0; justify-content:space-between; border-radius:10px; margin-left:0; padding:8px 10px; font-size:11px; background:var(--panel);}
+.ptt-label {min-width:0; overflow:hidden; text-overflow:ellipsis;}
+.ptt kbd {flex-shrink:0; max-width:54px; overflow:hidden; text-overflow:ellipsis;}
+.voice-controls .mobile-disconnect {display:none;}
 .channel-details {border-radius:16px; padding:18px; background:var(--surface); margin-bottom:18px;}
 .channel-details h2 {font-size:17px;}
 .channel-details .ts-text {font-size:12px;}
@@ -199,20 +201,47 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .friend-row small {font-size:11px;}
 .friend-row.active {box-shadow:inset 3px 0 var(--accent);}
 .friend-heading {background:var(--panel);}
+.friend-conversation {position:relative;}
+.friend-chat-settings {position:relative; flex-shrink:0;}
+.friend-chat-settings>summary {list-style:none; display:grid; place-items:center; cursor:pointer; width:40px; height:40px; border-radius:12px; font-size:23px; color:var(--muted);}
+.friend-chat-settings>summary::-webkit-details-marker {display:none;}
+.friend-chat-settings>summary:hover,.friend-chat-settings[open]>summary {background:var(--accent-bg); color:var(--accent);}
+.friend-chat-settings>summary:focus-visible {outline:2px solid var(--accent); outline-offset:2px;}
+.friend-settings-sheet {position:absolute; z-index:12; right:0; top:48px; width:min(350px,calc(100vw - 56px)); max-height:48dvh; overflow:auto; padding:12px; border:1px solid var(--border); border-radius:18px; background:var(--panel); box-shadow:var(--shadow); animation:surface-reveal .16s ease-out;}
+.friend-settings-sheet>header,.friend-settings-actions {display:flex; align-items:center; justify-content:space-between; gap:8px;}
+.friend-settings-sheet .friend-mode-choice {padding:12px 0; border:0;}
+.friend-settings-sheet .friend-mode-choice small {font-size:11px; line-height:1.7; color:var(--muted);}
+.chat-notice {position:absolute; z-index:8; top:78px; left:12px; right:12px; display:flex; gap:8px; align-items:flex-start; margin:0; padding:10px 12px; border:1px solid var(--border); border-radius:14px; background:var(--panel); box-shadow:0 8px 24px #020b1b20; font-size:12px; line-height:1.6; animation:surface-reveal .16s ease-out;}
+.chat-notice>span {flex:1; min-width:0; max-height:100px; overflow:auto; overflow-wrap:anywhere;}
+.chat-notice>.icon-button {width:28px; height:28px; flex-shrink:0;}
+.private-screen-masked .chat-notice,.private-screen-masked .friend-settings-sheet {visibility:hidden;}
 .friend-protection>summary {font-size:12px;}
 .friend-messages {padding:24px; gap:18px; scrollbar-gutter:stable;}
 .friend-message {border-radius:18px 18px 18px 6px; padding:14px 18px; box-shadow:0 2px 8px #00000006;}
 .friend-message.self {border-radius:18px 18px 6px 18px;}
 .friend-composer {margin:8px 16px 16px;}
-.friend-compose-options {font-size:12px;}
-.friend-mode-details {flex-shrink:0; border-bottom:1px solid var(--border); background:var(--panel);}
-.friend-mode-details>summary {display:flex; justify-content:space-between; align-items:center; gap:8px; cursor:pointer; padding:12px 18px; min-height:44px; font-size:11px;}
-.friend-mode-details>summary strong {font-weight:500; color:var(--muted);}
-.friend-mode-details>summary span {color:var(--accent); white-space:nowrap;}
-.friend-mode-details[open]>summary span::after {content:' ↑';}
-.friend-mode-details:not([open])>summary span::after {content:' ↓';}
-.friend-mode-details .friend-mode-choice {border:0;}
-.friend-mode-details .friend-mode-choice small {font-size:11px; line-height:1.8;}
+.friend-compose-options {font-size:12px; position:relative; gap:8px; padding:8px 16px 0;}
+.friend-burn-settings {position:relative; min-width:0;}
+.friend-burn-settings>summary {display:flex; align-items:center; gap:7px; list-style:none; cursor:pointer; min-height:40px; padding:8px 12px; border:1px solid var(--border); border-radius:12px; background:var(--surface); font-size:12px;}
+.friend-burn-settings>summary::-webkit-details-marker {display:none;}
+.friend-burn-settings>summary:focus-visible {outline:2px solid var(--accent); outline-offset:3px;}
+.friend-burn-settings .burn-on {color:var(--accent); font-weight:600;}
+.friend-burn-sheet {position:absolute; z-index:4; bottom:calc(100% + 10px); left:0; width:min(390px,calc(100vw - 52px)); max-height:min(440px,48dvh); overflow:auto; overscroll-behavior:contain; padding:18px; border:1px solid var(--border); border-radius:20px; background:var(--panel); box-shadow:var(--shadow);}
+.friend-burn-settings[open] .friend-burn-sheet {animation:surface-reveal .18s var(--ease);}
+.friend-burn-sheet header {display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px;}
+.friend-burn-sheet header strong {display:block; font-size:16px;}
+.friend-burn-sheet header small {display:block; color:var(--muted); font-size:12px; margin-top:5px;}
+.friend-burn-sheet .icon-button {width:36px; height:36px; flex-shrink:0; background:var(--surface); border-radius:10px;}
+.friend-burn-sheet label.checkbox {font-size:13px; margin:0 0 14px; min-height:36px;}
+.friend-burn-grid {display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;}
+.friend-burn-grid button {min-height:44px; padding:9px 5px; border:1px solid var(--border); border-radius:12px; background:var(--surface); font-size:13px;}
+.friend-burn-grid button[aria-pressed=true] {color:var(--accent); border-color:var(--accent); background:var(--accent-bg); font-weight:600;}
+.friend-burn-sheet p {font-size:11px; line-height:1.7; color:var(--muted); margin:14px 0;}
+.app[data-layout=desktop]>.friends-panel:not(.friends-docked) {width:min(1100px,calc(100% - 40px));}
+.friends-panel:not(.friends-docked) .friends-layout {grid-template-columns:260px minmax(0,1fr);}
+.app[data-friends-docked=true],.friends-panel {--friend-width:clamp(420px,34vw,540px);}
+.friends-docked .friend-burn-sheet {width:calc(var(--friend-width) - 64px);}
+.friend-compose-options>.file-button {min-height:40px; padding:8px; display:flex; align-items:center; font-size:12px;}
 .friend-tools>summary {display:none;}
 .friend-tools-body {display:flex; flex-direction:column; gap:14px;}
 .friend-location {display:block; padding:0; flex-shrink:0; max-height:160px; overflow:auto;}
@@ -226,7 +255,7 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .context-menu {border-radius:16px; padding:8px;}
 .context-menu button {border-radius:10px; min-height:38px;}
 
-/* Compact is an explicit per-browser choice; resizing never changes it. */
+/* Touch-first devices use pages; desktop windows retain their columns. */
 .app[data-layout=mobile] {height:var(--viewport-height,100dvh); padding-bottom:calc(76px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(76px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile].public-app {height:auto; padding-bottom:0;}
@@ -243,7 +272,6 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .layout-toolbar {display:flex; padding:3px 10px; min-height:44px; gap:6px;}
 .app[data-layout=mobile] .layout-caption {display:none;}
 .app[data-layout=mobile] .layout-customize {margin-left:auto; min-height:34px; padding:6px 10px; font-size:11px;}
-.app[data-layout=mobile] .layout-mode button {min-height:34px; padding:5px 10px;}
 .app[data-layout=mobile] .workspace-jump {display:none;}
 .app[data-layout=mobile] .workspace-viewport {border:0; border-radius:0; overflow:hidden;}
 .app[data-layout=mobile] .workspace-viewport>.workspace {display:flex; min-width:0!important; grid-template-columns:none!important; width:100%;}
@@ -261,6 +289,13 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .channels-panel>.channel-list {border:0; border-radius:0; padding:2px; background:transparent; margin-bottom:6px; scrollbar-gutter:auto;}
 .app[data-layout=mobile] .channel-line>.channel {font-size:14px; min-height:46px;}
 .app[data-layout=mobile] .member-row {font-size:13px; min-height:44px;}
+.app[data-layout=mobile] .channel-fold,.app[data-layout=mobile] .channel-actions {min-width:40px; min-height:44px;}
+.app[data-layout=mobile] .channel-line {gap:0;}
+.app[data-layout=mobile] .context-menu button {min-height:44px;}
+.app[data-layout=mobile] dialog .icon-button,.app[data-layout=mobile] dialog .text-button {min-height:40px;}
+.app[data-layout=mobile] dialog label.checkbox {min-height:44px; align-items:center;}
+.app[data-layout=mobile] .friend-settings-sheet .secondary {min-height:44px; width:100%;}
+.app[data-layout=mobile] .chat-notice {top:64px; font-size:11px;}
 .app[data-layout=mobile] .mobile-channel-selection {border-radius:14px; padding:10px; margin-top:4px; background:var(--surface);}
 .app[data-layout=mobile] .connect-area {margin-top:8px; padding-top:10px;}
 .app[data-layout=mobile] .connect-area>button {min-height:42px;}
@@ -271,17 +306,23 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .messages {padding:16px; gap:18px; scrollbar-gutter:auto;}
 .app[data-layout=mobile] .composer {margin:6px 10px 10px; min-height:50px; padding-left:12px;}
 .app[data-layout=mobile] input,.app[data-layout=mobile] select,.app[data-layout=mobile] textarea {font-size:16px;}
-.app[data-layout=mobile] .voice-bar {padding:8px 10px; min-height:62px;}
-.app[data-layout=mobile] .voice-status strong {font-size:11px;}
-.app[data-layout=mobile] .voice-controls {gap:1px; padding:3px;}
-.app[data-layout=mobile] .voice-controls .icon-button {width:34px; height:38px;}
-.app[data-layout=mobile] .ptt {font-size:10px; padding:7px; max-width:78px;}
+.app[data-layout=mobile] .voice-bar {display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:18px 50px; padding:6px 10px; min-height:84px; gap:4px;}
+.app[data-layout=mobile] .voice-status strong {font-size:11px; max-width:none; line-height:18px;}
+.app[data-layout=mobile] .voice-controls {gap:3px; padding:3px; width:100%; margin:0;}
+.app[data-layout=mobile] .voice-controls .icon-button {width:44px; height:44px; flex-shrink:0;}
+.app[data-layout=mobile] .voice-controls .ptt {font-size:10px; padding:7px; flex:1; width:0; min-width:0; min-height:44px; max-width:none; margin:0; justify-content:center;}
+.app[data-layout=mobile] .voice-controls .mobile-disconnect {display:inline-flex; color:var(--danger);}
 .app[data-layout=mobile] .mobile-navigation {height:calc(70px + env(safe-area-inset-bottom)); bottom:6px; left:10px; right:10px; padding:5px 6px calc(5px + env(safe-area-inset-bottom)); border:1px solid var(--border); border-radius:22px; background:var(--panel); box-shadow:0 6px 28px #06132718; z-index:20;}
 .app[data-layout=mobile] .mobile-navigation button {min-height:54px; border:0; position:relative; padding:5px 2px; border-radius:16px; gap:4px; color:var(--muted);}
 .app[data-layout=mobile] .mobile-navigation button.active {background:var(--accent-bg); color:var(--accent);}
 .app[data-layout=mobile] .mobile-navigation button strong {font-size:10px; white-space:nowrap;}
 .app[data-layout=mobile] .mobile-navigation button::before {display:none;}
-.app[data-layout=mobile] dialog {padding:20px; border-radius:22px; width:calc(100% - 20px); max-height:calc(var(--viewport-height,100dvh) - 24px);}
+.app[data-layout=mobile] dialog {padding:16px; border-radius:22px; width:calc(100% - 20px); max-width:calc(100vw - 20px); max-height:calc(var(--viewport-height,100dvh) - 24px);}
+.app[data-layout=mobile] dialog>header {position:sticky; top:0; z-index:2; background:var(--panel); padding-bottom:10px;}
+.app[data-layout=mobile] dialog input:not([type=checkbox]):not([type=range]):not([type=radio]),.app[data-layout=mobile] dialog select {min-height:44px; min-width:0;}
+.app[data-layout=mobile] dialog .primary,.app[data-layout=mobile] dialog .secondary {min-height:44px;}
+.app[data-layout=mobile] dialog small {font-size:12px; line-height:1.7;}
+.sidebar,.messages,.friend-messages,dialog,.friend-settings-sheet,.friend-burn-sheet {overscroll-behavior:contain;}
 .app[data-layout=mobile] .admin-tabs {padding:4px; gap:3px;}
 .app[data-layout=mobile] .admin-tabs button {font-size:12px; min-height:40px; padding:9px 12px;}
 .app[data-layout=mobile] .friends-mobile-page {margin:0; border:0; border-radius:0; overflow:hidden;}
@@ -298,10 +339,10 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] .friend-heading small {margin-bottom:3px;}
 .app[data-layout=mobile] .friend-heading h2 {font-size:17px;}
 .app[data-layout=mobile] .friend-location>summary {padding:6px 12px; min-height:32px; font-size:11px;}
-.app[data-layout=mobile] .friend-mode-details>summary {padding:6px 12px; min-height:36px;}
-.app[data-layout=mobile] .friend-mode-details[open] {max-height:160px; overflow:auto;}
 .app[data-layout=mobile] .friend-conversation>[role=alert] {font-size:12px; padding:6px 12px; max-height:64px; overflow:auto; flex-shrink:0;}
 .app[data-layout=mobile] .friend-compose-options {padding:0 10px; gap:6px;}
+.app[data-layout=mobile] .friend-burn-settings>summary {min-height:44px; padding:8px 10px;}
+.app[data-layout=mobile] .friend-burn-sheet {width:calc(100vw - 40px); padding:16px;}
 .app[data-layout=mobile] .friend-composer {margin:6px 10px 10px;}
 .app[data-layout=mobile] .friend-messages {padding:14px; scrollbar-gutter:auto;}
 .app[data-layout=mobile] .friend-message {max-width:92%; padding:12px 14px;}
@@ -351,17 +392,21 @@ dialog[open],.friends-panel {animation:surface-reveal .3s var(--ease);}
   .home-features,.announcement-grid {grid-template-columns:1fr;}
   .home-features article {padding:22px;}
   .home-features h3 {margin-top:12px;}
-  .auth-page {grid-template-columns:1fr; padding:28px 20px; gap:24px;}
+  .auth-page {grid-template-columns:1fr; padding:20px 12px; gap:0;}
+  .auth-story {display:none;}
+  .public-app[data-view=login] .top-actions .home-nav,.public-app[data-view=login] .top-actions>.primary {display:none;}
   .auth-story h1 {font-size:30px; margin:8px 0 16px;}
   .auth-story-wave,.auth-story>small {display:none;}
   .auth-story p {font-size:13px; max-width:none;}
-  .auth-page-card {padding:24px; border-radius:22px;}
+  .auth-page-card {padding:20px; border-radius:22px;}
   .inbox-layout {grid-template-columns:1fr;}
   .inbox-list {max-height:180px; overflow:auto;}
   .letter-reading {padding:16px 4px;}
   .layout-toolbar {gap:6px;}
   .friends-panel {top:12px; bottom:12px; right:10px; width:calc(100% - 20px)!important;}
   .friends-panel .friends-layout {grid-template-columns:1fr;}
+  .friends-panel:not(.friends-docked) .friends-layout {grid-template-columns:1fr;}
+  .friends-panel .friend-burn-sheet {width:min(390px,calc(100vw - 64px));}
   .friends-panel .friend-conversation {display:none;}
   .friends-panel .friends-layout.show-conversation .friends-list {display:none;}
   .friends-panel .friends-layout.show-conversation .friend-conversation {display:flex;}

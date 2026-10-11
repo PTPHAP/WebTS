@@ -5,9 +5,9 @@ import ts from 'typescript';
 const code=ts.transpileModule(await readFile(new URL('../src/workspace-layout.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 const {defaultLayout,readLayout,reorderPanels,resizePanels,phoneLayoutQuery,compactLayout,minimumWorkspaceWidth,readPanelOrder}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
-test('explicit compact or column choice is independent of viewport and mobile order is separate',()=>{
+test('phone layout ignores legacy mode overrides and mobile order is separate',()=>{
   for(const phone of [true,false]){
-    assert.equal(compactLayout('columns',phone),false);assert.equal(compactLayout('compact',phone),true);
+    assert.equal(compactLayout('columns',phone),phone);assert.equal(compactLayout('compact',phone),phone);
     assert.equal(compactLayout(null,phone),phone);
   }
   const mobile=readPanelOrder(['members','channels','chat']);assert.deepEqual(mobile,['members','channels','chat']);
@@ -30,7 +30,7 @@ test('narrow mouse-driven desktop windows do not become the phone layout',()=>{
   for(const width of [320,600,700,760,900,1366])assert.equal(matches(width,'hover','fine'),false,`desktop ${width}`);
   assert.equal(matches(390,'none','coarse'),true);
   assert.equal(matches(760,'none','coarse'),true);
-  assert.equal(matches(900,'none','coarse'),false);
+  assert.equal(matches(900,'none','coarse'),true);
 });
 test('saved layout accepts only three unique panels and bounded widths totaling 100',()=>{
   for(const value of [null,{}, {order:['chat','chat','channels'],widths:defaultLayout.widths},{order:defaultLayout.order,widths:{channels:Infinity,chat:54,members:24}},{order:defaultLayout.order,widths:{channels:22,chat:54,members:25}}])assert.deepEqual(readLayout(value),defaultLayout);

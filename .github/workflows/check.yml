@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  release:
+    types: [published]
   schedule:
     - cron: '21 3 * * 1'
 permissions:
@@ -54,20 +56,25 @@ jobs:
       - name: Linux release package
         run: |
           cargo build --release --package web-ts --locked
-          mkdir -p .cache/package/webts-1.0.5-linux-x64/web
-          cp target/release/web-ts .cache/package/webts-1.0.5-linux-x64/
-          cp -r web/dist .cache/package/webts-1.0.5-linux-x64/web/
-          cp -r deploy docs scripts README.md CHANGELOG.md PRIVACY.md TERMS.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-1.0.5-linux-x64/
-          sh scripts/collect-licenses.sh .cache/package/webts-1.0.5-linux-x64/licenses
-          chmod +x .cache/package/webts-1.0.5-linux-x64/scripts/run.sh
-          tar -czf .cache/webts-1.0.5-linux-x64.tar.gz -C .cache/package webts-1.0.5-linux-x64
-          sha256sum .cache/webts-1.0.5-linux-x64.tar.gz > .cache/SHA256SUMS
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("server/Cargo.toml", "rb"))["package"]["version"])')
+          mkdir -p .cache/package/webts-$version-linux-x64/web
+          cp target/release/web-ts .cache/package/webts-$version-linux-x64/
+          cp -r web/dist .cache/package/webts-$version-linux-x64/web/
+          cp -r deploy docs scripts README.md CHANGELOG.md PRIVACY.md TERMS.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml .cache/package/webts-$version-linux-x64/
+          sh scripts/collect-licenses.sh .cache/package/webts-$version-linux-x64/licenses
+          chmod +x .cache/package/webts-$version-linux-x64/scripts/run.sh
+          tar -czf .cache/webts-$version-linux-x64.tar.gz -C .cache/package webts-$version-linux-x64
+          sha256sum .cache/webts-$version-linux-x64.tar.gz > .cache/SHA256SUMS_LINUX
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: webts-1.0.5-linux-x64
+          name: webts-release-linux
           path: |
-            .cache/webts-1.0.5-linux-x64.tar.gz
-            .cache/SHA256SUMS
+            .cache/webts-*-linux-x64.tar.gz
+            .cache/SHA256SUMS_LINUX
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: webts-frontend
+          path: web/dist
   docker:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -89,13 +96,87 @@ jobs:
       - name: Verify complete source archive deployment
         run: |
           python3 scripts/package-source.py
-          unzip -q .cache/source-release/webts-1.0.5-source.zip -d /tmp/webts-source-check
-          cd /tmp/webts-source-check/webts-1.0.5-source
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("server/Cargo.toml", "rb"))["package"]["version"])')
+          unzip -q .cache/source-release/webts-$version-source.zip -d /tmp/webts-source-check
+          cd /tmp/webts-source-check/webts-$version-source
           docker build -t webts:source-ci .
           docker run --rm webts:source-ci init-key /tmp/master.key
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: webts-source
+          name: webts-release-source
           path: |
-            .cache/source-release/webts-1.0.5-source.zip
+            .cache/source-release/webts-*-source.zip
             .cache/source-release/SHA256SUMS_SOURCE
+      - name: Export tested Docker image
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("server/Cargo.toml", "rb"))["package"]["version"])')
+          docker tag webts:ci webts:$version
+          docker save webts:$version | gzip > .cache/webts-$version-docker-linux-x64.tar.gz
+          sha256sum .cache/webts-$version-docker-linux-x64.tar.gz > .cache/SHA256SUMS_DOCKER
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: webts-release-docker
+          path: |
+            .cache/webts-*-docker-linux-x64.tar.gz
+            .cache/SHA256SUMS_DOCKER
+  windows:
+    needs: rust
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned native toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Apply protocol patch
+        run: ./scripts/prepare-vendor.ps1
+      - name: Build native gateway with static C runtime
+        env:
+          RUSTFLAGS: '-C target-feature=+crt-static'
+        run: cargo +1.99.0 build --release --package web-ts --target x86_64-pc-windows-msvc --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: webts-frontend
+          path: web/dist
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.20.0
+      - name: Install locked frontend licenses
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate Windows setup, session start and package
+        run: |
+          python scripts/tests/windows-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          python scripts/package-windows.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: webts-release-windows
+          path: |
+            .cache/windows-release/webts-*-windows-x64.zip
+            .cache/windows-release/SHA256SUMS_WINDOWS
+  release-assets:
+    if: github.event_name == 'release'
+    needs: [dependencies, rust, docker, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: webts-release-*
+          path: .cache/release-assets
+          merge-multiple: true
+      - name: Verify all packages and attach to this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBTS_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 scripts/verify-release.py .cache/release-assets "$WEBTS_RELEASE_TAG"
+          gh release upload "$WEBTS_RELEASE_TAG" .cache/release-assets/* --repo "$GITHUB_REPOSITORY"

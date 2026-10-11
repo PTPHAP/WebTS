@@ -4,7 +4,7 @@ import type {CSSProperties,ReactNode} from 'react';
 import {defaultLayout,panelIds,readLayout,reorderPanels,resizePanels,minimumWorkspaceWidth,readPanelOrder} from './workspace-layout';
 import type {Layout,PanelId} from './workspace-layout';
 const labels={channels:'频道树',chat:'聊天与语音',members:'频道与成员资料'};
-export function Workspace({mobile,compact,onCompact,mobileOrder,onMobileOrder,select,children}:{mobile:string;compact:boolean;onCompact:(value:boolean)=>void;mobileOrder:PanelId[];onMobileOrder:(order:PanelId[])=>void;select:(id:string)=>void;children:ReactNode}) {
+export function Workspace({mobile,compact,mobileOrder,onMobileOrder,select,children}:{mobile:string;compact:boolean;mobileOrder:PanelId[];onMobileOrder:(order:PanelId[])=>void;select:(id:string)=>void;children:ReactNode}) {
   const [layout,setLayout]=useAccountPreference('layout',()=>{try{return readLayout(JSON.parse(localStorage.getItem('webts-layout')??'null'));}catch{return readLayout(null);}});
   const [editing,setEditing]=useState(false),[saved,setSaved]=useState(true);
   const dragged=useRef<PanelId|null>(null),resizing=useRef<{index:number;x:number;width:number;layout:Layout}|null>(null);
@@ -14,7 +14,6 @@ export function Workspace({mobile,compact,onCompact,mobileOrder,onMobileOrder,se
   function update(next:Layout){setLayout(next);try{localStorage.setItem('webts-layout',JSON.stringify(next));setSaved(true);}catch{setSaved(false);}}
   const nodes=Children.toArray(children);
   return <div className="workspace-shell"><div className="layout-toolbar">
-    <div className="layout-mode" role="group" aria-label="工作区视图"><button aria-pressed={!compact} onClick={()=>onCompact(false)}>多栏</button><button aria-pressed={compact} onClick={()=>onCompact(true)}>紧凑</button></div>
     <span className="layout-caption">{compact?'逐页浏览 · 布局随账号保存':'保持你的布局 · 窄窗可横向滚动'}</span>
     <button className="layout-customize" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成布局':'调整布局'} <span aria-hidden="true">{editing?'✓':'⠿'}</span></button>
     {editing&&<button className="text-button" onClick={()=>compact?onMobileOrder([...panelIds]):update(readLayout(defaultLayout))}>恢复默认</button>}

@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,6 @@ def package(output, version):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / '.cache' / 'source-release')
-    parser.add_argument('--version', default='1.0.5')
+    parser.add_argument('--version', default=tomllib.loads(git(ROOT, 'show', 'HEAD:server/Cargo.toml').decode())['package']['version'])
     options = parser.parse_args()
     package(options.output.resolve(), options.version)

@@ -213,6 +213,13 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .friend-mode-details:not([open])>summary span::after {content:' ↓';}
 .friend-mode-details .friend-mode-choice {border:0;}
 .friend-mode-details .friend-mode-choice small {font-size:11px; line-height:1.8;}
+.friend-tools>summary {display:none;}
+.friend-tools-body {display:flex; flex-direction:column; gap:14px;}
+.friend-location {display:block; padding:0; flex-shrink:0; max-height:160px; overflow:auto;}
+.friend-location>summary {display:flex; align-items:center; gap:8px; cursor:pointer; padding:10px 20px; min-height:40px;}
+.friend-location>summary>span:last-child {margin-left:auto; color:var(--accent); font-size:11px;}
+.friend-location>div,.friend-location>p {margin:8px 20px;}
+.friend-location .friend-about {white-space:pre-wrap; max-width:none;}
 .sticker-popover {border-radius:22px; padding:18px; box-shadow:var(--shadow);}
 .sticker-grid button,.emoji-grid button {border-radius:14px;}
 .activity-alert {top:calc(var(--topbar-height,72px) + 16px); border-radius:20px; border:1px solid var(--border); background:var(--panel); box-shadow:var(--shadow);}
@@ -223,28 +230,35 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] {height:var(--viewport-height,100dvh); padding-bottom:calc(76px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(76px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile].public-app {height:auto; padding-bottom:0;}
-.app[data-layout=mobile]>.topbar {height:auto; min-height:64px; padding:10px 14px; gap:8px;}
-.app[data-layout=mobile]:has(.workspace-shell)>.topbar {height:auto; min-height:64px; padding:10px 14px;}
+.app[data-layout=mobile]>.topbar {height:auto; min-height:54px; padding:6px 10px; gap:6px;}
+.app[data-layout=mobile]:has(.workspace-shell)>.topbar {height:auto; min-height:54px; padding:6px 10px;}
 .app[data-layout=mobile] .brand strong {font-size:19px; max-width:160px;}
 .app[data-layout=mobile] .brand-note {display:none;}
 .app[data-layout=mobile] .top-actions {gap:6px;}
 .app[data-layout=mobile] .topbar .icon-button {width:36px; height:36px; min-height:36px; border-radius:11px;}
-.app[data-layout=mobile] .mobile-page-title {padding:12px 18px 6px; background:transparent; border:0;}
+.app[data-layout=mobile] .mobile-page-title {display:none;}
 .app[data-layout=mobile] .mobile-page-title small {font-size:9px; letter-spacing:1.3px; margin-bottom:4px;}
 .app[data-layout=mobile] .mobile-page-title strong {font-size:19px;}
-.app[data-layout=mobile] .workspace-shell {padding:0 10px 8px;}
-.app[data-layout=mobile] .layout-toolbar {display:flex; padding:8px 2px; min-height:46px; gap:6px;}
+.app[data-layout=mobile] .workspace-shell {padding:0;}
+.app[data-layout=mobile] .layout-toolbar {display:flex; padding:3px 10px; min-height:44px; gap:6px;}
 .app[data-layout=mobile] .layout-caption {display:none;}
 .app[data-layout=mobile] .layout-customize {margin-left:auto; min-height:34px; padding:6px 10px; font-size:11px;}
-.app[data-layout=mobile] .layout-mode button {min-height:40px; padding:7px 10px;}
+.app[data-layout=mobile] .layout-mode button {min-height:34px; padding:5px 10px;}
 .app[data-layout=mobile] .workspace-jump {display:none;}
-.app[data-layout=mobile] .workspace-viewport {border-radius:20px; overflow:hidden;}
+.app[data-layout=mobile] .workspace-viewport {border:0; border-radius:0; overflow:hidden;}
 .app[data-layout=mobile] .workspace-viewport>.workspace {display:flex; min-width:0!important; grid-template-columns:none!important; width:100%;}
 .app[data-layout=mobile] .workspace-pane {display:none; border:0;}
 .app[data-layout=mobile] .mobile-channels .pane-channels,.app[data-layout=mobile] .mobile-chat .pane-chat,.app[data-layout=mobile] .mobile-members .pane-members {display:flex; animation:panel-reveal .24s var(--ease);}
-.app[data-layout=mobile] .workspace-pane>.sidebar {padding:14px 12px; border:0;}
-.app[data-layout=mobile] .server-card {padding:14px; border-radius:16px;}
-.app[data-layout=mobile] .channel-list {border:0; padding:2px; background:transparent; margin-bottom:6px; scrollbar-gutter:auto;}
+.app[data-layout=mobile] .workspace-pane>.sidebar {padding:6px 10px; border:0;}
+.app[data-layout=mobile] .channels-panel .server-card {padding:8px 10px; border-radius:12px; margin-bottom:2px; gap:10px;}
+.app[data-layout=mobile] .channels-panel .server-mark {width:32px; height:32px; border-radius:10px;}
+.app[data-layout=mobile] .channels-panel .server-card strong {font-size:14px;}
+.app[data-layout=mobile] .channels-panel .server-card small {display:none;}
+.app[data-layout=mobile] .channels-panel>.section-label {padding:0 4px; margin:2px 0; min-height:36px;}
+.app[data-layout=mobile] .connection-selectors>summary {padding:8px 4px; min-height:36px;}
+.app[data-layout=mobile] .channels-panel>.connect-area {display:none;}
+.app[data-layout=mobile] .channels-panel:has(.connection-selectors[open])>.connect-area {display:flex;}
+.app[data-layout=mobile] .channels-panel>.channel-list {border:0; border-radius:0; padding:2px; background:transparent; margin-bottom:6px; scrollbar-gutter:auto;}
 .app[data-layout=mobile] .channel-line>.channel {font-size:14px; min-height:46px;}
 .app[data-layout=mobile] .member-row {font-size:13px; min-height:44px;}
 .app[data-layout=mobile] .mobile-channel-selection {border-radius:14px; padding:10px; margin-top:4px; background:var(--surface);}
@@ -270,10 +284,23 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] dialog {padding:20px; border-radius:22px; width:calc(100% - 20px); max-height:calc(var(--viewport-height,100dvh) - 24px);}
 .app[data-layout=mobile] .admin-tabs {padding:4px; gap:3px;}
 .app[data-layout=mobile] .admin-tabs button {font-size:12px; min-height:40px; padding:9px 12px;}
-.app[data-layout=mobile] .friends-mobile-page {margin:0 10px 8px; border:1px solid var(--border); border-radius:20px; overflow:hidden;}
-.app[data-layout=mobile] .friends-list {padding:20px 16px;}
-.app[data-layout=mobile] .friend-heading {padding:14px 12px;}
+.app[data-layout=mobile] .friends-mobile-page {margin:0; border:0; border-radius:0; overflow:hidden;}
+.app[data-layout=mobile] .friends-list {padding:12px; gap:10px;}
+.app[data-layout=mobile] .friends-list header small {display:none;}
+.app[data-layout=mobile] .friends-list h2 {font-size:22px;}
+.app[data-layout=mobile] .friend-self {gap:10px;}
+.app[data-layout=mobile] .friend-tools>summary {display:flex; align-items:center; justify-content:space-between; min-height:44px; padding:8px 12px; cursor:pointer; border:1px solid var(--border); border-radius:12px; font-size:12px;}
+.app[data-layout=mobile] .friend-tools>summary::after {content:'+'; color:var(--accent); font-size:18px;}
+.app[data-layout=mobile] .friend-tools[open]>summary::after {content:'−';}
+.app[data-layout=mobile] .friend-tools-body {padding:12px 0; gap:12px;}
+.app[data-layout=mobile] .friend-row {padding:10px; min-height:58px;}
+.app[data-layout=mobile] .friend-heading {padding:8px 10px; min-height:60px;}
+.app[data-layout=mobile] .friend-heading small {margin-bottom:3px;}
 .app[data-layout=mobile] .friend-heading h2 {font-size:17px;}
+.app[data-layout=mobile] .friend-location>summary {padding:6px 12px; min-height:32px; font-size:11px;}
+.app[data-layout=mobile] .friend-mode-details>summary {padding:6px 12px; min-height:36px;}
+.app[data-layout=mobile] .friend-mode-details[open] {max-height:160px; overflow:auto;}
+.app[data-layout=mobile] .friend-conversation>[role=alert] {font-size:12px; padding:6px 12px; max-height:64px; overflow:auto; flex-shrink:0;}
 .app[data-layout=mobile] .friend-compose-options {padding:0 10px; gap:6px;}
 .app[data-layout=mobile] .friend-composer {margin:6px 10px 10px;}
 .app[data-layout=mobile] .friend-messages {padding:14px; scrollbar-gutter:auto;}
@@ -359,6 +386,9 @@ dialog[open],.friends-panel {animation:surface-reveal .3s var(--ease);}
   .app[data-layout=mobile] {padding-bottom:calc(62px + env(safe-area-inset-bottom));}
   .app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(62px + env(safe-area-inset-bottom));}
 }
+:root[data-compact-viewport] .app[data-layout=mobile]:has(.friends-mobile-page:not([hidden]) .friends-layout.show-conversation) {padding-bottom:0;}
+:root[data-compact-viewport] .app[data-layout=mobile]:has(.friends-mobile-page:not([hidden]) .friends-layout.show-conversation)>.topbar,
+:root[data-compact-viewport] .app[data-layout=mobile]:has(.friends-mobile-page:not([hidden]) .friends-layout.show-conversation) .mobile-navigation {display:none;}
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after {animation:none!important; transition:none!important; scroll-behavior:auto!important;}
 }

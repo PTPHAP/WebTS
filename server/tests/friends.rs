@@ -727,6 +727,221 @@ fn setup() -> (tempfile::TempDir, Arc<App>) {
     .unwrap();
     (root, app)
 }
+
+#[tokio::test]
+async fn lost_private_identity_reset_is_authenticated_atomic_and_retry_safe() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "reset-a@example.invalid");
+    let (bi, b) = user(&app, "reset-b@example.invalid");
+    let mut old = webts_crypto::Engine::new();
+    let peer = webts_crypto::Engine::new();
+    let next = webts_crypto::Engine::new();
+    let code = register(&app, &a, &old).await;
+    register(&app, &b, &peer).await;
+    let device_id = "00000000-0000-4000-8000-000000000077";
+    let lease = "7".repeat(64);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(&mut old, device_id, &lease)),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    {
+        let db = app.db.connection.lock().unwrap();
+        db.execute(
+            "INSERT INTO friendships(lo,hi,requester,status,created_at) VALUES(?,?,?,1,?)",
+            rusqlite::params![ai, bi, ai, web_ts::db::now()],
+        )
+        .unwrap();
+        for (id, mode) in [
+            ("old-reset-packet", "e2ee"),
+            ("ordinary-reset-packet", "server"),
+        ] {
+            db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,mode) VALUES(?,?,?,?,?,?,?,1,?)", rusqlite::params![id,ai,bi,format!("webts-temporary/{id}"),"fixture",web_ts::db::now(),web_ts::db::now()+3600,mode]).unwrap();
+        }
+    }
+    let payload = format!(
+        "webts-olm-reset-v1:{ORIGIN}:{ai}:{}:{}",
+        old.identity(),
+        next.identity()
+    );
+    let body = json!({"password":PASSWORD,"previous_public_key":old.identity(),"public_key":next.identity(),"signature":next.sign(&payload),"acknowledge":true});
+    for (cookie, origin, change, want) in [
+        ("", ORIGIN, json!({}), StatusCode::UNAUTHORIZED),
+        (
+            &a,
+            "https://attacker.example",
+            json!({}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            &a,
+            ORIGIN,
+            json!({"password":"wrong"}),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            &a,
+            ORIGIN,
+            json!({"acknowledge":false}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            &a,
+            ORIGIN,
+            json!({"signature":old.sign(&payload)}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (&b, ORIGIN, json!({}), StatusCode::BAD_REQUEST),
+    ] {
+        let mut value = body.clone();
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        assert_eq!(
+            call(&app, "/friends/key/reset", Some(value), cookie, "", origin)
+                .await
+                .0,
+            want
+        );
+        assert_eq!(
+            call(&app, "/friends/me", None, &a, "", ORIGIN).await.1["public_key"],
+            old.identity()
+        );
+    }
+    let (status, result) = call(
+        &app,
+        "/friends/key/reset",
+        Some(body.clone()),
+        &a,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["public_key"], next.identity());
+    let me = call(&app, "/friends/me", None, &a, "", ORIGIN).await.1;
+    assert_eq!(me["code"], code);
+    assert_eq!(me["prekeys_left"], 0);
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}/prekey"),
+            Some(json!({})),
+            &a,
+            &lease,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    {
+        let db = app.db.connection.lock().unwrap();
+        let expired: i64 = db
+            .query_row(
+                "SELECT expires FROM friend_messages WHERE mode='e2ee'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ordinary: i64 = db
+            .query_row(
+                "SELECT expires FROM friend_messages WHERE mode='server'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(expired <= web_ts::db::now());
+        assert!(ordinary > web_ts::db::now());
+        assert_eq!(
+            db.query_row(
+                "SELECT public_key FROM friend_keys WHERE user_id=?",
+                [bi],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            peer.identity()
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM friendships WHERE status=1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    let mut next = next;
+    let new_device = "00000000-0000-4000-8000-000000000088";
+    let new_lease = "8".repeat(64);
+    assert_eq!(
+        call(
+            &app,
+            "/friends/device",
+            Some(activation(&mut next, new_device, &new_lease)),
+            &a,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    // A lost HTTP acknowledgement may be retried after activation; do not revoke the new device twice.
+    assert_eq!(
+        call(&app, "/friends/key/reset", Some(body), &a, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT lease_hash FROM friend_keys WHERE user_id=?",
+                [ai],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        web_ts::db::digest(&new_lease)
+    );
+    assert_eq!(
+        call(
+            &app,
+            &format!("/friends/{bi}/messages"),
+            None,
+            &a,
+            &new_lease,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let newer = webts_crypto::Engine::new();
+    let stale_payload = format!(
+        "webts-olm-reset-v1:{ORIGIN}:{ai}:{}:{}",
+        old.identity(),
+        newer.identity()
+    );
+    assert_eq!(call(&app, "/friends/key/reset", Some(json!({"password":PASSWORD,"previous_public_key":old.identity(),"public_key":newer.identity(),"signature":newer.sign(&stale_payload),"acknowledge":true})), &a, "", ORIGIN).await.0, StatusCode::CONFLICT);
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM sessions WHERE user_id=?", [ai])
+        .unwrap();
+    assert_eq!(call(&app, "/friends/key/reset", Some(json!({"password":PASSWORD,"previous_public_key":next.identity(),"public_key":newer.identity(),"signature":newer.sign(&stale_payload),"acknowledge":true})), &a, "", ORIGIN).await.0, StatusCode::UNAUTHORIZED);
+}
 fn user(app: &App, email: &str) -> (i64, String) {
     let hash = password::hash(PASSWORD).unwrap();
     let (id, _, t) = app.db.register(email, &hash).unwrap();

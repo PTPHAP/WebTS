@@ -1,4 +1,4 @@
-export type RatchetEngine={save:()=>string;maintenance?:(now:number,peers:string)=>void;identity:()=>string;prekeys:()=>string;has_session:(curve:string)=>boolean;outbound:(curve:string,key:string)=>void;encrypt:(curve:string,text:string)=>string;decrypt:(curve:string,packet:string)=>string;free:()=>void};
+export type RatchetEngine={save:()=>string;maintenance?:(now:number,peers:string)=>void;identity:()=>string;sign:(text:string)=>string;prekeys:()=>string;has_session:(curve:string)=>boolean;outbound:(curve:string,key:string)=>void;encrypt:(curve:string,text:string)=>string;decrypt:(curve:string,packet:string)=>string;free:()=>void};
 type EngineModule={default:(options?:{module_or_path?:BufferSource})=>Promise<unknown>;Engine:{new():RatchetEngine;restore:(text:string)=>RatchetEngine;verify:(ed:string,text:string,signature:string)=>boolean}};
 let modulePromise:Promise<EngineModule>|undefined;
 export async function cryptoModule():Promise<EngineModule>{
@@ -11,6 +11,7 @@ export type Encrypted={version:1;account:number;kind:'identity'|'state';publicKe
 export type Cache={value:Envelope;created_at:number;mode?:'e2ee'|'server';epoch?:number;burnAt?:number};
 export type Saved={engine:string;device:string;lease:string;previousLease?:string;peerDevices:Record<string,string>;cache:Record<string,Cache>;readPending?:string[];outbox?:{peer:number;id:string;ciphertext:string;burn:boolean;burn_seconds?:number;mode?:'e2ee'|'server';epoch?:number}};
 export type Unlocked={engine:RatchetEngine;record:Encrypted;key:CryptoKey;saved:Saved};
+export type IdentityReset={previousPublicKey:string;identity:Encrypted};
 export function applyReadReceipt(cache:Cache|undefined,expires:number):void{
   if(!cache?.value.burn_seconds)return;
   if(!Number.isSafeInteger(expires)||expires<=0)throw new Error('已读截止时间无效');
@@ -45,6 +46,15 @@ export async function exportIdentity(identity:Encrypted,passphrase:string):Promi
 export async function saveImportedIdentity(identity:Encrypted):Promise<void>{
   parseRecord(identity,identity.account,'identity');if(identity.automatic)throw new Error('只能导入口令保护的可移植备份');
   await saveLocals([[`identity:${identity.account}`,identity],[`state:${identity.account}`,undefined]]);
+}
+export async function saveIdentityReset(pending:IdentityReset):Promise<void>{
+  parseRecord(pending.identity,pending.identity.account,'identity');
+  if(typeof pending.previousPublicKey!=='string'||pending.previousPublicKey.length>256)throw new Error('原私信身份无效');
+  await saveLocal('keys',`reset:${pending.identity.account}`,pending);
+}
+export async function completeIdentityReset(identity:Encrypted):Promise<void>{
+  parseRecord(identity,identity.account,'identity');
+  await saveLocals([[`identity:${identity.account}`,identity],[`state:${identity.account}`,undefined],[`reset:${identity.account}`,undefined]]);
 }
 export async function rememberDevice(identity:Encrypted,state:Unlocked,passphrase:string):Promise<Encrypted>{
   if(identity.automatic)return identity;

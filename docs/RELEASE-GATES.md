@@ -26,4 +26,16 @@
 
 ## 后续顺序
 
+CI 的 `private-browser` 使用当前提交的 WASM，在 Chromium、Firefox、WebKit 和移动 WebKit 模拟视口中运行真实 WebCrypto、IndexedDB 及 Web Locks 检查：自动密钥重载、两个隔离设备双向/乱序/重放、事务中止后的重置重试、备份恢复及多标签页锁。可从项目根目录运行：
+
+```bash
+# 先按 FRIENDS.md 构建固定 WASM；浏览器只用于隔离合成数据
+cd web
+npm ci
+npx playwright install --with-deps chromium firefox webkit
+npm run test:browser
+```
+
+这些检查不连接生产账号或S3，不代替真实供应商故障、品牌浏览器/物理手机、浏览器进程崩溃或独立密码学审计。移动模拟不等于真实手机验收。正式运行包发布还要求本提交 `private-browser` 成功。
+
 先完善安装/更新/回退与故障恢复，再完成上述 E2EE 验收；之后逐步推进多设备方案、社区治理和容量扩展。容量、语音端到端 P95 和长期稳定性必须在独立环境测量，不能从容器限制或理论设计推断已经达标。正式开放规模应与实际验收结果匹配。

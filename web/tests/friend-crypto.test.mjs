@@ -17,6 +17,28 @@ globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result
 async function state(id){const backup=await c.createIdentity(id,phrase);const value=await c.unlockState(backup,undefined,id,backup.publicKey,phrase);return {backup,value,root:JSON.parse(backup.publicKey)};}
 function envelope(id=crypto.randomUUID(),burn=false){return {version:1,site:'https://fixture.example',id,sender:1,recipient:2,expires:Math.floor(Date.now()/1000)+86400,text:'你好 hello 🎧',image:'data:image/jpeg;base64,c2FmZQ==',sticker:'hello',burn};}
 const expected=v=>({site:v.site,id:v.id,sender:v.sender,recipient:v.recipient,burn:v.burn});
+
+test('identity reset stages encrypted keys before the request and commits local replacement atomically',async()=>{
+  const old=await c.createAutomaticIdentity(17),state=await c.unlockState(old,undefined,17,old.publicKey,'');
+  await c.saveLocal('keys','identity:17',old);await c.persist(state);
+  const previous=await c.loadLocal('keys','state:17'),replacement=await c.createAutomaticIdentity(17);
+  const pending={previousPublicKey:old.publicKey,identity:replacement};
+  await c.saveIdentityReset(pending);
+  assert.deepEqual(await c.loadLocal('keys','identity:17'),old);
+  assert.deepEqual(await c.loadLocal('keys','reset:17'),pending);
+  assert.doesNotMatch(JSON.stringify(pending),/sessions|lease|one_time_keys/);
+  failCommit=true;await assert.rejects(c.completeIdentityReset(replacement));
+  assert.deepEqual(await c.loadLocal('keys','identity:17'),old);
+  assert.deepEqual(await c.loadLocal('keys','state:17'),previous);
+  assert.deepEqual(await c.loadLocal('keys','reset:17'),pending);
+  await c.completeIdentityReset(replacement);
+  assert.deepEqual(await c.loadLocal('keys','identity:17'),replacement);
+  assert.equal(await c.loadLocal('keys','state:17'),undefined);
+  assert.equal(await c.loadLocal('keys','reset:17'),undefined);
+  const restored=await c.unlockState(replacement,undefined,17,replacement.publicKey,'');
+  assert.notEqual(restored.engine.identity(),old.publicKey);
+  restored.engine.free();state.engine.free();
+});
 test('selected read-and-burn duration is authenticated in both encryption modes',async()=>{
   const {a,b}=await pair();
   for(const seconds of [60,600,1800,3600,43200,86400,172800,345600,604800]){
@@ -127,12 +149,20 @@ test('malicious plaintext format is rejected rather than rendered as HTML or fet
 
 const componentSource=await readFile(new URL('../src/Friends.tsx',import.meta.url),'utf8');
 const componentFile=ts.createSourceFile('Friends.tsx',componentSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
-function componentFunctions(names,globals){const functions=[];let eligibility='';const visit=n=>{if(ts.isFunctionDeclaration(n)&&names.includes(n.name?.text))functions.push(n.getText(componentFile));if(names.includes('send')&&ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(componentFile)==='canChat'))eligibility=n.getText(componentFile);ts.forEachChild(n,visit);};visit(componentFile);assert.equal(functions.length,names.length);const code=ts.transpileModule(eligibility+'\n'+functions.join('\n')+`;exports.functions={${names.join(',')}};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;const context=vm.createContext({exports:{},document:{hidden:false,hasFocus:()=>true},ordinary:false,...globals});vm.runInContext(code,context);return context.exports.functions;}
+function componentFunctions(names,globals){const functions=[];let eligibility='';const visit=n=>{if(ts.isFunctionDeclaration(n)&&names.includes(n.name?.text))functions.push(n.getText(componentFile));if((names.includes('send')||names.includes('receive'))&&ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>['trusted',...(names.includes('send')?['canChat']:[])].includes(d.name.getText(componentFile))))eligibility+=n.getText(componentFile)+'\n';ts.forEachChild(n,visit);};visit(componentFile);assert.equal(functions.length,names.length);const code=ts.transpileModule(eligibility+'\n'+functions.join('\n')+`;exports.functions={${names.join(',')}};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;const context=vm.createContext({exports:{},AbortSignal,document:{hidden:false,hasFocus:()=>true},ordinary:false,...globals,me:globals.me?{public_key:globals.engine?.current?.record.publicKey,...globals.me}:undefined,trustedKey:globals.trustedKey??(globals.trusted?`${globals.me?.public_key??globals.engine?.current?.record.publicKey}\n${globals.peer?.public_key}`:'')});vm.runInContext(code,context);return context.exports.functions;}
 
 test('successful friend refresh clears a transient metadata error even when React defers the state updater',async()=>{
   const updates=[],globals={refreshing:{current:false},alive:{current:true},metadataError:{current:'temporary busy'},snapshot:{current:undefined},engine:{current:undefined},api:async path=>path==='/friends/me'?{id:1}:{friends:[],unread:0,latest_message:0},setMe(){},setFriends(){},setStatus(update){updates.push(update);},friendEvents:()=>[],onNewRef:{current(){}},onUnreadRef:{current(){}}};
   await componentFunctions(['refresh'],globals).refresh();
   assert.equal(updates.length,1);assert.equal(updates[0]('temporary busy'),'');assert.equal(updates[0]('a new user-facing status'),'a new user-facing status');
+});
+
+test('private HTTP timeout releases a hung request with a retryable error',async()=>{
+ const abort=new AbortController();let requested;
+ const globals={AbortSignal:{timeout(ms){assert.equal(ms,30000);return abort.signal;}},fetch:async(_url,options)=>{requested=options;if(!options.signal)return {ok:true,json:async()=>({})};return new Promise((_resolve,reject)=>{options.signal.addEventListener('abort',()=>reject(abort.signal.reason),{once:true});});}};
+ const f=componentFunctions(['privateApi'],globals),pending=f.privateApi({saved:{lease:'fixture'}},'/messages',{});
+ assert.equal(requested.signal,abort.signal);abort.abort(new DOMException('synthetic timeout','TimeoutError'));
+ await assert.rejects(pending,/私信请求超时/);
 });
 test('automatic device activation persists both leases and recovers a lost activation acknowledgement',async()=>{
   const backup=await c.createIdentity(13,phrase),state=await c.unlockState(backup,undefined,13,backup.publicKey,phrase);let serverLease=state.saved.lease,loseReply=true;const calls=[];
@@ -143,6 +173,26 @@ test('automatic device activation persists both leases and recovers a lost activ
 test('an E2EE sender never falls back to server-readable output',async()=>{
  const {a,b}=await pair();let calls=0;const globals={ordinary:true,me:{id:1},peer:{id:2,public_key:b.backup.publicKey,device:b.value.saved.device},trusted:true,engine:{current:a.value},operation:{current:false},setStatus(){},privateApi:async()=>{calls++;}};
  await componentFunctions(['send'],globals).send();assert.equal(calls,0);assert.equal(a.value.saved.outbox,undefined);a.value.engine.free();b.value.engine.free();
+});
+
+test('stale safety confirmation cannot send or receive after either public identity changes',async()=>{
+ const {a,b}=await pair();
+ for(const change of ['own','peer']){
+  let starts=0;
+  const globals={me:{id:1,public_key:change==='own'?'changed identity':a.backup.publicKey},peer:{id:2,public_key:change==='peer'?'changed identity':b.backup.publicKey,device:b.value.saved.device},trusted:true,trustedKey:`${a.backup.publicKey}\n${b.backup.publicKey}`,engine:{current:a.value},operation:{current:false},alive:{current:true},draft:'do not send',image:'',structuredClone,setBusy(v){if(v)starts++;},setStatus(){},finishOperation(){globals.operation.current=false;},cryptoModule:c.cryptoModule,privateApi:async()=>{starts++;throw Error('must not request');},before:0,selectedRef:{current:2},recordsRef:{current:[]},refresh:async()=>{}};
+  const f=componentFunctions(['send','receive'],globals);await f.send();await f.receive().catch(()=>{});assert.equal(starts,0,change);
+ }
+ a.value.engine.free();b.value.engine.free();
+});
+
+test('reset UI resumes a lost server acknowledgement with the same staged identity and no plaintext fallback',async()=>{
+ const identity=await c.createAutomaticIdentity(19);await c.saveLocal('keys','identity:19',identity);
+ let registered=identity.publicKey,loseAck=true;const attempts=[];
+ const globals={me:{id:19,public_key:identity.publicKey},unlocked:false,resetConfirmed:true,password:'synthetic website password',engine:{current:undefined},operation:{current:false},alive:{current:true},localRelease:{current:undefined},autoPaused:{current:false},crypto,location:{origin:'https://fixture.example'},loadLocal:c.loadLocal,saveIdentityReset:c.saveIdentityReset,completeIdentityReset:c.completeIdentityReset,createAutomaticIdentity:c.createAutomaticIdentity,unlockState:c.unlockState,persist:c.persist,browserLock:async()=>{globals.localRelease.current=()=>{};},setBusy(){},setStatus(){},setBackup(){},setMe(v){globals.me=v;},setAutomatic(){},setTrusted(){},setConfirmTrust(){},setRecords(){},setDraft(){},setImage(){},setUnlocked(v){globals.unlocked=v;},setShowKeys(){},setPassword(v){globals.password=v;},setResetConfirmed(v){globals.resetConfirmed=v;},finishOperation(){globals.operation.current=false;},api:async(path,body)=>{assert.equal(path,'/friends/key/reset');assert.ok(m.Engine.verify(JSON.parse(body.public_key).ed,`webts-olm-reset-v1:https://fixture.example:19:${body.previous_public_key}:${body.public_key}`,body.signature));const staged=await c.loadLocal('keys','reset:19');assert.equal(staged.identity.publicKey,body.public_key);attempts.push(body.public_key);assert.ok(registered===body.previous_public_key||registered===body.public_key);registered=body.public_key;if(loseAck){loseAck=false;throw Error('lost server acknowledgement');}return {public_key:registered};},privateApi:async(_s,path,body)=>{assert.equal(path,'/device');assert.equal(JSON.parse(body.payload).identity,registered);return {};}};
+ const f=componentFunctions(['resetIdentity','activateDevice'],globals);await f.resetIdentity();
+ assert.equal((await c.loadLocal('keys','identity:19')).publicKey,identity.publicKey);assert.ok(await c.loadLocal('keys','reset:19'));
+ globals.password='synthetic website password';globals.resetConfirmed=true;await f.resetIdentity();
+ assert.equal(attempts.length,2);assert.equal(attempts[0],attempts[1]);assert.equal(globals.unlocked,true);assert.equal(globals.engine.current.record.publicKey,registered);assert.equal(await c.loadLocal('keys','reset:19'),undefined);globals.engine.current.engine.free();
 });
 test('E2EE view does not download or persist ordinary messages',async()=>{
  const {a,b}=await pair();let downloads=0,rows=[];const globals={ordinary:false,me:{id:1},peer:{id:2,public_key:b.backup.publicKey},trusted:true,engine:{current:a.value},operation:{current:false},alive:{current:true},selectedRef:{current:2},recordsRef:{current:[]},before:0,refresh:async()=>{},finishOperation(){globals.operation.current=false;},setRecords(update){rows=update(rows);},privateApi:async(_s,path)=>{if(path==='/2/messages')return {messages:[{id:'normal',mode:'server',seq:1,expires:Date.now()/1000+600}]};downloads++;throw Error('ordinary content must not reach E2EE persistent state');}};

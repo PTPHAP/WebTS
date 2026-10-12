@@ -470,6 +470,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/friends/presence", post(crate::friends::presence))
         .route("/friends/{peer}/join", post(crate::friends::join))
         .route("/friends/key", post(crate::friends::set_key))
+        .route("/friends/key/reset", post(crate::friends::reset_key))
         .route("/friends/device", post(crate::friends::activate))
         .route("/friends/{peer}/prekey", post(crate::friends::claim))
         .route(
@@ -660,6 +661,7 @@ async fn guard(
         _ if mutation
             && (path.contains("/admin/")
                 || path.ends_with("/friends/key")
+                || path.ends_with("/friends/key/reset")
                 || path.ends_with("/friends/device")
                 || path.ends_with("/encryption")) =>
         {

@@ -139,7 +139,7 @@ impl Engine {
             return Err(error("peers"));
         }
         let current: HashSet<String> = serde_json::from_str(current_peers).map_err(error)?;
-        if current.len() > 128 {
+        if current.len() > 132 {
             return Err(error("peers"));
         }
         self.clock = self.clock.max(now_seconds as u64);
@@ -248,6 +248,23 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn maintenance_accepts_the_sites_full_friend_limit_and_rejects_overflow() {
+        let mut engine = Engine::new();
+        let peers: Vec<_> = (0..132).map(|n| format!("synthetic-peer-{n}")).collect();
+        assert!(
+            engine
+                .maintenance(1000.0, &serde_json::to_string(&peers).unwrap())
+                .is_ok()
+        );
+        let mut overflow = peers;
+        overflow.push("overflow".to_owned());
+        assert!(
+            engine
+                .maintenance(1000.0, &serde_json::to_string(&overflow).unwrap())
+                .is_err()
+        );
+    }
     #[test]
     fn expired_ratchets_retire_without_erasing_live_or_legacy_sessions() {
         let mut a = Engine::new();

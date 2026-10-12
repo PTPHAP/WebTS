@@ -96,6 +96,51 @@ pub struct Device {
     payload: String,
     signature: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityReset {
+    password: String,
+    previous_public_key: String,
+    public_key: String,
+    signature: String,
+    acknowledge: bool,
+}
+pub async fn reset_key(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(body): Json<IdentityReset>,
+) -> Api<Json<Value>> {
+    app.expensive(move |a| {
+        let s = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
+        if !body.acknowledge || !valid_identity(&body.previous_public_key)
+            || !valid_identity(&body.public_key) || body.previous_public_key == body.public_key
+            || !b64(&body.signature, 64)
+        {
+            return Err(Error::bad("请确认旧端到端消息无法恢复，并提供有效的新身份"));
+        }
+        let root: Value = serde_json::from_str(&body.public_key).map_err(anyhow::Error::from)?;
+        let proof = format!("webts-olm-reset-v1:{}:{}:{}:{}", a.config.origin(), s.user.id, body.previous_public_key, body.public_key);
+        if !webts_crypto::Engine::verify(root["ed"].as_str().unwrap_or(""), &proof, &body.signature) {
+            return Err(Error::bad("新私信身份签名无效"));
+        }
+        let mut db = a.db.connection.lock().unwrap();
+        let tx = db.transaction().map_err(db_error)?;
+        session_valid(&tx, &s)?;
+        let current: Option<String> = tx.query_row("SELECT public_key FROM friend_keys WHERE user_id=?", [s.user.id], |r|r.get(0)).optional().map_err(db_error)?;
+        // Retry of an accepted reset must not revoke its subsequently activated device.
+        if current.as_deref() != Some(body.public_key.as_str()) {
+            if current.as_deref() != Some(body.previous_public_key.as_str()) {
+                return Err(Error(StatusCode::CONFLICT, "私信身份已变化，请刷新后重新确认"));
+            }
+            tx.execute("UPDATE friend_keys SET public_key=?,device='',lease_hash='' WHERE user_id=?", params![body.public_key,s.user.id]).map_err(db_error)?;
+            tx.execute("DELETE FROM friend_prekeys WHERE user_id=?", [s.user.id]).map_err(db_error)?;
+            tx.execute("UPDATE friend_messages SET expires=min(expires,?) WHERE mode='e2ee' AND (sender=? OR recipient=?)", params![now(),s.user.id,s.user.id]).map_err(db_error)?;
+            tx.execute("UPDATE users SET friend_revision=friend_revision+1 WHERE id=? OR id IN(SELECT CASE WHEN lo=? THEN hi ELSE lo END FROM friendships WHERE (lo=? OR hi=?) AND status=1)",params![s.user.id,s.user.id,s.user.id,s.user.id]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        Ok(Json(json!({"public_key":body.public_key,"message":"私信身份已重置；旧端到端消息已失效，请重新启用设备并核对安全码。"})))
+    }).await
+}
 pub async fn activate(
     State(app): State<Arc<App>>,
     headers: HeaderMap,

@@ -430,10 +430,60 @@ async fn run() {
     let (signals, mut signal_rx) = mpsc::channel(64);
     let (audio, mut audio_rx) = mpsc::channel(8);
     let cancel = CancellationToken::new();
-    let mut peer = Media::new(&app, owner, 0, signals.clone(), audio, cancel.clone())
+    let peer = Media::new(&app, owner, 0, signals.clone(), audio, cancel.clone())
         .await
         .unwrap();
-    peer.sync_speakers(&[7], &signals).await.unwrap();
+    // Model a browser's sender directly: Media's tracks are gateway offer/answer tracks,
+    // whose ready flag is intentionally never set by this answer-only browser fixture.
+    use rtc::{
+        media_stream::MediaStreamTrack,
+        rtp::{Header, Packet},
+        rtp_transceiver::rtp_sender::{
+            RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+        },
+    };
+    use std::sync::Arc;
+    use webrtc::media_stream::track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP};
+    let browser_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
+        "browser-fixture".into(),
+        "browser-audio".into(),
+        "Synthetic browser audio".into(),
+        RtpCodecKind::Audio,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(7001),
+                ..Default::default()
+            },
+            codec: RTCRtpCodec {
+                mime_type: "audio/opus".into(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1;usedtx=1".into(),
+                rtcp_feedback: vec![],
+            },
+            ..Default::default()
+        }],
+    )));
+    peer.peer
+        .add_track(browser_track.clone() as Arc<dyn TrackLocal>)
+        .await
+        .unwrap();
+    async fn browser_audio(track: &TrackLocalStaticRTP, sequence: u16, data: &[u8]) {
+        track
+            .write_rtp(Packet {
+                header: Header {
+                    version: 2,
+                    payload_type: 111,
+                    sequence_number: sequence,
+                    timestamp: u32::from(sequence) * 960,
+                    ssrc: 7001,
+                    ..Default::default()
+                },
+                payload: bytes::Bytes::copy_from_slice(data),
+            })
+            .await
+            .unwrap();
+    }
     let mut timer = tokio::time::interval(Duration::from_millis(20));
     let payload = [0xf8, 0xff, 0xfe];
     let mut sequence = 0u16;
@@ -468,12 +518,12 @@ async fn run() {
             _=timer.tick()=>{
                 if peer.check_cipher().await.unwrap().is_some() && secure {
                     if dtx_probes < 50 {
-                        peer.audio(7,sequence,&[0x7b,0x01]).await.unwrap();
+                        browser_audio(&browser_track,sequence,&[0x7b,0x01]).await;
                         sequence=sequence.wrapping_add(1);
                         dtx_probes+=1;
                         continue;
                     }
-                    peer.audio(7,sequence,if leading_sent==0 {&leading_payload} else {&payload}).await.unwrap();
+                    browser_audio(&browser_track,sequence,if leading_sent==0 {&leading_payload} else {&payload}).await;
                     if leading_sent<3 {leading_sent+=1;if leading_sent==3 {socket.send(Message::Text(json!({"type":"transmit","enabled":true,"pre_roll":true}).to_string().into())).await.unwrap();}}
                     let native_audio = if browser_voice && own_id != 0 {
                         AudioData::C2SWhisper{id:sequence,codec:CodecType::OpusVoice,clients:vec![own_id],channels:vec![],data:&whisper_payload}

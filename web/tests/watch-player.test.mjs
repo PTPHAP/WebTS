@@ -13,8 +13,8 @@ const watch=await helper('watch.ts'),geometry=await helper('watch-window.ts');
 const code=ts.transpileModule(await readFile(new URL('../src/WatchPage.tsx',import.meta.url),'utf8'),{compilerOptions:options}).outputText;
 const config={...watch.emptyWatch,enabled:true,embed_enabled:true,url:'https://live.bilibili.com/123',title:'Example <script>alert(1)</script>',score_mode:'manual'};
 const event={enabled:true,event_id:'fixture',config,platform:'bilibili',server_time:100,score:null};
-function render(active,loaded=true,e=event,stage={x:20,y:140,width:900,height:506},props={}){
- let index=0;const overrides={0:e,2:loaded?`fixture:${watch.playerUrl(e.config??config,'example.com')}`:'',13:{left:0,top:72,right:1280,bottom:640},14:stage};
+function render(active,loaded=true,e=event,stage={x:20,y:140,width:900,height:506},props={},selected='main'){
+ let index=0;const overrides={15:selected,0:e,2:loaded?`fixture:${watch.playerUrl(watch.stageConfig(e.config??config,selected),'example.com')}`:'',13:{left:0,top:72,right:1280,bottom:640},14:stage};
  const context=vm.createContext({exports:{},innerWidth:1280,innerHeight:720,location:{hostname:'example.com'},require:name=>name==='react'?{...React,useState:initial=>[Object.hasOwn(overrides,index)?overrides[index++]:((index++),initial),()=>{}],useRef:value=>({current:value}),useEffect(){},useLayoutEffect(){}}:name==='./watch'?watch:name==='./watch-window'?geometry:name==='./Stickers'?{StickerPicker:()=>null}:name==='./api'?{api:()=>{throw Error('render check must not send requests');}}:name.endsWith('.css')?{}:require(name)});
  vm.runInContext(code,context);
  const element=context.exports.WatchPage({active,voiceBar:React.createElement('footer',{},'voice'),connected:false,members:[],avatars:{},speaking:{},channel:'',chat:null,onSend:()=>false,onJoin(){},onLogin(){},onVoice(){},onExpand(){},...props});
@@ -71,4 +71,20 @@ test('loaded hidden players still recheck access; unmount cancels timers and ign
   if(resolve){resolve(event);await Promise.resolve();await Promise.resolve();}
   assert.equal(changes,0);assert.equal(timers.size,0);assert.equal(intervals.size,0);
  }
+});
+
+test('secondary stage uses its own source and permission while switching leaves voice untouched',()=>{
+ const extra={...event,config:{...config,stages:[{id:'side',name:'副舞台',url:'https://www.youtube.com/watch?v=abcdefghijk',cover:'',embed_enabled:true}]}};
+ let joined=0;
+ const view=render(true,true,extra,undefined,{onJoin(){joined++;}},'side');
+ const iframe=view.nodes.find(n=>n.element.type==='iframe');
+ assert.equal(new URL(iframe.element.props.src).hostname,'www.youtube-nocookie.com');
+ const nav=view.nodes.find(n=>n.element.props.className==='watch-stage-tabs');
+ const buttons=nav.element.props.children;
+ assert.equal(buttons.length,2);assert.equal(buttons[1].props['aria-pressed'],true);
+ buttons[0].props.onClick();assert.equal(joined,0);
+ extra.config.stages[0].embed_enabled=false;
+ assert.equal(render(true,true,extra,undefined,{},'side').nodes.filter(n=>n.element.type==='iframe').length,0);
+ extra.config.stages=[];
+ assert.equal(new URL(render(true,true,extra,undefined,{},'side').nodes.find(n=>n.element.type==='iframe').element.props.src).hostname,'www.bilibili.com');
 });

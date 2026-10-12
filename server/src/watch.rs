@@ -1,4 +1,4 @@
-//! A single administrator-curated watch event. Video is never relayed by WebTS.
+//! An administrator-curated event with multiple live stages. Video is never relayed.
 use crate::{
     app::{Api, App, Error},
     db::{Db, Session, now},
@@ -35,6 +35,15 @@ pub struct Config {
     pub ts_server: String,
     pub ts_channel: u32,
     pub score_mode: ScoreMode,
+    pub stages: Vec<Stage>,
+}
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Stage {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub embed_enabled: bool,
 }
 #[derive(Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -254,6 +263,54 @@ pub async fn save(
     headers: HeaderMap,
     Json(mut body): Json<Update>,
 ) -> Api<Json<Value>> {
+    let h = headers.clone();
+    let urls = a
+        .work(move |a| {
+            settings::admin(a, &h)?;
+            if body.config.stages.len() > 7 {
+                return Err(Error::bad("最多可配置主舞台和 7 个副舞台"));
+            }
+            let mut ids = HashSet::new();
+            for stage in &body.config.stages {
+                if stage.id.is_empty()
+                    || stage.id.len() > 64
+                    || !stage
+                        .id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    || !ids.insert(stage.id.clone())
+                    || stage.id == "main"
+                    || !text(&stage.name, 60, false)
+                    || stage.name.trim().is_empty()
+                {
+                    return Err(Error::bad("舞台名称或编号无效、重复"));
+                }
+                source(&stage.url)?;
+            }
+            if !body.config.url.is_empty() {
+                source(&body.config.url)?;
+            }
+            Ok(body)
+        })
+        .await?;
+    body = urls;
+    let _permit = a.watch.inspections.try_acquire().map_err(|_| {
+        Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "直播校验任务繁忙，请稍后再试",
+        )
+    })?;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        if !body.config.url.is_empty() {
+            body.config.url = resolve_source(&body.config.url).await?.0;
+        }
+        for stage in &mut body.config.stages {
+            stage.url = resolve_source(&stage.url).await?.0;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(|_| Error::bad("舞台链接校验超时，请稍后重试"))??;
     a.expensive(move |a| {
         settings::admin(a, &headers)?;
         let session = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
@@ -312,6 +369,37 @@ pub async fn save(
         Ok(Json(view(&live, true)))
     })
     .await
+}
+fn bilibili_room(raw: &[u8]) -> Api<u64> {
+    let value: Value = serde_json::from_slice(raw).map_err(|_| Error::bad("B站房间信息无效"))?;
+    value
+        .get("code")
+        .and_then(Value::as_i64)
+        .filter(|n| *n == 0)
+        .and_then(|_| value.pointer("/data/room_id").and_then(Value::as_u64))
+        .filter(|id| *id > 0 && *id <= 9_007_199_254_740_991)
+        .ok_or_else(|| Error::bad("B站直播间不存在或暂时无法校验，请检查链接后重试"))
+}
+async fn resolve_source(value: &str) -> Api<(String, &'static str)> {
+    let (mut canonical, platform) = source(value)?;
+    if platform == "bilibili" {
+        let room = url::Url::parse(&canonical)
+            .unwrap()
+            .path()
+            .trim_matches('/')
+            .to_owned();
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::server_banner::download_json(&format!(
+                "https://api.live.bilibili.com/room/v1/Room/room_init?id={room}"
+            )),
+        )
+        .await
+        .map_err(|_| Error::bad("B站房间校验超时，请稍后重试"))?
+        .map_err(|_| Error::bad("B站暂时拒绝房间校验，请稍后重试；本站不绕过平台限制"))?;
+        canonical = format!("https://live.bilibili.com/{}", bilibili_room(&raw)?);
+    }
+    Ok((canonical, platform))
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -540,7 +628,7 @@ pub async fn inspect(
             "已有直播页读取任务，请稍后再试",
         )
     })?;
-    let (url, platform) = source(&body.url)?;
+    let (url, platform) = resolve_source(&body.url).await?;
     let raw = crate::server_banner::download_page(&url)
         .await
         .map_err(|_| Error::bad("无法读取公开网页，请手动填写标题和封面；不绕过平台限制"))?;
@@ -604,6 +692,106 @@ fn cover(bytes: &[u8]) -> Api<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stages_save_atomically_preserve_legacy_and_reject_duplicates_and_stale_writes() {
+        let (_dir, a, mut headers) = crate::app::tests::fixture();
+        let password = "stage-fixture-password";
+        let hash = crate::password::hash(password).unwrap();
+        a.db.connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE users SET is_admin=1,password_hash=? WHERE id=1",
+                [&hash],
+            )
+            .unwrap();
+        let token = a.db.create_session(1, false, &hash).unwrap();
+        headers.insert("cookie", format!("webts_dev={token}").parse().unwrap());
+        let config = Config {
+            enabled: true,
+            title: "Event".into(),
+            url: "https://www.youtube.com/watch?v=abcdefghijk".into(),
+            stages: vec![Stage {
+                id: "secondary".into(),
+                name: "副舞台".into(),
+                url: "https://www.twitch.tv/example".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let body = || Update {
+            password: password.into(),
+            revision: 0,
+            config: config.clone(),
+        };
+        let saved = save(State(a.clone()), headers.clone(), Json(body()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(saved["config"]["stages"][0]["name"], "副舞台");
+        assert_eq!(saved["config"]["url"], config.url);
+        assert_eq!(
+            save(State(a.clone()), headers.clone(), Json(body()))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::CONFLICT
+        );
+        let mut duplicate = body();
+        duplicate.revision = 1;
+        duplicate
+            .config
+            .stages
+            .push(duplicate.config.stages[0].clone());
+        assert_eq!(
+            save(State(a.clone()), headers.clone(), Json(duplicate))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let mut overflow = body();
+        overflow.config.stages = vec![config.stages[0].clone(); 8];
+        assert_eq!(
+            save(State(a.clone()), headers.clone(), Json(overflow))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let restored = Watch::load(&a.db, &a.vault).unwrap();
+        assert_eq!(
+            view(&restored.live.read().unwrap(), true)["config"]["stages"][0]["id"],
+            "secondary"
+        );
+        a.db.connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET is_admin=0 WHERE id=1", [])
+            .unwrap();
+        assert_eq!(
+            save(State(a), headers, Json(body())).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        let legacy: Config =
+            serde_json::from_value(json!({"url":"https://www.twitch.tv/example"})).unwrap();
+        assert!(legacy.stages.is_empty());
+    }
+    #[test]
+    fn bilibili_short_alias_requires_a_successful_real_room_response() {
+        assert_eq!(
+            bilibili_room(br#"{"code":0,"data":{"room_id":21686237,"short_id":6}}"#).unwrap(),
+            21686237
+        );
+        for raw in [
+            br#"{"code":1,"data":{"room_id":21686237}}"#.as_slice(),
+            br#"{"code":0,"data":{"room_id":0}}"#,
+            br#"{"code":0,"data":{"room_id":"21686237"}}"#,
+            br#"{"code":0,"data":{"room_id":9007199254740992}}"#,
+        ] {
+            assert!(bilibili_room(raw).is_err());
+        }
+    }
     #[tokio::test]
     async fn direct_watch_navigation_serves_the_shell_with_success_status() {
         use axum::{body::Body, http::Request};

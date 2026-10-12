@@ -47,6 +47,11 @@ pub async fn download(value: &str, max: usize) -> Result<Vec<u8>> {
 pub async fn download_page(value: &str) -> Result<Vec<u8>> {
     download_bounded(value, 256 * 1024, true).await
 }
+pub async fn download_json(value: &str) -> Result<Vec<u8>> {
+    let bytes = download_bounded(value, 64 * 1024, false).await?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)?;
+    Ok(bytes)
+}
 async fn download_bounded(value: &str, max: usize, html: bool) -> Result<Vec<u8>> {
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let mut url = banner_url(value)?;

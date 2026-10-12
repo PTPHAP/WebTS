@@ -4,6 +4,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [社区功能与诊断](COMMUNITY.md) | 好友活动、收藏与邀请二维码、TS 聊天工具、更新提示、后台汇总 |
 | [安装教程](INSTALL.md) | 一条命令、中文引导、证书、邮箱验证、站长开通、`webts` 菜单 |
 | [配置教程](CONFIGURATION.md) | 域名/IP/端口、SMTP、默认 TS、自定义连接、网页后台热加载、TURN |
 | [Docker 安装](DOCKER.md) | 一键中文引导、预构建镜像下载与校验、Compose、站长权限与更新 |
@@ -16,6 +17,7 @@
 | [原生频道显示与音乐](TEAMSPEAK-RENDERING.md) | spacer、BBCode、ts3image、音乐机器人加密兼容 |
 | [首页与个人资料](HOME-PROFILE.md) | 首页、登录入口、图片公告、固定头像与 TS 资料同步 |
 | [AFK 与账号管理](ACCOUNT-ADMIN.md) | 离开状态互通、封禁/解封、强制退出、网站管理员与操作记录 |
+| [联合观赛](WATCH.md) | 免费直播链接、公开标题/封面、观赛语音、手动赛况及签名接口 |
 | [信件与通知](NOTIFICATIONS.md) | 管理员专页、HTML/Markdown、裁剪图片、站点信箱、更新邮件订阅与撤回 |
 | [好友与加密私信](FRIENDS.md) | 社区资料、悬浮/停靠好友、设备密钥、双棘轮、阅后即焚 |
 | [雨云与对象存储配置](OBJECT-STORAGE.md) | S3 API、Region默认值、读写删除检测、同桶修正和迁移保护 |

@@ -528,6 +528,13 @@ pub async fn send(
         return Err(Error::bad("只接受限制以内且模式明确的加密消息"));
     }
     let _permit = app.object_permit(&headers).await?;
+    let transfer = app
+        .friend_transfer(&body.id)
+        .try_lock_owned()
+        .map_err(|_| Error(StatusCode::CONFLICT, "此消息正在传输或清理，请稍后重试"))?;
+    // A cancelled HTTP request must not release an upload lease while S3 is still processing it.
+    tokio::spawn(async move {
+    let _permit = _permit;
     let check_headers = headers.clone();
     let id = body.id.clone();
     let peer = body.peer;
@@ -597,6 +604,8 @@ pub async fn send(
             })?;
     }
     app.work(move|a| {
+        // Keep the lease until this blocking transaction finishes, even if HTTP is cancelled.
+        let _transfer = transfer;
         let s=current(a,&headers)?;let mut connection=a.db.connection.lock().unwrap();let db=connection.transaction().map_err(db_error)?;session_valid(&db,&s)?;if body.mode=="e2ee" {device(&db,&s,&headers)?;}accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&body.mode,epoch)?;
         if body.mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=target_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备已变化，消息未送达"));}}
@@ -606,6 +615,7 @@ pub async fn send(
         db.commit().map_err(db_error)?;
         Ok(Json(json!({"message":"加密消息已送达。"})))
     }).await
+    }).await.map_err(|_| Error(StatusCode::SERVICE_UNAVAILABLE, "消息传输任务已中断，请使用原消息编号重试"))?
 }
 pub async fn content(
     State(app): State<Arc<App>>,
@@ -704,6 +714,49 @@ fn cleanup_failed(db: &rusqlite::Connection, key: &str) -> Api<()> {
     db.execute("INSERT INTO storage_cleanup_retries VALUES(?,1,?) ON CONFLICT(object_key) DO UPDATE SET attempts=min(attempts+1,10),next_attempt=excluded.next_attempt",params![key,now()+delay]).map_err(db_error)?;
     Ok(())
 }
+async fn cleanup_object<F, Fut>(
+    app: &Arc<App>,
+    id: String,
+    key: String,
+    probe: bool,
+    remove: F,
+) -> Api<()>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let transfer = if probe {
+        None
+    } else {
+        let Ok(guard) = app.friend_transfer(&id).try_lock_owned() else {
+            return Ok(());
+        };
+        Some(guard)
+    };
+    // A candidate may have completed its retry after the batch was selected.
+    let check_id = id.clone();
+    let check_key = key.clone();
+    let expired = app.work(move |a| {
+        let db = a.db.connection.lock().unwrap();
+        let (query, params): (&str, Vec<rusqlite::types::Value>) = if probe {
+            ("SELECT EXISTS(SELECT 1 FROM storage_probes WHERE object_key=? AND created_at<?)", vec![check_key.into(), (now()-300).into()])
+        } else {
+            ("SELECT EXISTS(SELECT 1 FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?)))", vec![check_id.into(),check_key.into(),now().into(),(now()-3600).into()])
+        };
+        db.query_row(query, rusqlite::params_from_iter(params), |r| r.get::<_,bool>(0)).map_err(db_error)
+    }).await?;
+    if !expired {
+        return Ok(());
+    }
+    if remove(key.clone()).await.is_err() {
+        tracing::warn!("临时对象删除失败，已安排退避；其他对象继续清理，未记录内容或凭据");
+        return app
+            .work(move |a| cleanup_failed(&a.db.connection.lock().unwrap(), &key))
+            .await;
+    }
+    app.work(move|a| {let _transfer=transfer;let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;if probe {tx.execute("DELETE FROM storage_probes WHERE object_key=? AND created_at<?",params![key,now()-300]).map_err(db_error)?;} else {tx.execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;}tx.execute("DELETE FROM storage_cleanup_retries WHERE object_key=?",[key]).map_err(db_error)?;tx.commit().map_err(db_error)?;Ok(())}).await
+}
+
 pub fn start_cleanup(app: Arc<App>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -714,6 +767,7 @@ pub fn start_cleanup(app: Arc<App>) {
             let rows = app
                 .work(|a| {
                     let db = a.db.connection.lock().unwrap();
+                    crate::community::cleanup(&db)?;
                     cleanup_candidates(&db)
                 })
                 .await;
@@ -729,16 +783,10 @@ pub fn start_cleanup(app: Arc<App>) {
                     break;
                 };
                 let storage = app.runtime.read().unwrap().settings.storage.clone();
-                if storage::remove(&storage, &key).await.is_err() {
-                    tracing::warn!(
-                        "临时对象删除失败，已安排退避；其他对象继续清理，未记录内容或凭据"
-                    );
-                    let _ = app
-                        .work(move |a| cleanup_failed(&a.db.connection.lock().unwrap(), &key))
-                        .await;
-                    continue;
-                }
-                let _=app.work(move|a| {let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(db_error)?;if probe {tx.execute("DELETE FROM storage_probes WHERE object_key=? AND created_at<?",params![key,now()-300]).map_err(db_error)?;} else {tx.execute("DELETE FROM friend_messages WHERE id=? AND object_key=? AND (expires<=? OR (ready=0 AND created_at<?))",params![id,key,now(),now()-3600]).map_err(db_error)?;}tx.execute("DELETE FROM storage_cleanup_retries WHERE object_key=?",[key]).map_err(db_error)?;tx.commit().map_err(db_error)?;Ok(())}).await;
+                let _ = cleanup_object(&app, id, key, probe, |key| async move {
+                    storage::remove(&storage, &key).await
+                })
+                .await;
             }
         }
     });
@@ -747,6 +795,91 @@ pub fn start_cleanup(app: Arc<App>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stale_cleanup_snapshot_does_not_delete_a_completed_retry() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let key = "ab".repeat(32);
+        {
+            let db = app.db.connection.lock().unwrap();
+            db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES(?,1,2,?,'fixture',?,?,0)",params![id,key,now()-3601,now()+86400]).unwrap();
+        }
+        let (id, key, probe) = cleanup_candidates(&app.db.connection.lock().unwrap())
+            .unwrap()
+            .remove(0);
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .execute("UPDATE friend_messages SET ready=1", [])
+            .unwrap();
+        let deleted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marked = deleted.clone();
+        cleanup_object(&app, id, key, probe, move |_| async move {
+            marked.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(
+            !deleted.load(std::sync::atomic::Ordering::SeqCst),
+            "a stale cleanup snapshot deleted a now-ready message object"
+        );
+        assert_eq!(
+            app.db
+                .connection
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM friend_messages WHERE ready=1",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+    #[tokio::test]
+    async fn cleanup_skips_active_upload_and_keeps_expired_object_tracked() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let id = "550e8400-e29b-41d4-a716-446655440001".to_owned();
+        let key = "cd".repeat(32);
+        app.db.connection.lock().unwrap().execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES(?,1,2,?,'fixture',?,?,0)",params![id,key,now()-3601,now()-1]).unwrap();
+        let uploading = app.friend_transfer(&id).lock_owned().await;
+        cleanup_object(&app, id.clone(), key.clone(), false, |_| async {
+            panic!("cleanup raced an active PUT")
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            cleanup_candidates(&app.db.connection.lock().unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            app.friend_transfer("other-message")
+                .try_lock_owned()
+                .is_ok()
+        );
+        drop(uploading);
+        let same_app = app.clone();
+        let same_id = id.clone();
+        cleanup_object(&app, id, key, false, move |_| async move {
+            assert!(
+                same_app.friend_transfer(&same_id).try_lock_owned().is_err(),
+                "retry must not overwrite an object during DELETE"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(
+            cleanup_candidates(&app.db.connection.lock().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
     #[test]
     fn failed_oldest_objects_do_not_starve_later_cleanup_and_retries_are_bounded() {
         let db = crate::db::Db::open(":memory:").unwrap();

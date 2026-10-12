@@ -158,7 +158,11 @@ impl Images {
         if !visible(conn, &request) {
             bail!("图片不属于当前可见的服务器或频道介绍");
         }
-        if let Some(banner) = request.url.strip_prefix("tsserver:banner:") {
+        if let Some(banner) = request
+            .url
+            .strip_prefix("tsserver:banner:")
+            .or_else(|| request.url.strip_prefix("tsserver:button:"))
+        {
             let banner = banner.to_owned();
             self.tasks.spawn(async move {
                 let result = async {
@@ -263,6 +267,9 @@ fn visible(conn: &Connection, request: &Request) -> bool {
         if request.url == format!("tsserver:icon:{}", state.server.icon.0) {
             return state.server.icon.0 != 0;
         }
+        if let Some(button) = request.url.strip_prefix("tsserver:button:") {
+            return !button.is_empty() && button == state.server.hostbutton_gfx_url;
+        }
         if let Some(banner) = request.url.strip_prefix("tsserver:banner:") {
             return !banner.is_empty() && banner == state.server.hostbanner_gfx_url;
         }
@@ -325,7 +332,7 @@ pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>
     decode_limits.max_alloc = Some(80 * 1024 * 1024);
     reader.limits(decode_limits);
     let image = reader.decode()?;
-    for size in [1280, 960, 640, 320] {
+    for size in [1280, 960, 640, 320, 160, 64, 32] {
         let mut output = Cursor::new(Vec::new());
         image
             .thumbnail(
@@ -342,6 +349,31 @@ pub fn sanitize_with_limits(bytes: &[u8], limits: ImageLimits) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn complex_images_shrink_to_fit_without_relaxing_byte_limits() {
+        let mut seed = 7u32;
+        let image = image::RgbaImage::from_fn(480, 480, |_, _| {
+            let mut pixel = [0; 4];
+            for byte in &mut pixel {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *byte = (seed >> 24) as u8;
+            }
+            image::Rgba(pixel)
+        });
+        let mut input = Cursor::new(Vec::new());
+        image.write_to(&mut input, ImageFormat::Png).unwrap();
+        let defaults = ImageLimits::default();
+        for budget in [defaults.channel_output_kib, 16] {
+            let limits = ImageLimits {
+                channel_output_kib: budget,
+                ..defaults
+            };
+            let output = sanitize_with_limits(input.get_ref(), limits).unwrap();
+            assert!(output.len() <= budget as usize * 1024);
+            let decoded = image::load_from_memory(&output).unwrap();
+            assert!(decoded.width() <= 160 && decoded.height() <= 160);
+        }
+    }
     #[test]
     fn admin_limits_change_decoding_size_and_description_image_budget() {
         let image = image::RgbImage::from_pixel(2500, 1, image::Rgb([50, 80, 130]));

@@ -9,10 +9,12 @@ for source in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/* vendor/tsclientlib;
     mkdir -p "$destination/$package"
     find "$source" -maxdepth 2 -type f \( -iname 'LICENSE*' -o -iname 'NOTICE*' -o -iname 'COPYING*' \) -exec cp '{}' "$destination/$package/" \;
 done
-for package in react react-dom scheduler; do
-    test -f "web/node_modules/$package/LICENSE" || continue
+for package in react react-dom scheduler qrcode dijkstrajs; do
+    task_license="web/node_modules/$package/LICENSE"
+    test -f "$task_license" || task_license="web/node_modules/$package/LICENSE.md"
+    test -f "$task_license" || continue
     mkdir -p "$destination/npm-$package"
-    cp "web/node_modules/$package/LICENSE" "$destination/npm-$package/"
+    cp "$task_license" "$destination/npm-$package/"
 done
 cp LICENSE THIRD_PARTY_NOTICES.md "$destination/"
 

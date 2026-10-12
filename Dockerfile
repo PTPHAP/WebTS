@@ -23,7 +23,7 @@ RUN npm ci --no-audit --no-fund
 COPY web/ ./
 COPY --from=gateway /build/web/public/crypto ./public/crypto
 RUN npm run build
-RUN mkdir -p /licenses && for name in react react-dom scheduler; do mkdir -p /licenses/npm-$name; cp node_modules/$name/LICENSE /licenses/npm-$name/; done
+RUN mkdir -p /licenses && for name in react react-dom scheduler qrcode dijkstrajs; do mkdir -p /licenses/npm-$name; task_license=node_modules/$name/LICENSE; test -f "$task_license" || task_license=node_modules/$name/LICENSE.md; cp "$task_license" /licenses/npm-$name/; done
 
 
 FROM debian:bookworm-slim

@@ -8,7 +8,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn session_valid(db: &rusqlite::Connection, s: &crate::db::Session) -> Api<()> {
+pub(crate) fn session_valid(db: &rusqlite::Connection, s: &crate::db::Session) -> Api<()> {
     let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.user_id=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?)",params![s.hash,s.user.id,now(),now()],|r|r.get(0)).map_err(anyhow::Error::from)?;
     if !active {
         return Err(Error(axum::http::StatusCode::UNAUTHORIZED, "登录已失效"));
@@ -24,6 +24,31 @@ fn valid(key: &str, v: &Value) -> bool {
         "theme" => matches!(v.as_str(), Some("light" | "dark")),
         "mode" => matches!(v.as_str(), Some("open" | "ptt")),
         "friendsDisplay" => matches!(v.as_str(), Some("floating" | "docked")),
+        "favorites" => v.as_array().is_some_and(|items| {
+            items.len() <= 8
+                && items.iter().all(|item| {
+                    item.as_object().is_some_and(|o| {
+                        o.len() == 4
+                            && o.get("server").and_then(Value::as_str).is_some_and(|s| {
+                                !s.is_empty()
+                                    && s.len() <= 64
+                                    && s.bytes()
+                                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                            })
+                            && o.get("uid").and_then(Value::as_str).is_some_and(|s| {
+                                s.len() <= 64
+                                    && s.bytes()
+                                        .all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b))
+                            })
+                            && o.get("channel")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|v| v <= 9_007_199_254_740_991)
+                            && o.get("name").and_then(Value::as_str).is_some_and(|s| {
+                                !s.is_empty() && s.len() <= 120 && !s.chars().any(char::is_control)
+                            })
+                    })
+                })
+        }),
         "channelFolds" => v.as_object().is_some_and(|servers| {
             servers.len() <= 4
                 && servers.iter().all(|(uid, ids)| {
@@ -140,7 +165,7 @@ pub async fn update(
     let Some(patch) = body.patch.as_object() else {
         return Err(Error::bad("偏好格式无效"));
     };
-    if patch.len() > 12
+    if patch.len() > 13
         || body.patch.to_string().len() > 16384
         || patch.iter().any(|(k, v)| !valid(k, v))
     {
@@ -149,7 +174,7 @@ pub async fn update(
     app.work(move|a|{let s=a.session(&headers)?;if s.user.id!=body.account{return Err(Error::bad("账号已变化，未保存旧页面设置"));}let mut db=a.db.connection.lock().unwrap();let tx=db.transaction().map_err(anyhow::Error::from)?;
         session_valid(&tx,&s)?;
         let old:Option<String>=tx.query_row("SELECT data FROM account_preferences WHERE user_id=?",[s.user.id],|r|r.get(0)).optional().map_err(anyhow::Error::from)?;let mut data=old.as_ref().and_then(|s|serde_json::from_str::<Value>(s).ok()).unwrap_or(json!({}));
-        if !(body.initialize&&old.is_some()){for (k,v) in body.patch.as_object().unwrap(){data[k]=v.clone();}tx.execute("INSERT INTO account_preferences(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",params![s.user.id,data.to_string()]).map_err(anyhow::Error::from)?;}
+        if !(body.initialize&&old.is_some()){for (k,v) in body.patch.as_object().unwrap(){data[k]=v.clone();}if data.to_string().len()>4096{return Err(Error::bad("账号偏好总量超过4KiB，请减少收藏或折叠记录"));}tx.execute("INSERT INTO account_preferences(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",params![s.user.id,data.to_string()]).map_err(anyhow::Error::from)?;}
         tx.commit().map_err(anyhow::Error::from)?;Ok(Json(json!({"account":s.user.id,"initialized":true,"preferences":data})))
     }).await
 }
@@ -157,6 +182,23 @@ pub async fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn favorites_are_bounded_and_cannot_contain_credentials_or_other_fields() {
+        let item = json!({"server":"fixture","uid":"server/uid=","channel":7,"name":"测试频道"});
+        assert!(valid("favorites", &json!([item.clone()])));
+        assert!(!valid("favorites", &json!(vec![item.clone(); 9])));
+        for (key, value) in [
+            ("password", json!("secret")),
+            ("server", json!("../../admin")),
+            ("uid", json!("https://secret")),
+            ("channel", json!(9007199254740992u64)),
+            ("name", json!("x".repeat(121))),
+        ] {
+            let mut bad = item.clone();
+            bad[key] = value;
+            assert!(!valid("favorites", &json!([bad])), "{key}");
+        }
+    }
     #[test]
     fn mobile_order_contains_only_unique_non_secret_panels() {
         assert!(valid(

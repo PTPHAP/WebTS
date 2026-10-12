@@ -41,3 +41,7 @@ scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（Ho
 ## 好友双棘轮与WASM
 
 固定 vodozemac 0.11.1（Matrix.org Foundation及贡献者，Apache-2.0）提供标准Olm v1双棘轮和身份签名；不启用实验Olm v2或fuzzing。来源：https://github.com/matrix-org/vodozemac 。WebTS的MIT薄绑定不改变其许可，不代表Signal实现或官方背书。固定 wasm-bindgen 0.2.129（MIT OR Apache-2.0）生成浏览器接口；发布构建下载官方CLI并校验摘要，依赖许可证随发布包收集。传递依赖按锁文件许可原文保留。
+
+## 邀请二维码
+
+固定 qrcode 1.5.4（MIT）在浏览器本地生成邀请二维码；来源：https://github.com/soldair/node-qrcode 。其浏览器编码依赖 dijkstrajs（MIT）的许可证随包收集；不会向第三方二维码服务发送频道信息。二维码按需加载，分享内容不含密码或身份密钥。

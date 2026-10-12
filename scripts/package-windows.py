@@ -55,8 +55,10 @@ def package(binary, output, root=ROOT):
             for file in safe_files(crate, crate):
                 if len(file.relative_to(crate).parts) <= 2 and file.name.upper().startswith(('LICENSE', 'NOTICE', 'COPYING')):
                     inputs.append((file, f'licenses/rust/{crate.name}/{file.relative_to(crate).as_posix()}'))
-    for name in ('react', 'react-dom', 'scheduler'):
+    for name in ('react', 'react-dom', 'scheduler', 'qrcode', 'dijkstrajs'):
         file = root / f'web/node_modules/{name}/LICENSE'
+        if not file.is_file():
+            file = root / f'web/node_modules/{name}/LICENSE.md'
         if not file.is_file():
             raise ValueError('Install pinned frontend dependencies before packaging licenses')
         inputs.append((file, f'licenses/npm-{name}/LICENSE'))

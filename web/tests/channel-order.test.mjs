@@ -11,7 +11,11 @@ let channelSiblings;
 try{const source=await readFile(new URL('../src/channel-order.ts',import.meta.url),'utf8');const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;({channelSiblings}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`));}catch(e){if(e.code!=='ENOENT')throw e;}
 const spacerSource=await readFile(new URL('../src/ts-text.ts',import.meta.url),'utf8');
 const {channelSpacer}=await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(spacerSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64')}`);
-function render(channels,parent=0,folded=[],members=[],extra={}){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members},own:{},inspectedChannel:undefined,selected:undefined,avatars:{},speaking:{},Avatar:()=>{},foldScope:'serverA',foldedChannels:new Set(folded),Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children}),...extra});}
+const foldsSource=await readFile(new URL('../src/channel-folds.ts',import.meta.url),'utf8');
+const {foldedChannelMembers}=await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(foldsSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64')}`);
+const indexCode=ts.transpileModule(await readFile(new URL('../src/channel-index.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+const indexContext={exports:{},require:()=>({channelSiblings})};runInNewContext(indexCode,indexContext);const {indexChannels}=indexContext.exports;
+function render(channels,parent=0,folded=[],members=[],extra={}){return runInNewContext(`${code};tree(${parent})`,{state:{channels,members},channelIndex:indexChannels(channels,members),hiddenMembers:new Map(folded.map(id=>[id,foldedChannelMembers(channels,members,id)])),own:{},inspectedChannel:undefined,selected:undefined,avatars:{},speaking:{},Avatar:()=>{},foldScope:'serverA',foldedChannels:new Set(folded),foldedChannelMembers,Icon:()=>{},channelSiblings,channelSpacer,h:(tag,props,...children)=>({tag,props,children}),...extra});}
 const channels=[{id:10,parent:0,order:30},{id:20,parent:0,order:10},{id:30,parent:0,order:0},{id:4,parent:30,order:90},{id:90,parent:30,order:0}];
 test('actual channel tree follows predecessor IDs instead of numeric order',()=>{assert.deepEqual(Array.from(render(channels),n=>n.props.key),[30,10,20]);});
 test('nested siblings keep their own TS order and follow live repositioning',()=>{
@@ -37,8 +41,23 @@ test('folding a channel hides both its members and descendants while leaving sib
 
 test('phone channel selection stays in the tree and fold button never joins a channel',()=>{
   const calls=[];
-  const controls=buttons(render(channels,0,[],[],{phone:true,setServerOverview:()=>{},setInspectedChannel:id=>calls.push(['preview',id]),setSelected:()=>{},voice:{current:{send:()=>{}}},setMobile:()=>assert.fail('phone preview must not replace the tree'),toggleChannel:id=>calls.push(['fold',id]),move:()=>assert.fail('a fold must not join a channel')}));
-  controls.find(n=>n.props.className.split(' ').includes('channel')).props.onClick();
+  const controls=buttons(render(channels,0,[],[],{phone:true,channelMenu:(c,x,y)=>calls.push(['menu',c.id,x,y]),setMobile:()=>assert.fail('phone preview must not replace the tree'),toggleChannel:id=>calls.push(['fold',id]),move:()=>assert.fail('a fold must not join a channel')}));
+  controls.find(n=>n.props.className.split(' ').includes('channel')).props.onClick({currentTarget:{getBoundingClientRect:()=>({left:10,bottom:60})}});
   controls.find(n=>n.props.className==='channel-fold').props.onClick();
-  assert.deepEqual(calls,[['preview',30],['fold',30]]);
+  assert.deepEqual(calls,[['menu',30,10,60],['fold',30]]);
+});
+test('collapsed channel row shows at most three supplied avatars and an overflow count',()=>{
+ const members=Array.from({length:5},(_,id)=>({id,channel:id===4?20:4,name:`Member ${id}`}));
+ const rows=buttons(render(channels,0,[30],members));
+ const row=rows.find(n=>n.props.className.split(' ').includes('channel'));
+ const stack=row.children.find(n=>n?.props?.className==='folded-members');
+ assert.equal(stack.props['aria-label'],'已收起 4 位成员');
+ assert.equal(stack.children[0].length,3);
+ assert.deepEqual(Array.from(stack.children[0],n=>n.props.member.id),[0,1,2]);
+ assert.equal(stack.children[1].children.join(''),'+1');
+});
+
+test('channel names provide the phone menu without duplicate three-dot buttons',()=>{
+ const controls=buttons(render(channels,0,[],[],{phone:true}));
+ assert.equal(controls.filter(n=>n.props.className==='channel-actions').length,0);
 });

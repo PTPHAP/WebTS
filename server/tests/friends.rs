@@ -13,6 +13,60 @@ use web_ts::{
 const ORIGIN: &str = "https://friends.example";
 const PASSWORD: &str = "synthetic friends fixture password only";
 #[tokio::test]
+async fn preference_merge_budget_rejects_without_losing_previous_values() {
+    let (_root, app) = setup();
+    let (id, cookie) = user(&app, "budget@example.invalid");
+    let folds = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|key| {
+            (
+                key.to_owned(),
+                json!(
+                    (0..50)
+                        .map(|i| 9_007_199_254_740_000_u64 + i)
+                        .collect::<Vec<_>>()
+                ),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let send = |patch| {
+        Request::builder()
+            .method("PATCH")
+            .uri("/api/preferences")
+            .header("cookie", &cookie)
+            .header("origin", ORIGIN)
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"account":id,"patch":patch}).to_string()))
+            .unwrap()
+    };
+    assert_eq!(
+        router(app.clone())
+            .oneshot(send(json!({"channelFolds":folds})))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let before = call(&app, "/preferences", None, &cookie, "", ORIGIN)
+        .await
+        .1;
+    let favorites = (0..8).map(|i| json!({"server":"s".repeat(64),"uid":"u".repeat(64),"channel":i,"name":"n".repeat(120)})).collect::<Vec<_>>();
+    assert_eq!(
+        router(app.clone())
+            .oneshot(send(json!({"favorites":favorites})))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "/preferences", None, &cookie, "", ORIGIN)
+            .await
+            .1,
+        before
+    );
+}
+#[tokio::test]
 async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_account_writes() {
     let (_root, app) = setup();
     let (ai, a) = user(&app, "settings-a@example.invalid");

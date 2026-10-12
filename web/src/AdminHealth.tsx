@@ -1,0 +1,10 @@
+import {useEffect,useRef,useState} from 'react';
+import {api} from './api';
+type Health={connections:number;max_connections:number;workers:Record<string,number>;auth_mail_queue:number;mail:{notice_pending:number;notice_failed:number};storage:{expired_metadata:number;staged_metadata:number;cleanup_retries:number};server_time:number};
+export function AdminHealth(){
+  const[value,setValue]=useState<Health>(),[error,setError]=useState('');const live=useRef(true),busy=useRef(false);
+  async function refresh(){if(busy.current)return;busy.current=true;try{const v=await api<Health>('/admin/health',undefined,undefined,AbortSignal.timeout(10000));if(live.current){setValue(v);setError('');}}catch(e){if(live.current)setError(e instanceof Error?e.message:'读取失败');}finally{busy.current=false;}}
+  useEffect(()=>{live.current=true;void refresh();const timer=setInterval(()=>{if(!document.hidden)void refresh();},15000);return()=>{live.current=false;clearInterval(timer);};},[]);
+  const labels:Record<string,string>={available:'普通 Worker 可用',queue_available:'普通队列可用',cpu_available:'计算 Worker 可用',cpu_queue_available:'计算队列可用',object_available:'对象传输可用',object_queue_available:'对象队列可用'};
+  return <section className="admin-health"><h3>运行健康</h3><p className="muted">每15秒刷新聚合指标，不收集用户声音或消息。可用名额短暂下降属于正常工作，不代表故障。</p>{error&&<p role="status">{error}</p>}{value&&<><dl><div><dt>活动语音连接</dt><dd>{value.connections} / {value.max_connections}</dd></div>{Object.entries(value.workers).map(([key,v])=><div key={key}><dt>{labels[key]??key}</dt><dd>{v}</dd></div>)}<div><dt>验证 / 找回邮件排队</dt><dd>{value.auth_mail_queue}</dd></div><div><dt>通知邮件待发 / 失败</dt><dd>{value.mail.notice_pending} / {value.mail.notice_failed}</dd></div><div><dt>到期 / 暂存消息元数据</dt><dd>{value.storage.expired_metadata} / {value.storage.staged_metadata}</dd></div><div><dt>对象删除重试</dt><dd>{value.storage.cleanup_retries}</dd></div></dl><small>更新时间：{new Date(value.server_time*1000).toLocaleString('zh-CN')}。持续积压时检查 SMTP / S3 权限及网络；不应直接删除数据库记录绕过对象清理。</small></>}<button className="secondary full" onClick={()=>void refresh()}>刷新指标</button><p className="muted">CPU、内存、端到端延迟和备份可恢复性需要独立运行验证，本页不把 Worker 数量当成容量认证。</p></section>;
+}

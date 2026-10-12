@@ -18,16 +18,19 @@ function visit(node){
   if(ts.isFunctionDeclaration(node)&&node.name?.text==='sendChat')sendChat=node;
   ts.forEachChild(node,visit);
 }
-visit(file);assert.ok(submit&&event&&command&&sendChat,'real chat handlers must be found');
+visit(file);
+const conversationFile=ts.createSourceFile('TsConversation.tsx',await readFile(new URL('../src/TsConversation.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+function composer(node){if(ts.isJsxOpeningElement(node)&&node.tagName.getText(conversationFile)==='form'&&node.attributes.properties.some(p=>p.name?.getText(conversationFile)==='className'&&p.initializer?.text==='composer'))submit=node.attributes.properties.find(p=>p.name?.getText(conversationFile)==='onSubmit').initializer.expression;ts.forEachChild(node,composer);}composer(conversationFile);
+assert.ok(submit&&event&&command&&sendChat,'real chat handlers must be found');
 const printer=ts.createPrinter();
 const code=ts.transpileModule(`${printer.printNode(ts.EmitHint.Unspecified,command,file)}
 ${printer.printNode(ts.EmitHint.Unspecified,sendChat,file)}
-globalThis.submit=${printer.printNode(ts.EmitHint.Expression,submit,file)};
+globalThis.submit=${printer.printNode(ts.EmitHint.Expression,submit,conversationFile)};
 globalThis.sendChat=sendChat;
 globalThis.receive=${printer.printNode(ts.EmitHint.Expression,event,file)};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 function client(scope='channel'){
   let messages=[],draft='same message',sequence=0;const sent=[],notices=[];
-  const context=createContext({scope,message:draft,recipient:{id:2},own:{name:'Sender'},state:{own:1,members:[{id:2}]},connected:true,
+  const context=createContext({scope,message:draft,reply:undefined,replyText:(_,text)=>text,send:(...args)=>context.sendChat(...args),setReply:()=>{},sticky:{current:true},recipient:{id:2},own:{name:'Sender'},state:{own:1,members:[{id:2}]},connected:true,
     crypto:{randomUUID:()=>String(++sequence)},pending:{current:new Map()},voice:{current:{send:value=>sent.push(value)}},
     setActivityAlert:()=>{},setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
     moves:{current:{result:()=>false}},channelAction:{current:''},avatarAction:{current:''},setAvatarBusy:()=>{},

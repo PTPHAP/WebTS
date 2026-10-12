@@ -1,3 +1,4 @@
+import {AdminHealth} from './AdminHealth';
 import {useEffect,useState} from 'react';
 import type {FormEvent} from 'react';
 import {api} from './api';
@@ -6,12 +7,13 @@ import type {Home} from './SiteHome';
 import {AdminAccounts} from './AdminAccounts';
 import {AdminNotices} from './AdminNotices';
 import {AdminStorage} from './AdminStorage';
+import {AdminWatch} from './AdminWatch';
 import {defaultImageLimits,imageLimitFields,readImageLimits} from './image-limits';
 import type {ImageLimits} from './image-limits';
 
 export function AdminPanel({onSaved,currentEmail,onHomeSaved}:{onSaved:()=>Promise<void>;currentEmail:string;onHomeSaved:(home:Home)=>void}){
   const[tab,setTab]=useState('accounts');
-  return <><div className="admin-tabs" role="tablist" aria-label="站点管理分类"><button role="tab" aria-selected={tab==='accounts'} onClick={()=>setTab('accounts')}>账号管理</button><button role="tab" aria-selected={tab==='settings'} onClick={()=>setTab('settings')}>基础配置</button><button role="tab" aria-selected={tab==='notices'} onClick={()=>setTab('notices')}>信件与通知</button><button role="tab" aria-selected={tab==='storage'} onClick={()=>setTab('storage')}>加密临时存储</button><button role="tab" aria-selected={tab==='home'} onClick={()=>setTab('home')}>外观、协议与公告</button></div><div role="tabpanel">{tab==='accounts'?<AdminAccounts currentEmail={currentEmail}/>:tab==='notices'?<AdminNotices/>:tab==='storage'?<AdminStorage/>:tab==='home'?<AdminHome onSaved={onHomeSaved}/>:<AdminSettings onSaved={onSaved}/>}</div></>;
+  return <><div className="admin-tabs" role="tablist" aria-label="站点管理分类"><button role="tab" aria-selected={tab==='health'} onClick={()=>setTab('health')}>运行健康</button><button role="tab" aria-selected={tab==='accounts'} onClick={()=>setTab('accounts')}>账号管理</button><button role="tab" aria-selected={tab==='settings'} onClick={()=>setTab('settings')}>基础配置</button><button role="tab" aria-selected={tab==='notices'} onClick={()=>setTab('notices')}>信件与通知</button><button role="tab" aria-selected={tab==='storage'} onClick={()=>setTab('storage')}>加密临时存储</button><button role="tab" aria-selected={tab==='watch'} onClick={()=>setTab('watch')}>联合观赛</button><button role="tab" aria-selected={tab==='home'} onClick={()=>setTab('home')}>外观、协议与公告</button></div><div role="tabpanel">{tab==='health'?<AdminHealth/>:tab==='accounts'?<AdminAccounts currentEmail={currentEmail}/>:tab==='notices'?<AdminNotices/>:tab==='storage'?<AdminStorage/>:tab==='watch'?<AdminWatch/>:tab==='home'?<AdminHome onSaved={onHomeSaved}/>:<AdminSettings onSaved={onSaved}/>}</div></>;
 }
 
 type Target={id:string;name:string;address:string};

@@ -46,6 +46,16 @@ function browser(microphoneError) {
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
 
+test('playback failure stays visible when another member starts successfully and clears after recovery',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+ let count=0,blocked=true;globalThis.Audio=class{constructor(){this.id=count++;}play(){return this.id===1&&blocked?Promise.reject(Error('autoplay')):Promise.resolve();}pause(){}};
+ const node=()=>({connect(){},disconnect(){},stream:new MediaStream([]),gain:{value:1},threshold:{},knee:{},ratio:{},attack:{},release:{}});
+ Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createDynamicsCompressor:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
+ voice.peer.ontrack({track:{id:'first'}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
+ voice.peer.ontrack({track:{id:'second'}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
+ blocked=false;voice.resume();for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,false);voice.close();assert.equal(voice.playbackFailed.size,0);
+});
+
 test('AI processing switches live without replacing the connection or microphone track',async()=>{
  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',false);
  await env.message({type:'state',own:1,members:[{id:1,channel:9,away:false}],channels:[{id:9}]});

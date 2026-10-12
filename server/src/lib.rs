@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod app;
 pub mod avatar;
 pub mod channel_images;
+pub mod community;
 pub mod config;
 pub mod db;
 pub mod email;
@@ -9,6 +10,7 @@ pub mod gateway;
 pub mod identity;
 pub mod media;
 pub mod notices;
+pub mod operations;
 pub mod password;
 pub mod preferences;
 pub mod probe;
@@ -16,6 +18,8 @@ pub mod profile;
 pub mod settings;
 pub mod site;
 pub mod vault;
+pub mod watch;
+mod watch_metadata;
 
 mod server_banner;
 

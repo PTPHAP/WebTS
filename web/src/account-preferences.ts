@@ -11,8 +11,8 @@ async function flush(){if(!ready||busy||account===undefined||Object.keys(pending
 export function startPreferences(owner:number,onError:(message:string)=>void):()=>void {
   const epoch=++generation;account=owner;ready=false;busy=false;pending={};sending={};cached={};failed=onError;clearTimeout(timer);
   const refresh=async()=>{if(epoch!==generation||busy)return;busy=true;try{let data=await api<Reply>('/preferences');if(epoch!==generation)return;if(data.account!==owner)throw new Error('登录账号已变化');if(!data.initialized){data=await api<Reply>('/preferences',{account:owner,patch:{...defaults,...pending},initialize:true},'PATCH');if(epoch!==generation)return;}if(data.account!==owner)throw new Error('登录账号已变化');ready=true;apply(data.preferences);}catch(e){if(epoch===generation){onError(e instanceof Error?e.message:'设置读取失败');if(!ready){clearTimeout(timer);timer=setTimeout(()=>{void refresh();},5000);}}}finally{if(epoch===generation){busy=false;if(ready&&Object.keys(pending).length)schedule();}}};
-  reload=refresh;void refresh();const poll=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},30000);window.addEventListener('focus',refresh);
-  return()=>{if(epoch!==generation)return;generation++;reload=undefined;account=undefined;ready=false;busy=false;pending={};sending={};cached={};clearTimeout(timer);clearInterval(poll);window.removeEventListener('focus',refresh);};
+  apply({});reload=refresh;void refresh();const poll=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},30000);window.addEventListener('focus',refresh);
+  return()=>{if(epoch!==generation)return;generation++;reload=undefined;account=undefined;ready=false;busy=false;pending={};sending={};cached={};apply({});clearTimeout(timer);clearInterval(poll);window.removeEventListener('focus',refresh);};
 }
 export function useAccountPreference<T>(name:string,initial:T|(()=>T)):[T,(value:T|((before:T)=>T))=>void] {
   const[value,setValue]=useState<T>(()=>{const fallback=typeof initial==='function'?(initial as ()=>T)():initial;defaults[name]=fallback;return (cached[name]??fallback) as T;});const current=useRef(value);current.current=value;

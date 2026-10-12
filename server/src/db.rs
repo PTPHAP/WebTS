@@ -86,6 +86,12 @@ impl Db {
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS profiles(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS watch_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS community_events(id TEXT PRIMARY KEY,owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,ciphertext BLOB NOT NULL,starts INTEGER NOT NULL,ends INTEGER NOT NULL,community INTEGER NOT NULL CHECK(community IN(0,1)),cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN(0,1)),UNIQUE(owner,request_id));
+          CREATE TABLE IF NOT EXISTS community_invites(event_id TEXT NOT NULL REFERENCES community_events(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,attending INTEGER NOT NULL DEFAULT 0 CHECK(attending IN(0,1)),PRIMARY KEY(event_id,user_id));
+          CREATE INDEX IF NOT EXISTS community_event_time ON community_events(ends,starts);
+          CREATE INDEX IF NOT EXISTS community_invite_user ON community_invites(user_id,event_id);")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS watch_feed_state(id INTEGER PRIMARY KEY CHECK(id=1),event_id TEXT NOT NULL,sequence INTEGER NOT NULL)")?;
         let avatar_column: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('profiles') WHERE name='avatar_hash')",
             [],

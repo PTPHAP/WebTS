@@ -57,8 +57,8 @@ class ReleaseTests(unittest.TestCase):
             write('server/Cargo.toml', b'[package]\nversion="1.2.3"\n')
             for name in ('index.html', 'crypto/webts_crypto.js', 'crypto/webts_crypto_bg.wasm', 'audio/0.4.1-gtcrn.wasm', 'audio/0.4.1-rnnoise.wasm', 'audio/0.4.1-rnnoise_simd.wasm', 'audio/gtcrn-0.4.1-strength1.js', 'audio/rnnoise-0.4.1-voice4.js'):
                 write('web/dist/' + name)
-            for name in ('react','react-dom','scheduler'):
-                write('web/node_modules/' + name + '/LICENSE')
+            for name in ('react','react-dom','scheduler','qrcode','dijkstrajs'):
+                write('web/node_modules/' + name + ('/LICENSE.md' if name=='dijkstrajs' else '/LICENSE'))
             write('licenses/audio/LICENSE'); write('vendor/tsclientlib/LICENSE')
             write('web-ts.exe', b'MZfixture'); write('data/user.db', b'private fixture')
             write('secrets/master.key', b'private fixture'); write('docs/HANDOFF.md', b'private fixture')

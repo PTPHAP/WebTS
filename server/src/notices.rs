@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn html_and_markdown_cannot_run_code_or_rewrite_links() {
         let mut d=Draft{title:"更新".into(),body:"# 新版本\n\n**更新** [链接](https://example.com)\n\n<script>alert(1)</script><img src='data:image/svg+xml,evil' onerror='evil()'><a href='javascript:evil()'>bad</a><iframe src='https://evil.example'></iframe>".into(),format:"markdown".into(),audience:"all".into(),recipients:vec![],email:false,password:String::new(),request_id:String::new()};
-        let html = d.normalize().ok().expect("valid notice");
+        let html = d.normalize().expect("valid notice");
         assert!(html.contains("<h1>新版本</h1>"));
         assert!(html.contains("<strong>更新</strong>"));
         assert!(html.contains("noopener noreferrer nofollow"));
@@ -497,7 +497,7 @@ mod tests {
         }
         d.format = "html".into();
         d.body="<h2>标题</h2><img src='https://user:password@example.com/a.jpg'><img src='http://example.com/a.jpg'><input autofocus><style>evil</style>".into();
-        let html = d.normalize().ok().expect("valid notice");
+        let html = d.normalize().expect("valid notice");
         assert!(html.contains("<h2>标题</h2>"));
         assert!(!html.contains("password"));
         assert!(!html.contains("http:"));
@@ -560,7 +560,6 @@ mod tests {
         };
         let result = db
             .publish_notice(&session, &draft, "<p>safe</p>")
-            .ok()
             .expect("authorized publish");
         let id = result["id"].as_i64().unwrap();
         let (later, _, verify) = db.register("later@example.invalid", &hash).unwrap();

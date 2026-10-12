@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 const code=ts.transpileModule(await readFile(new URL('../src/channel-folds.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
-const {toggleChannelFold}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const {toggleChannelFold,foldedChannelMembers}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+test('folded avatar summaries include only supplied members in this visible channel subtree',()=>{
+ const channels=[{id:1,parent:0},{id:2,parent:1},{id:3,parent:2},{id:4,parent:0}];
+ const members=[{id:10,channel:1},{id:11,channel:3},{id:12,channel:4},{id:13,channel:999}];
+ assert.deepEqual(foldedChannelMembers(channels,members,1),members.slice(0,2));
+ assert.deepEqual(foldedChannelMembers(channels,members,4),[members[2]]);
+ assert.deepEqual(foldedChannelMembers(channels,members,999),[]);
+ assert.deepEqual(foldedChannelMembers([{id:1,parent:2},{id:2,parent:1}],members,1),[members[0]]);
+ assert.deepEqual(channels,[{id:1,parent:0},{id:2,parent:1},{id:3,parent:2},{id:4,parent:0}]);
+});
 test('channel folds toggle independently per server without mutating earlier preferences',()=>{
   const old={a:[1,2],b:[1]};const next=toggleChannelFold(old,'a',1);
   assert.deepEqual(old,{a:[1,2],b:[1]});assert.deepEqual(next,{b:[1],a:[2]});

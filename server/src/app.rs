@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak},
     time::{Duration, Instant},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
@@ -31,12 +31,14 @@ pub struct App {
     pub config: Config,
     pub db: Db,
     pub vault: Vault,
+    pub watch: crate::watch::Watch,
     pub connections: Arc<Connections>,
     pub sockets: Arc<Semaphore>,
     pub image_bytes: Arc<Semaphore>,
     pub friend_objects: Arc<Semaphore>,
     object_queue: Arc<Semaphore>,
     object_accounts: Arc<Mutex<HashMap<i64, usize>>>,
+    friend_transfers: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     workers: Arc<Semaphore>,
     cpu_workers: Arc<Semaphore>,
     work_queue: Arc<Semaphore>,
@@ -132,6 +134,9 @@ impl IntoResponse for Error {
 pub type Api<T> = std::result::Result<T, Error>;
 
 impl App {
+    pub fn operational_snapshot(&self) -> Value {
+        json!({"connections":self.connections.total(),"max_connections":self.config.max_connections,"workers":{"available":self.workers.available_permits(),"queue_available":self.work_queue.available_permits(),"cpu_available":self.cpu_workers.available_permits(),"cpu_queue_available":self.cpu_queue.available_permits(),"object_available":self.friend_objects.available_permits(),"object_queue_available":self.object_queue.available_permits()},"auth_mail_queue":self.mail.max_capacity()-self.mail.capacity()})
+    }
     pub fn new(config: Config) -> Result<Arc<Self>> {
         for path in [&config.database, &config.master_key_file] {
             if let Some(parent) = std::path::Path::new(path).parent()
@@ -152,6 +157,7 @@ impl App {
             .map_err(|_| anyhow::anyhow!("部署密钥长度无效"))?;
         let db = Db::open(&config.database)?;
         let vault = Vault::new(key);
+        let watch = crate::watch::Watch::load(&db, &vault)?;
         let settings = if let Some(record) = db.settings()? {
             let plaintext = vault.open(0, "site-settings", "v1", &record)?;
             serde_json::from_slice(&plaintext)?
@@ -226,9 +232,11 @@ impl App {
             friend_objects: Arc::new(Semaphore::new(OBJECT_CONCURRENCY as usize)),
             object_queue: Arc::new(Semaphore::new(32)),
             object_accounts: Arc::new(Mutex::new(HashMap::new())),
+            friend_transfers: Mutex::new(HashMap::new()),
             config,
             db,
             vault,
+            watch,
             workers: Arc::new(Semaphore::new(8)),
             cpu_workers: Arc::new(Semaphore::new(2)),
             work_queue: Arc::new(Semaphore::new(64)),
@@ -296,6 +304,16 @@ impl App {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn friend_transfer(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut transfers = self.friend_transfers.lock().unwrap();
+        transfers.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = transfers.get(id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        transfers.insert(id.to_owned(), Arc::downgrade(&lock));
+        lock
     }
     pub async fn object_permit(self: &Arc<Self>, headers: &HeaderMap) -> Api<ObjectPermit> {
         let owner = self.session_async(headers).await?.user.id;
@@ -415,6 +433,30 @@ impl App {
 pub fn router(app: Arc<App>) -> Router {
     let api = Router::new()
         .route("/health", get(health))
+        .route("/client-build", get(crate::operations::client_build))
+        .route("/admin/health", get(crate::operations::health))
+        .route(
+            "/events",
+            get(crate::community::list).post(crate::community::create),
+        )
+        .route("/events/{id}", post(crate::community::action))
+        .route("/watch", get(crate::watch::get))
+        .route(
+            "/admin/watch",
+            get(crate::watch::admin_get)
+                .post(crate::watch::save)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route("/admin/watch/inspect", post(crate::watch::inspect))
+        .route(
+            "/admin/watch/score",
+            post(crate::watch::manual).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route("/admin/watch/feed-key", post(crate::watch::rotate))
+        .route(
+            "/watch/feed",
+            post(crate::watch::feed).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route(
             "/admin/settings",
             get(crate::settings::get_settings).post(crate::settings::save_settings),
@@ -515,6 +557,14 @@ pub fn router(app: Arc<App>) -> Router {
             ServeFile::new(format!("{}/index.html", app.config.web_dir)),
         )
         .route_service(
+            "/watch",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
+        .route_service(
+            "/events",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
+        .route_service(
             "/privacy",
             ServeFile::new(format!("{}/index.html", app.config.web_dir)),
         )
@@ -543,7 +593,7 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
         "permissions-policy",
         HeaderValue::from_static("display-capture=(), camera=(), microphone=(self)"),
     );
-    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"));
+    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-src https://www.bilibili.com https://www.youtube-nocookie.com https://player.twitch.tv; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"));
     if api {
         h.insert("cache-control", HeaderValue::from_static("no-store"));
     }
@@ -555,7 +605,11 @@ async fn guard(
     next: Next,
 ) -> Response {
     let mutation = !matches!(*request.method(), Method::GET | Method::HEAD);
+    // Machine feed has its own HMAC authentication and never accepts cookie authority.
+    let watch_feed = *request.method() == Method::POST
+        && matches!(request.uri().path(), "/api/watch/feed" | "/watch/feed");
     if (mutation || request.uri().path().ends_with("/connect"))
+        && !watch_feed
         && request
             .headers()
             .get("origin")
@@ -595,6 +649,7 @@ async fn guard(
         .strip_prefix("/api")
         .unwrap_or(request.uri().path());
     let (bucket, window, cap, by_ip) = match path {
+        "/watch/feed" => ("watch-feed", 60, 120, true),
         "/auth/login" => ("login", 600, 300, true),
         "/auth/register" => ("register", 600, 100, true),
         "/auth/forgot" => ("recovery-mail", 600, 100, true),
@@ -971,6 +1026,10 @@ async fn export_identity(
     .await
 }
 
+async fn servers(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
+    app.session_async(&headers).await?;
+    Ok(Json(app.runtime.read().unwrap().settings.public()))
+}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1001,6 +1060,41 @@ pub(crate) mod tests {
         (dir, app, headers)
     }
 
+    #[tokio::test]
+    async fn cancelled_message_request_keeps_transfer_lease_until_worker_finishes() {
+        let (_dir, app, headers) = fixture();
+        let blocked = app.cpu_workers.clone().acquire_many_owned(2).await.unwrap();
+        let id = "550e8400-e29b-41d4-a716-446655440002";
+        let body =
+            serde_json::from_value(json!({"peer":2,"id":id,"ciphertext":"{}","mode":"server"}))
+                .unwrap();
+        let task_app = app.clone();
+        let request = tokio::spawn(async move {
+            crate::friends::send(State(task_app), headers, Json(body)).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.cpu_queue.available_permits() == 16 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        request.abort();
+        let _ = request.await;
+        assert!(app.friend_transfer(id).try_lock_owned().is_err());
+        assert_eq!(app.friend_objects.available_permits(), 7);
+        drop(blocked);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.friend_objects.available_permits() != 8 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(app.friend_transfer(id).try_lock_owned().is_ok());
+        let _ = app.friend_transfer("sweep");
+        assert!(app.friend_transfers.lock().unwrap().len() <= 1);
+    }
     #[tokio::test]
     async fn shared_ip_accounts_do_not_consume_each_others_read_budget() {
         let (_dir, app, first) = fixture();
@@ -1180,8 +1274,4 @@ pub(crate) mod tests {
             "configuration contention must not lock the database and deadlock a settings writer"
         );
     }
-}
-async fn servers(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
-    app.session_async(&headers).await?;
-    Ok(Json(app.runtime.read().unwrap().settings.public()))
 }

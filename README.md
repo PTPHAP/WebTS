@@ -75,6 +75,10 @@ Windows 10/11 x64 不需要 Docker 或开发工具链。[Windows 教程](docs/WI
 
 完整导航见 [文档中心](docs/README.md)。[正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.0.6)提供 Linux、Windows、Docker 镜像归档、完整源码 ZIP 和 SHA256 校验，含固定协议子模块；GitHub 自动生成的 Source code 归档不含子模块，请优先使用完整源码包。
 
+联合观赛是正在验证的源码更新：免费直播链接接入、官方播放器或跳转、现有频道语音、手动 CS2 赛况及签名接口。平台限制与后台配置见 [联合观赛文档](docs/WATCH.md)，现有 1.0.6 安装包尚不包含。
+
+当前源码还增加了社区活动、账号同步频道收藏、邀请二维码、TS 聊天引用与搜索、连接诊断、通话期间安全的更新提示和管理员运行概览。用法与隐私边界见 [社区功能](docs/COMMUNITY.md)；新功能尚未生成正式安装包，好友 E2EE 仍按原有实验范围提供。
+
 ## 已提供的功能
 
 | 模块 | 功能 |

@@ -224,7 +224,7 @@ async fn image_policy_is_admin_only_persisted_and_applied_to_profile_uploads() {
         StatusCode::UNAUTHORIZED
     );
     let mut unsafe_update = update.clone();
-    unsafe_update["settings"]["image_limits"]["channel_download_kib"] = json!(8193);
+    unsafe_update["settings"]["image_limits"]["channel_download_kib"] = json!(16385);
     assert_eq!(
         call(
             &app,
@@ -323,6 +323,8 @@ async fn page_links_support_direct_navigation_without_masking_missing_assets() {
         "/",
         "/login",
         "/app",
+        "/events",
+        "/watch",
         "/privacy",
         "/terms",
         "/assets/missing.js",

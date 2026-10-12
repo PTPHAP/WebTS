@@ -164,12 +164,7 @@ dialog{width:min(480px,calc(100% - 32px));max-height:calc(100dvh - 48px);overflo
 
 .workspace-shell .messages{min-height:0}.workspace-shell .channel-announcement{min-height:0;flex-shrink:1;overflow:auto}.channel-preview-topic{font-size:11px;color:var(--muted);margin-bottom:8px;overflow-wrap:anywhere}
 .context-menu{position:fixed;z-index:30;width:252px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;padding:8px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}.context-menu>strong{display:block;font-size:12px;padding:10px;overflow-wrap:anywhere}.context-menu>button{display:block;text-align:left;width:100%;padding:11px;border-radius:7px;font-size:13px}.context-menu>button:hover,.context-menu>button:focus-visible{background:var(--accent-bg);color:var(--accent)}.context-menu>button:disabled{opacity:.4}.context-menu>small{display:block;color:var(--muted);font-size:10px;padding:8px}.channel-editor-fields{border:0;padding:0}.channel-editor-fields small{font-size:11px;color:var(--muted)}
-.workspace-shell .resizable-preview{position:relative;display:flex;flex-direction:column;flex:none;flex-shrink:1;max-height:45%;padding:0 0 12px;overflow:hidden}.channel-preview-header{flex-shrink:0;padding:12px 24px;background:var(--panel);border-bottom:1px solid var(--border)}.channel-preview-header>div{display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:var(--accent);font-size:11px}.channel-preview-header strong{flex:1;min-width:120px}.channel-preview-header .text-button{margin-left:0}.channel-preview-content{flex:1;overflow:auto;padding:14px 24px;min-height:0;overscroll-behavior:contain}.resizable-preview .ts-text{max-height:none!important;overflow:visible}.preview-resizer{position:absolute;bottom:0;left:0;right:0;height:12px;cursor:row-resize;touch-action:none;background:var(--surface)}.preview-resizer::after{content:'';display:block;width:40px;height:3px;border-radius:3px;background:var(--muted);margin:4px auto}.preview-resizer:hover,.preview-resizer:focus-visible{background:var(--accent-bg);outline:1px solid var(--accent)}
 .brand-mark>img{width:100%;height:100%;object-fit:contain;border-radius:8px}.site-icon-preview{width:64px;height:64px;object-fit:contain;border-radius:12px;display:block;margin:10px 0}.global-footer{flex-shrink:0;border-top:1px solid var(--border);background:var(--panel);padding:8px 20px;font-size:11px;color:var(--muted);max-height:96px;overflow:auto;overflow-wrap:anywhere}.footer-links{display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap}.footer-links strong{color:var(--text)}.custom-footer{line-height:1.8;text-align:center;margin-top:6px}.custom-footer p{margin:4px 0}.custom-footer ul,.custom-footer ol{padding-left:24px;display:inline-block;text-align:left}.public-app .global-footer{max-height:none;width:100%;margin-top:auto;padding:24px}.auth-policy-note{font-size:11px;color:var(--muted);line-height:1.8;margin:12px 0}.legal-page{width:min(920px,100%);margin:0 auto;padding:50px 28px;line-height:1.9}.legal-page h1{font-size:30px;margin:18px 0}.legal-page h2{font-size:19px;margin:30px 0 14px}.legal-operator{background:var(--panel);padding:20px;border:1px solid var(--border);border-radius:12px;margin:20px 0;font-size:13px;overflow-wrap:anywhere}.legal-operator strong{display:inline-block;margin-right:10px}.legal-details,.legal-copy p{white-space:pre-wrap;overflow-wrap:anywhere}.legal-copy{font-size:13px;color:var(--muted)}.legal-page>.boundary{padding:14px 0;border-bottom:1px solid var(--border)}
-.app[data-layout=mobile] .channel-preview-header,.app[data-layout=mobile] .channel-preview-content{padding:12px 16px}
-.app[data-layout=mobile] .preview-resizer{height:18px}
-.app[data-layout=mobile] .workspace-shell .resizable-preview{padding-bottom:18px}
-.app[data-layout=mobile] .preview-resizer::after{margin:7px auto}
 .app[data-layout=mobile] .global-footer{padding:7px 10px;font-size:10px;max-height:74px}
 .app[data-layout=mobile] .footer-links{gap:8px}
 .app[data-layout=mobile] .legal-page{padding:28px 20px}
@@ -247,8 +242,6 @@ button.server-card{width:100%;text-align:left;color:inherit;cursor:pointer;font:
 .app[data-layout=mobile] .voice-controls .ptt{min-height:40px;font-size:11px;padding:8px;max-width:84px}
 .app[data-layout=mobile] .mobile-voice-controls{display:block}
 .app[data-layout=mobile] .workspace-shell:has(.mobile-friends){display:none}
-.app[data-layout=mobile] .workspace-shell .resizable-preview{max-height:30%;min-height:95px}
-.app[data-layout=mobile] .channel-preview-header,.app[data-layout=mobile] .channel-preview-content{padding:10px 16px}
 .app[data-layout=mobile] .channel-preview-header>div{font-size:12px;gap:7px}
 .app[data-layout=mobile] .channel-preview-header strong{min-width:90px}
 .app[data-layout=mobile] .channel-preview-header .tag{font-size:9px}
@@ -339,21 +332,14 @@ button.server-card{width:100%;text-align:left;color:inherit;cursor:pointer;font:
 .friend-presence-choice{font-size:.8rem;margin:12px 0}.private-screen-notice{display:none}
 .private-screen-masked .private-screen-notice{display:grid;position:fixed;inset:0;z-index:2147483647;place-items:center;padding:24px;background:#000;color:#fff;margin:0;text-align:center;transition:none}
 .private-screen-masked .friend-messages,.private-screen-masked .friend-attachment,.private-screen-masked .friend-composer,.private-screen-masked .friend-key-setup,.private-screen-masked .friend-safety{visibility:hidden}
-.channel-line{display:flex;align-items:center;gap:2px;min-width:0}.channel-line>.channel{flex:1;min-width:0}.channel-line>.channel>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.channel-fold,.channel-fold-spacer{width:26px;flex-shrink:0}.channel-fold{min-height:36px;display:grid;place-items:center;color:var(--muted);border-radius:8px}.channel-fold:hover{background:var(--accent-bg);color:var(--accent)}.channel-actions{display:none}.mobile-channel-selection{display:none}
+.channel-line{display:flex;align-items:center;gap:2px;min-width:0}.channel-line>.channel{flex:1;min-width:0}.channel-line>.channel>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.channel-fold,.channel-fold-spacer{width:26px;flex-shrink:0}.channel-fold{min-height:36px;display:grid;place-items:center;color:var(--muted);border-radius:8px}.channel-fold:hover{background:var(--accent-bg);color:var(--accent)}
 .app[data-layout=mobile] .channels-panel{--channel-indent:8px}
 .app[data-layout=mobile] .channel-line{gap:0}
 .app[data-layout=mobile] .channel-line>.channel{padding:10px 6px;font-size:14px}
 .app[data-layout=mobile] .channel-fold,.app[data-layout=mobile] .channel-fold-spacer{width:44px}
 .app[data-layout=mobile] .channel-fold{min-height:48px;border-radius:12px}
-.app[data-layout=mobile] .channel-actions{display:block;min-width:38px;min-height:48px;font-size:23px;color:var(--muted);border-radius:12px}
-.app[data-layout=mobile] .channel-actions:active{background:var(--accent-bg)}
 .app[data-layout=mobile] .channel-node>.member-row{padding-left:42px;gap:10px;font-size:14px}
 .app[data-layout=mobile] .channel-node>.member-row>span:nth-child(2){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.app[data-layout=mobile] .mobile-channel-selection{display:flex;align-items:center;gap:8px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:14px;flex-shrink:0}
-.app[data-layout=mobile] .mobile-channel-selection>div{flex:1;min-width:0}
-.app[data-layout=mobile] .mobile-channel-selection small{display:block;font-size:10px;color:var(--muted);margin-bottom:4px}
-.app[data-layout=mobile] .mobile-channel-selection strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
-.app[data-layout=mobile] .mobile-channel-selection button{min-height:44px;flex-shrink:0}
 .app[data-layout=mobile] .channels-panel>.section-label{padding:8px 4px;margin:8px 0;font-size:12px}
 .app[data-layout=mobile] .channels-panel>.channel-list{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:6px;margin-bottom:10px}
 .app[data-layout=mobile] .channels-panel .server-card{background:var(--surface);border:1px solid var(--border)}

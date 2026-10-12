@@ -15,6 +15,7 @@ code=code.replaceAll("'./ts-text'",JSON.stringify(textModule)).replaceAll('"reac
 const {ChannelText}=await import(moduleUrl(code));
 async function component(file){
   let output=compile(await readFile(new URL(`../src/${file}.tsx`,import.meta.url),'utf8'));
+  output=output.replaceAll("'./server-images'",JSON.stringify(moduleUrl(compile(await readFile(new URL('../src/server-images.ts',import.meta.url),'utf8')))));
   output=output.replaceAll("'./ChannelText'",JSON.stringify(moduleUrl(code))).replaceAll("'./ts-text'",JSON.stringify(textModule)).replaceAll('"react/jsx-runtime"',JSON.stringify(pathToFileURL(require.resolve('react/jsx-runtime')).href));
   return import(moduleUrl(output));
 }
@@ -51,4 +52,26 @@ test('actual channel rendering uses the configured per-description picture count
   const urls=['a','b','c'].map(name=>`ts3image://${name}.png?channel=1&path=/`);
   const html=renderToStaticMarkup(createElement(ChannelText,{text:urls.map(url=>`[img]${url}[/img]`).join(''),imageLimit:1,images:Object.fromEntries(urls.map(url=>[url,{data:'data:image/png;base64,AA=='}]))}));
   assert.equal((html.match(/<img /g)||[]).length,1);assert.match(html,/图片数量超过站点限制/);
+});
+
+test('server logo falls back to the published host-button image and exposes retry errors safely',()=>{
+ const buttonImage='https://images.example.com/logo.webp';
+ const state={server:'Fixture',members:[],serverInfo:{icon:123,buttonImage,welcome:'',message:''}};
+ const images={'tsserver:icon:123':{error:'TS拒绝图片读取'},[`tsserver:button:${buttonImage}`]:{data:'data:image/png;base64,AA=='}};
+ const html=renderToStaticMarkup(createElement(ServerOverview,{state,images,loadImage(){},imageLimit:8,back(){}}));
+ assert.match(html,/<img[^>]*alt="服务器图标"/);assert.doesNotMatch(html,/src="https:/);
+ const failed=renderToStaticMarkup(createElement(ServerOverview,{state,images:{'tsserver:icon:123':{error:'TS拒绝图片读取'},[`tsserver:button:${buttonImage}`]:{error:'图床拒绝访问 <script>x</script>'}},loadImage(){},imageLimit:8,back(){}}));
+ assert.match(failed,/重新读取服务器图标/);assert.match(failed,/&lt;script&gt;/);assert.doesNotMatch(failed,/<script/);
+});
+
+test('server logo keeps native priority while pending or successful, and handles missing metadata',async()=>{
+ const {serverIconUrl}=await import(moduleUrl(compile(await readFile(new URL('../src/server-images.ts',import.meta.url),'utf8'))));
+ const info={icon:42,buttonImage:'https://images.example.com/logo.png'},native='tsserver:icon:42';
+ assert.equal(serverIconUrl(info,{}),native);
+ assert.equal(serverIconUrl(info,{[native]:{loading:true}}),native);
+ assert.equal(serverIconUrl(info,{[native]:{data:'data:image/png;base64,AA=='}}),native);
+ assert.equal(serverIconUrl(info,{[native]:{error:'失败'}}),`tsserver:button:${info.buttonImage}`);
+ assert.equal(serverIconUrl({icon:42},{[native]:{error:'失败'}}),native);
+ assert.equal(serverIconUrl({icon:0,buttonImage:info.buttonImage},{}),`tsserver:button:${info.buttonImage}`);
+ assert.equal(serverIconUrl(undefined,{}),'');
 });

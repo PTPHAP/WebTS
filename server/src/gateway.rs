@@ -91,6 +91,14 @@ impl Connections {
             .filter(|e| e.owner == owner)
             .count()
     }
+    pub fn total(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|e| !e.cancel.is_cancelled())
+            .count()
+    }
     pub fn touch(&self, owner: i64, session: &str) {
         let mut users = self.presence.lock().unwrap();
         if users.len() >= 5000 {
@@ -587,7 +595,7 @@ fn channel_limit(value: Option<&tsproto_types::MaxClients>) -> Option<i32> {
 fn snapshot(conn: &Connection) -> Result<Value> {
     let state = conn.get_state()?;
     Ok(
-        json!({"type":"state","server":state.server.name,"serverInfo":{"uid":state.server.public_key.get_uid(),"welcome":state.server.welcome_message,"message":state.server.hostmessage,"platform":state.server.platform,"version":state.server.version,"maxClients":state.server.max_clients,"icon":state.server.icon.0,"banner":state.server.hostbanner_gfx_url,"bannerLink":state.server.hostbanner_url,"buttonLabel":state.server.hostbutton_tooltip,"buttonLink":state.server.hostbutton_url},"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"codec":c.codec as u8,"quality":c.codec_quality,"kind":match c.channel_type {tsproto_types::ChannelType::Temporary=>"temporary",tsproto_types::ChannelType::SemiPermanent=>"semi",tsproto_types::ChannelType::Permanent=>"permanent"},"maxClients":channel_limit(c.max_clients.as_ref()),"maxFamilyClients":channel_limit(c.max_family_clients.as_ref()),"neededTalkPower":c.needed_talk_power,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
+        json!({"type":"state","server":state.server.name,"serverInfo":{"uid":state.server.public_key.get_uid(),"welcome":state.server.welcome_message,"message":state.server.hostmessage,"platform":state.server.platform,"version":state.server.version,"maxClients":state.server.max_clients,"icon":state.server.icon.0,"banner":state.server.hostbanner_gfx_url,"bannerLink":state.server.hostbanner_url,"buttonImage":state.server.hostbutton_gfx_url,"buttonLabel":state.server.hostbutton_tooltip,"buttonLink":state.server.hostbutton_url},"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"codec":c.codec as u8,"quality":c.codec_quality,"kind":match c.channel_type {tsproto_types::ChannelType::Temporary=>"temporary",tsproto_types::ChannelType::SemiPermanent=>"semi",tsproto_types::ChannelType::Permanent=>"permanent"},"maxClients":channel_limit(c.max_clients.as_ref()),"maxFamilyClients":channel_limit(c.max_family_clients.as_ref()),"neededTalkPower":c.needed_talk_power,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
     )
 }
 // These borrows belong to a single connection actor; keeping ownership together

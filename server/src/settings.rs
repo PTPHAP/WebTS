@@ -62,7 +62,7 @@ impl Default for ImageLimits {
 impl ImageLimits {
     pub fn validate(&self) -> Result<()> {
         for (value, min, max) in [
-            (self.channel_download_kib, 64, 8192),
+            (self.channel_download_kib, 64, 16384),
             (self.channel_dimension, 128, 4096),
             (self.channel_output_kib, 16, 192),
             (self.channel_images, 1, 32),

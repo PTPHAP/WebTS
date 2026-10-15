@@ -92,6 +92,13 @@ impl Connections {
             .filter(|e| e.owner == owner)
             .count()
     }
+    pub(crate) fn cancel_other_sessions(&self, owner: i64, current: &str) {
+        for e in self.entries.lock().unwrap().values() {
+            if e.owner == owner && e.session != current {
+                e.cancel.cancel();
+            }
+        }
+    }
     pub fn total(&self) -> usize {
         self.entries
             .lock()
@@ -1404,6 +1411,27 @@ mod tests {
             .unwrap();
         assert_eq!(new.port, 40000);
         assert!(!new.cancel.is_cancelled());
+    }
+    #[test]
+    fn security_center_cancels_only_other_sessions_of_this_account() {
+        use super::*;
+        let registry = Connections::new(4);
+        let mut tokens = Vec::new();
+        for (id, owner, session) in [
+            ("current", 7, "keep"),
+            ("other-page", 7, "keep"),
+            ("old", 7, "revoke"),
+            ("foreign", 8, "revoke"),
+        ] {
+            let e = reconnect_entry(owner, session, id);
+            tokens.push(e.cancel.clone());
+            registry.entries.lock().unwrap().insert(id.into(), e);
+        }
+        registry.cancel_other_sessions(7, "keep");
+        assert!(!tokens[0].is_cancelled());
+        assert!(!tokens[1].is_cancelled());
+        assert!(tokens[2].is_cancelled());
+        assert!(!tokens[3].is_cancelled());
     }
     #[test]
     fn duplicate_uid_from_another_account_session_or_page_cannot_cancel_the_existing_connection() {

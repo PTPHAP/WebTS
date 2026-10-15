@@ -26,14 +26,14 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 - `SHA256SUMS_DOCKER`：对应归档的 SHA-256。
 - `webts-版本-source.zip`：完整固定版本源码，包含 Compose、公开配置模板、文档和协议子模块。
 
-适合已有 Docker Engine / Compose v2，希望省去编译的 Linux x64 服务器。此流程不会安装 `webts` 管理菜单，使用 Compose 命令维护。以下固定使用 [1.0.7 维护版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.0.7)，在 root 终端、新的独立工作目录执行；需要 `curl`、`unzip` 和 `sha256sum`。
+适合已有 Docker Engine / Compose v2，希望省去编译的 Linux x64 服务器。此流程不会安装 `webts` 管理菜单，使用 Compose 命令维护。以下固定使用 [1.0.8 维护版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.0.8)，在 root 终端、新的独立工作目录执行；需要 `curl`、`unzip` 和 `sha256sum`。
 
 先下载、校验并导入镜像：
 
 ```bash
 (
 set -euo pipefail
-VERSION=1.0.7
+VERSION=1.0.8
 mkdir "webts-$VERSION-install"
 cd "webts-$VERSION-install"
 BASE="https://github.com/PTPHAP/WebTS/releases/download/v$VERSION"
@@ -52,7 +52,7 @@ unzip "webts-$VERSION-source.zip"
 失败时停止处理，不使用未通过校验的文件。随后进入源码包中的部署目录，准备配置：
 
 ```sh
-VERSION=1.0.7
+VERSION=1.0.8
 cd "webts-$VERSION-install/webts-$VERSION-source"
 cp .env.example .env
 printf '\nWEBTS_VERSION=%s\n' "$VERSION" >> .env
@@ -67,7 +67,7 @@ chmod 600 config.local.toml
 | 位置 | 必填内容 |
 | --- | --- |
 | `.env` 的 `WEBTS_DOMAIN` | 域名，例如 `voice.example.com`；A 记录指向网关公网 IPv4 |
-| `.env` 的 `WEBTS_VERSION` | `1.0.7`，与导入镜像的标签一致 |
+| `.env` 的 `WEBTS_VERSION` | `1.0.8`，与导入镜像的标签一致 |
 | 配置的 `public_url` | 真实 `https://voice.example.com`，用于邮件链接、Cookie 与同源校验 |
 | 配置的 `bind` / `trusted_proxy` | 自带代理时沿用回环监听与回环代理；其他代理填真实可信来源，不能信任任意来源 |
 | `[[servers]]` | 名称及 `address`，例如 `ts.example.com:9987`；目标需全局语音加密与 Opus |

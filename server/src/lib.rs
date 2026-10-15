@@ -15,6 +15,7 @@ pub mod preferences;
 pub mod probe;
 pub mod profile;
 pub mod reports;
+pub mod sessions;
 pub mod settings;
 pub mod site;
 pub mod vault;

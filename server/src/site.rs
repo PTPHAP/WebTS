@@ -12,6 +12,8 @@ use zeroize::Zeroizing;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Home {
+    #[serde(skip_serializing_if = "classic_season")]
+    pub season: String,
     pub site_name: String,
     pub site_icon: String,
     pub footer_html: String,
@@ -25,9 +27,13 @@ pub struct Home {
     pub image: String,
     pub announcements: Vec<Announcement>,
 }
+fn classic_season(value: &str) -> bool {
+    value == "classic"
+}
 impl Default for Home {
     fn default() -> Self {
         Self {
+            season: "classic".into(),
             site_name: "WebTS".into(),
             site_icon: String::new(),
             footer_html: String::new(),
@@ -103,6 +109,8 @@ impl Home {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
         if [
+            "b2bc2236eb1cebb8cb4b255c8557627078231ab648f016f7bc1ba9d8efed9da2",
+            "647a4585ba0bc7df0e1864c1c6d7d09d8aac3f6e2354ecbbfdf33462bb204930",
             "65ba77d6f7423d96ecd1b1d0c554397bee833769445062bb9e28c20cd3bb37e7",
             "e67e03ab2f9f8297b61044da6c7a73b24422599182f69cbde51c16d46901b514",
             "4944c0d46f259b619b7a9a22f2f89c7bd0e7eb1a049df47e2fe159a97660d059",
@@ -136,6 +144,12 @@ impl Home {
         }
     }
     pub fn normalize(&mut self) -> Api<()> {
+        if !matches!(
+            self.season.as_str(),
+            "classic" | "spring" | "midautumn" | "winter" | "halloween" | "newyear"
+        ) {
+            return Err(Error::bad("请选择内置社区主题"));
+        }
         if self.site_name.trim().is_empty()
             || !text(&self.site_name, 40, false)
             || !text(&self.operator, 100, false)
@@ -220,10 +234,15 @@ fn apply_patch(
     let mut merged = serde_json::to_value(latest).map_err(anyhow::Error::from)?;
     let normalized = serde_json::to_value(normalized).map_err(anyhow::Error::from)?;
     for key in fields.keys() {
-        merged
-            .as_object_mut()
-            .unwrap()
-            .insert(key.clone(), normalized[key].clone());
+        let value = if key == "season" {
+            normalized
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!("classic"))
+        } else {
+            normalized[key].clone()
+        };
+        merged.as_object_mut().unwrap().insert(key.clone(), value);
     }
     let home: Home = serde_json::from_value(merged).map_err(anyhow::Error::from)?;
     home.check_image_budget()?;
@@ -320,6 +339,58 @@ pub async fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn seasonal_themes_are_internal_ids_and_do_not_change_policy_consent() {
+        let original = Home::default();
+        for id in [
+            "classic",
+            "spring",
+            "midautumn",
+            "winter",
+            "halloween",
+            "newyear",
+        ] {
+            let mut home = Home {
+                season: id.into(),
+                ..original.clone()
+            };
+            assert!(home.normalize().is_ok());
+            assert_eq!(policy_version(&home), policy_version(&original));
+        }
+        for id in [
+            "",
+            "../spring",
+            "https://example.com/theme.css",
+            "<script>bad()</script>",
+            "SPRING",
+        ] {
+            let mut home = Home {
+                season: id.into(),
+                ..original.clone()
+            };
+            assert!(home.normalize().is_err());
+        }
+        let legacy: Home = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.season, "classic");
+        let seasonal = Home {
+            season: "spring".into(),
+            ..original.clone()
+        };
+        let classic = apply_patch(
+            &seasonal,
+            original,
+            serde_json::json!({"season":"classic"}).as_object().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(classic.season, "classic");
+        assert!(
+            serde_json::to_value(classic)
+                .unwrap()
+                .get("season")
+                .is_none(),
+            "classic must omit the new field so old strict readers can load settings before rollback"
+        );
+    }
     #[test]
     fn defaults_follow_site_branding_and_custom_policies_survive_upgrade() {
         let default = Home::default();

@@ -22,6 +22,7 @@ fn valid(key: &str, v: &Value) -> bool {
     };
     match key {
         "theme" => matches!(v.as_str(), Some("light" | "dark")),
+        "seasonPreference" => matches!(v.as_str(), Some("follow" | "classic")),
         "mode" => matches!(v.as_str(), Some("open" | "ptt")),
         "friendsDisplay" => matches!(v.as_str(), Some("floating" | "docked")),
         "favorites" => v.as_array().is_some_and(|items| {

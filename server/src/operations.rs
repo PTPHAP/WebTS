@@ -32,7 +32,7 @@ pub async fn client_build(State(app): State<Arc<App>>) -> Api<Json<Value>> {
             return Err(Error::bad("界面文件超出限制"));
         }
         Ok(Json(
-            json!({"bundle":bundle(&html),"version":env!("CARGO_PKG_VERSION")}),
+            json!({"bundle":bundle(&html),"version":env!("CARGO_PKG_VERSION"),"season":a.runtime.read().unwrap().settings.home.season}),
         ))
     })
     .await

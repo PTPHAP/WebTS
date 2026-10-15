@@ -179,6 +179,7 @@ impl Db {
             migration.execute("UPDATE friend_prekeys SET used_at=? WHERE used=1", [now()])?;
             migration.commit()?;
         }
+        crate::sessions::migrate(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -386,6 +387,16 @@ impl Db {
         remembered: bool,
         verified_hash: &str,
     ) -> Result<String> {
+        self.create_session_with_client(owner, remembered, verified_hash, "", "")
+    }
+    pub fn create_session_with_client(
+        &self,
+        owner: i64,
+        remembered: bool,
+        verified_hash: &str,
+        browser: &str,
+        platform: &str,
+    ) -> Result<String> {
         let value = token()?;
         let mut c = self.connection.lock().unwrap();
         let tx = c.transaction()?;
@@ -410,6 +421,7 @@ impl Db {
                 now() + if remembered { 30 * 86400 } else { 12 * 3600 }
             ],
         )?;
+        tx.execute("INSERT INTO session_details(hash,id,created_at,browser,platform,remembered) VALUES(?,?,?,?,?,?)",params![digest(&value),token()?,now(),browser,platform,remembered])?;
         tx.commit()?;
         Ok(value)
     }

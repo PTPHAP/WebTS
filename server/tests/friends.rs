@@ -163,7 +163,10 @@ async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_
     );
     assert_eq!(
         router(app.clone())
-            .oneshot(patch(&second, change(ai, json!({"theme":"light"}))))
+            .oneshot(patch(
+                &second,
+                change(ai, json!({"theme":"light","seasonPreference":"classic"}))
+            ))
             .await
             .unwrap()
             .status(),
@@ -172,6 +175,7 @@ async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_
     let values = call(&app, "/preferences", None, &a, "", ORIGIN).await.1["preferences"].clone();
     assert_eq!(values["burn"], true);
     assert_eq!(values["theme"], "light");
+    assert_eq!(values["seasonPreference"], "classic");
     assert_eq!(
         call(&app, "/preferences", None, &b, "", ORIGIN).await.1["preferences"],
         json!({})
@@ -179,6 +183,10 @@ async fn account_preferences_merge_across_sessions_and_reject_secrets_and_cross_
     for invalid in [
         change(bi, json!({"burn":false})),
         change(ai, json!({"password":"secret"})),
+        change(
+            ai,
+            json!({"seasonPreference":"https://evil.example/theme.css"}),
+        ),
         change(ai, json!({"audio":{"input":"private-device-id"}})),
         change(ai, json!({"burnSeconds":604801})),
         change(ai, json!({"__proto__":{"polluted":true}})),

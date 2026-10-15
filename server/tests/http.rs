@@ -96,6 +96,8 @@ async fn site_branding_policies_and_footer_are_admin_only_sanitized_and_preserve
     use base64::Engine;
     let home = json!({"site_name":"Synthetic voice site","site_icon":format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(image.into_inner())),"operator":"Synthetic operator","contact":"contact@example.com","data_details":"test environment only","footer_html":"<a href='https://beian.miit.gov.cn/' onclick='steal()'>备案号</a><img src='https://evil.example/track'><script>steal()</script>","privacy_policy":"## Privacy\n\nActual policy text","terms":"## Terms\n\nActual disclaimer text"});
     let body = json!({"password":pw,"home":home});
+    let mut body = body;
+    body["home"]["season"] = json!("spring");
     assert_eq!(
         call(&app, "/admin/home", Some(body.clone()), &cookies[1], origin)
             .await
@@ -134,6 +136,19 @@ async fn site_branding_policies_and_footer_are_admin_only_sanitized_and_preserve
     );
     let public = call(&app, "/site", None, "", origin).await.2;
     assert_eq!(public["site_name"], "Synthetic voice site");
+    assert_eq!(public["season"], "spring");
+    assert_eq!(
+        call(
+            &app,
+            "/admin/home",
+            Some(json!({"password":pw,"home":{"season":"https://evil.example/theme.js"}})),
+            &cookies[0],
+            origin
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     assert!(
         public["site_icon"]
             .as_str()
@@ -169,6 +184,7 @@ async fn site_branding_policies_and_footer_are_admin_only_sanitized_and_preserve
     );
     let retained = call(&app, "/site", None, "", origin).await.2;
     assert_eq!(retained["site_name"], public["site_name"]);
+    assert_eq!(retained["season"], public["season"]);
     assert_eq!(retained["privacy_policy"], public["privacy_policy"]);
     assert_eq!(retained["terms"], public["terms"]);
     assert_eq!(retained["footer_html"], public["footer_html"]);

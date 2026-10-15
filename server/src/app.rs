@@ -544,6 +544,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/auth/reset", post(reset))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))
+        .route("/auth/sessions", get(crate::sessions::list))
+        .route("/auth/sessions/revoke", post(crate::sessions::revoke))
         .route("/identities", get(list_identities).post(create_identity))
         .route("/identities/import", post(import_identity))
         .route("/identities/{id}", patch(edit_identity))
@@ -666,7 +668,8 @@ async fn guard(
                 || path.ends_with("/friends/key")
                 || path.ends_with("/friends/key/reset")
                 || path.ends_with("/friends/device")
-                || path.ends_with("/encryption")) =>
+                || path.ends_with("/encryption")
+                || path == "/auth/sessions/revoke") =>
         {
             ("sensitive", 600, 30, false)
         }
@@ -801,7 +804,11 @@ async fn register(
     })
     .await
 }
-async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -> Api<Response> {
+async fn login(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(body): Json<CredentialsBody>,
+) -> Api<Response> {
     if !body.accept_policies {
         return Err(Error::bad("请先阅读并同意隐私政策与使用协议及免责声明"));
     }
@@ -823,7 +830,8 @@ async fn login(State(app): State<Arc<App>>, Json(body): Json<CredentialsBody>) -
                 "邮箱或密码错误，或邮箱尚未验证",
             ));
         };
-        let token = a.db.create_session(id, body.remember, &hash)?;
+        let (browser,platform)=crate::sessions::client_label(&headers);
+        let token = a.db.create_session_with_client(id, body.remember, &hash,browser,platform)?;
         a.db.connection.lock().unwrap().execute("INSERT INTO policy_acceptances VALUES(?,?,?) ON CONFLICT(user_id,version) DO UPDATE SET accepted_at=excluded.accepted_at",rusqlite::params![id,body.policy_version,crate::db::now()]).map_err(anyhow::Error::from)?;
         drop(runtime);
         let mut response =

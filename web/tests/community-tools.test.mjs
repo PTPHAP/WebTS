@@ -9,6 +9,7 @@ import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url),options={module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX};
 async function load(file,extra={}){const context=vm.createContext({exports:{},URL,URLSearchParams,TextEncoder,require,...extra});vm.runInContext(ts.transpileModule(await readFile(new URL(`../src/${file}`,import.meta.url),'utf8'),{compilerOptions:options}).outputText,context);return context.exports;}
 const text=await load('ts-text.ts');
+const seasons=await load('seasons.ts');
 const favorites=await load('favorites.ts'),diagnostics=await load('voice-diagnostics.ts');
 const conversation=await load('TsConversation.tsx',{require:n=>n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
 test('channel invites contain no secrets and accept only bounded configured identifiers',()=>{
@@ -40,7 +41,7 @@ test('mentions require complete name boundaries and quoted replies are plain bou
 test('searching and hidden tabs do not acknowledge incoming TS messages as read',async()=>{
  for(const [search,hidden] of [['older message',false],['',true]]){
   const effects=[],listeners=new Map();let stateIndex=0,refIndex=0,unread=[];
-  const module=await load('TsConversation.tsx',{document:{hidden,addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)},require:n=>n==='react'?{...React,useState:()=>{const index=stateIndex++;return [index===0?search:index===2?unread:undefined,v=>{if(index===2)unread=typeof v==='function'?v(unread):v;}];},useRef:v=>({current:refIndex++===1?new Set([1]):v}),useEffect:f=>effects.push(f)}:n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
+  const module=await load('TsConversation.tsx',{document:{hidden,addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>{const index=stateIndex++;return [index===0?search:index===2?unread:undefined,v=>{if(index===2)unread=typeof v==='function'?v(unread):v;}];},useRef:v=>({current:refIndex++===1?new Set([1]):v}),useEffect:f=>effects.push(f)}:n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
   module.TsConversation({chat:[{key:1,scope:'channel',from:2,text:'older'},{key:2,scope:'channel',from:2,text:'new'}],scope:'channel',nickname:'me',own:1,message:'',setScope(){},setMessage(){},send(){},render(){},channel:'fixture',privateCount:0,onPrivate(){}});
   effects[1]();assert.deepEqual(Array.from(unread),[2]);effects[2]();listeners.get('visibilitychange')();assert.deepEqual(Array.from(unread),[2]);
  }
@@ -49,9 +50,15 @@ test('searching and hidden tabs do not acknowledge incoming TS messages as read'
 test('update polling is single-flight, aborts on unmount and never reloads an active call',async()=>{
  const effects=[],timers=new Map(),listeners=new Map(),states=[];let finish,calls=0,reloads=0,signal,next=0;
  const document={hidden:false,querySelector:()=>({src:'https://fixture.example/assets/index-old.js'}),addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)};
- const module=await load('UpdateNotice.tsx',{document,location:{href:'https://fixture.example',reload:()=>reloads++},AbortController,confirm:()=>true,setInterval:f=>{timers.set(++next,f);return next;},clearInterval:k=>timers.delete(k),setTimeout:()=>99,clearTimeout(){},fetch:(_,options)=>{calls++;signal=options.signal;return new Promise(r=>finish=r);},require:n=>n==='react'?{...React,useState:v=>{const s={value:v};states.push(s);return [v,v=>s.value=v];},useEffect:f=>effects.push(f())}:require(n)});
+ const module=await load('UpdateNotice.tsx',{document,location:{href:'https://fixture.example',reload:()=>reloads++},AbortController,confirm:()=>true,setInterval:f=>{timers.set(++next,f);return next;},clearInterval:k=>timers.delete(k),setTimeout:()=>99,clearTimeout(){},fetch:(_,options)=>{calls++;signal=options.signal;return new Promise(r=>finish=r);},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:v=>{const s={value:v};states.push(s);return [v,v=>s.value=v];},useEffect:f=>effects.push(f())}:require(n)});
  module.UpdateNotice({inCall:true});assert.equal(calls,1);timers.values().next().value();assert.equal(calls,1);effects[0]();assert.equal(signal.aborted,true);finish({ok:true,json:async()=>({bundle:'/assets/index-new.js'})});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(states[0].value,'');assert.equal(timers.size,0);assert.equal(listeners.size,0);assert.equal(reloads,0);
- let index=0;const rendering=await load('UpdateNotice.tsx',{confirm:()=>true,location:{reload:()=>reloads++},require:n=>n==='react'?{...React,useState:()=>[index++===0?'/assets/index-new.js':'',()=>{}],useEffect(){}}:require(n)});
+ let index=0;const rendering=await load('UpdateNotice.tsx',{confirm:()=>true,location:{reload:()=>reloads++},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>[index++===0?'/assets/index-new.js':'',()=>{}],useEffect(){}}:require(n)});
  const html=renderToStaticMarkup(rendering.UpdateNotice({inCall:true}));assert.match(html,/button[^>]*disabled=""[^>]*>刷新/);assert.equal(reloads,0);
  for(const bad of ['/assets/index-a.js?secret=1','https://evil.example/assets/index-a.js','/assets/index-../../a.js'])assert.equal(module.bundlePath(bad),undefined);
+});
+
+test('season IDs reject executable input and explicit classic preference wins over the site',()=>{
+ for(const s of seasons.seasons){assert.equal(seasons.readSeason(s.id),s.id);assert.equal(seasons.effectiveSeason(s.id,'classic'),'classic');assert.equal(seasons.effectiveSeason(s.id,'follow'),s.id);}
+ for(const invalid of [null,{},'SPRING','../winter','https://evil.example/theme.css','<script>alert(1)</script>'])assert.equal(seasons.readSeason(invalid),'classic');
+ assert.equal(seasons.effectiveSeason('spring','unexpected'),'classic');
 });

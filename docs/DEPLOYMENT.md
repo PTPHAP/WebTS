@@ -22,9 +22,9 @@
 从[自动构建](https://github.com/PTPHAP/WebTS/actions/workflows/check.yml)成功运行中下载对应版本的 Linux 资产；新版流程名为 `webts-release-linux`。解压ZIP后计算tar包SHA-256，与附带校验文件对应行比较；新版使用 `SHA256SUMS_LINUX`，旧版使用 `SHA256SUMS`。只有构建通过才生成包。
 
 ```sh
-sha256sum webts-1.0.6-linux-x64.tar.gz
-tar -xzf webts-1.0.6-linux-x64.tar.gz
-cd webts-1.0.6-linux-x64
+sha256sum webts-1.0.7-linux-x64.tar.gz
+tar -xzf webts-1.0.7-linux-x64.tar.gz
+cd webts-1.0.7-linux-x64
 umask 077
 mkdir -p data secrets
 ./web-ts init-key secrets/master.key

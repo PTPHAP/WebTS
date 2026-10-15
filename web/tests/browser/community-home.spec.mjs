@@ -33,6 +33,7 @@ test('community homepage shows authorized data, escapes content and keeps mobile
   if(test.info().project.name.includes('mobile')){
     for(const width of [320,390]){
       await page.setViewportSize({width,height:844});
+      expect(await home.evaluate(node=>[...node.querySelectorAll('.community-favorites>button,.community-people>button')].every(n=>n.getBoundingClientRect().width<=n.parentElement.clientWidth+1))).toBe(true);
       expect(await home.evaluate(node=>node.scrollWidth-node.clientWidth)).toBeLessThanOrEqual(1);
       expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);
     }

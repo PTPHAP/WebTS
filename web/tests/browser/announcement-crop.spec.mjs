@@ -7,7 +7,7 @@ test('public and community announcement frames preserve the full cropped image',
  for(const loggedIn of [false,true]){
   await appFixture(page,{loggedIn,replies:{'/api/site':{...home,announcements:[{...home.announcements[0],image}]}}});
   await page.goto('/');const img=page.locator(loggedIn?'.community-announcements article>img':'.announcement-card>img');
-  await expect(img).toBeVisible();await expect.poll(()=>img.evaluate(n=>n.complete&&n.naturalHeight===600)).toBe(true);
+  await expect(img).toBeVisible();await img.scrollIntoViewIfNeeded();await expect.poll(()=>img.evaluate(n=>n.complete&&n.naturalHeight===600)).toBe(true);
   const shape=await img.evaluate(n=>{const s=getComputedStyle(n);return {ratio:n.clientWidth/n.clientHeight,fit:s.objectFit};});
   expect(shape.fit).toBe('contain');expect(shape.ratio).toBeCloseTo(16/9,1);
  }

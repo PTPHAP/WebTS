@@ -333,7 +333,7 @@ async fn page_links_support_direct_navigation_without_masking_missing_assets() {
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        if path.starts_with("/assets/") {
+        if path.starts_with("/assets/") || path == "/events" {
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         } else {
             assert_eq!(response.status(), StatusCode::OK, "{path}");

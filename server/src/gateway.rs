@@ -41,6 +41,7 @@ struct Entry {
     target: String,
     address: String,
     location: Option<Value>,
+    client: Option<(u16, String)>,
     server: String,
     page: String,
     port: u16,
@@ -148,16 +149,61 @@ impl Connections {
                 .as_array()
                 .and_then(|channels| channels.iter().find(|c| c["id"] == own["channel"]))
         });
-        if let Some(e) = self.entries.lock().unwrap().get_mut(id) {
-            e.location = channel.map(|c| json!({"server_name":state["server"],"server_uid":state["serverInfo"]["uid"],"channel":c["id"],"channel_name":c["name"],"password":c["password"]}));
-            state["destination"] = json!(e.address);
+        {
+            if let Some(e) = self.entries.lock().unwrap().get_mut(id) {
+                e.client = state["own"]
+                    .as_u64()
+                    .and_then(|id| u16::try_from(id).ok())
+                    .zip(state["serverInfo"]["uid"].as_str().map(str::to_owned));
+                e.location = channel.map(|c| json!({"server_name":state["server"],"server_uid":state["serverInfo"]["uid"],"channel":c["id"],"channel_name":c["name"],"password":c["password"]}));
+                state["destination"] = json!(e.address);
+            }
         }
+        let clients = self.webts_clients(id);
+        if let Some(members) = state["members"].as_array_mut() {
+            for member in members {
+                member["webts"] = json!(
+                    member["id"]
+                        .as_u64()
+                        .and_then(|id| u16::try_from(id).ok())
+                        .zip(member["uid"].as_str().map(str::to_owned))
+                        .is_some_and(|key| clients.contains(&key))
+                );
+            }
+        }
+    }
+    fn webts_clients(&self, id: &str) -> HashSet<(u16, String)> {
+        let entries = self.entries.lock().unwrap();
+        let Some(current) = entries.get(id).filter(|e| !e.cancel.is_cancelled()) else {
+            return HashSet::new();
+        };
+        let Some((_, server)) = &current.client else {
+            return HashSet::new();
+        };
+        entries
+            .values()
+            .filter(|e| !e.cancel.is_cancelled() && e.target == current.target)
+            .filter_map(|e| {
+                e.client
+                    .as_ref()
+                    .filter(|(_, uid)| uid == server)
+                    .map(|(client, _)| (*client, e.uid.clone()))
+            })
+            .collect()
     }
     fn reserve(self: &Arc<Self>, mut entry: Entry, min: u16, max: u16) -> Result<Lease> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(retryable("网关正在重启"));
         }
         let mut entries = self.entries.lock().unwrap();
+        if let Some(previous) = entries.values().find(|previous| {
+            previous.owner == entry.owner
+                && previous.session == entry.session
+                && previous.page == entry.page
+        }) {
+            previous.cancel.cancel();
+            return Err(retryable("正在清理当前页面的旧连接，稍后自动重试"));
+        }
         if entries.len() >= self.max {
             return Err(retryable("网关连接已满"));
         }
@@ -254,27 +300,42 @@ impl std::error::Error for Retryable {}
 fn retryable(message: &str) -> anyhow::Error {
     anyhow::Error::new(Retryable(message.into()))
 }
+async fn websocket_writer<S: futures::Sink<Message> + Unpin>(
+    mut sink: S,
+    mut rx: mpsc::Receiver<Value>,
+    done: CancellationToken,
+    ping_every: Duration,
+) {
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + ping_every, ping_every);
+    loop {
+        let message = tokio::select! {
+            _ = ping.tick() => Message::Ping(Vec::new().into()),
+            value = rx.recv() => match value {
+                Some(value) => Message::Text(value.to_string().into()),
+                None => break,
+            },
+        };
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(2), sink.send(message)).await,
+            Ok(Ok(()))
+        ) {
+            break;
+        }
+    }
+    done.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
+}
 async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
-    let (mut sink, mut input) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<Value>(64);
+    let (sink, mut input) = socket.split();
+    let (tx, rx) = mpsc::channel::<Value>(64);
     let done = CancellationToken::new();
     let writer_done = done.clone();
-    let mut writer = tokio::spawn(async move {
-        while let Some(value) = rx.recv().await {
-            if !matches!(
-                tokio::time::timeout(
-                    Duration::from_secs(2),
-                    sink.send(Message::Text(value.to_string().into())),
-                )
-                .await,
-                Ok(Ok(()))
-            ) {
-                break;
-            }
-        }
-        writer_done.cancel();
-        let _ = sink.close().await;
-    });
+    let mut writer = tokio::spawn(websocket_writer(
+        sink,
+        rx,
+        writer_done,
+        Duration::from_secs(10),
+    ));
     let result = bridge(&app, &headers, &mut input, &tx, &done).await;
     let retry = result
         .as_ref()
@@ -399,6 +460,7 @@ async fn bridge(
                 target: target.to_string(),
                 address: source.clone(),
                 location: None,
+                client: None,
                 server: request.server.clone(),
                 page: request.page,
                 port: 0,
@@ -430,12 +492,14 @@ async fn bridge(
         .connect()
         .map_err(report_connection_error)?;
     let cancel = lease.cancel.clone();
+    let mut media = None;
+    let result = async {
     tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销")},_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
     let media_cancel = CancellationToken::new();
-    let mut media = Media::new(
+    media = Some(Media::new(
         app,
         owner,
         lease.port,
@@ -443,12 +507,12 @@ async fn bridge(
         audio_tx,
         media_cancel.clone(),
     )
-    .await?;
-    let result = connected(
+    .await?);
+    connected(
         app,
         headers,
         &mut conn,
-        &mut media,
+        media.as_mut().expect("media initialized"),
         input,
         tx,
         &cancel,
@@ -457,8 +521,12 @@ async fn bridge(
         &mut audio_rx,
         &lease.id,
     )
-    .await;
-    media.close().await;
+    .await
+
+    }.await;
+    if let Some(media) = media {
+        media.close().await;
+    }
     let _ = conn.disconnect(DisconnectOptions::new());
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
         while conn.events().next().await.is_some() {}
@@ -488,7 +556,10 @@ fn retry_connection_error(error: &tsclientlib::Error) -> bool {
     match error {
         Error::ConnectFailed { errors, .. } => errors.last().is_none_or(retry_connection_error),
         Error::ConnectTs(
-            TsError::ServerMaxclientsReached | TsError::ClientIsFlooding | TsError::BanFlooding,
+            TsError::ServerMaxclientsReached
+            | TsError::ClientIsFlooding
+            | TsError::BanFlooding
+            | TsError::ClientTooManyClonesConnected,
         ) => true,
         Error::Connect(protocol)
         | Error::ConnectionFailed(protocol)
@@ -529,7 +600,7 @@ fn connection_error(error: &tsclientlib::Error) -> String {
                 }
                 TsError::ServerMaxclientsReached => "TeamSpeak服务器连接人数已满",
                 TsError::ClientTooManyClonesConnected => {
-                    "TeamSpeak拒绝连接：同一身份连接数量已达上限，请先断开旧客户端"
+                    "TeamSpeak同一身份连接数量已达上限，正在等待旧连接释放；若另一个客户端仍在线，请先断开它"
                 }
                 TsError::ClientNicknameInuse => "TeamSpeak昵称已被使用，请更换昵称",
                 TsError::ParameterInvalidSize => {
@@ -611,7 +682,7 @@ async fn connected(
     cancel: &CancellationToken,
     media_cancel: &CancellationToken,
     done: &CancellationToken,
-    audio: &mut mpsc::Receiver<rtc::rtp::Packet>,
+    audio: &mut mpsc::Receiver<crate::media::InboundAudio>,
     connection_id: &str,
 ) -> Result<()> {
     let session = app
@@ -642,6 +713,7 @@ async fn connected(
     let mut timer = tokio::time::interval(Duration::from_millis(100));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut changed = true;
+    let mut labelled_clients = HashSet::new();
     let mut transmit = false;
     let mut pre_roll = false;
     let mut lead = crate::media::SpeechLead::default();
@@ -657,6 +729,8 @@ async fn connected(
     let mut rate = (Instant::now(), 0u32);
     let mut check = Instant::now() - Duration::from_secs(2);
     let mut network_check = Instant::now();
+    let mut audio_queue = crate::media::AudioQueueStats::default();
+    let mut last_browser = Instant::now();
     let mut cipher = None;
     let mut speaking = HashMap::<u16, (Instant, Option<Instant>)>::new();
     let mut negotiated = Instant::now();
@@ -675,19 +749,20 @@ async fn connected(
             _=media_cancel.cancelled()=>return Err(retryable("浏览器语音连接中断，正在自动重连")),
             _=done.cancelled()=>return Err(retryable("网页接收连接已中断")),
             _=timer.tick()=>{
+                if last_browser.elapsed()>=Duration::from_secs(45){return Err(retryable("网页存活检测超时，正在清理旧连接"));}
                 enforce(conn)?;
                 let own_channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);
                 if own_channel!=described_channel{if let Some(channel)=own_channel{command("channelgetdescription",&[("cid",channel.0.to_string())]).send(conn)?;}described_channel=own_channel;}
                 for completed in avatars.expire(){avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}
                 for completed in images.expire(){emit(tx,crate::channel_images::event(conn,completed))?;}
                 if changed&&conn.get_state()?.clients.contains_key(&conn.get_state()?.own_client){let s=conn.get_state()?;speaking.retain(|id,_|*id==s.own_client.0||s.clients.contains_key(&ClientId(*id)));let mut ids:Vec<u16>=s.clients.iter().filter(|(id,c)|**id!=s.own_client&&Some(c.channel)==own_channel).map(|(id,_)|id.0).collect();ids.extend(media.recent_speakers().filter(|id|s.clients.contains_key(&ClientId(*id))));ids.sort_unstable();ids.dedup();media.sync_speakers(&ids,tx).await?;let mut state=snapshot(conn)?;app.connections.update_location(connection_id,&mut state);emit(tx,state)?;changed=false;}
-                if network_check.elapsed()>=Duration::from_secs(2){emit(tx,json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}))?;if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
+                if network_check.elapsed()>=Duration::from_secs(2){let labels=app.connections.webts_clients(connection_id);if labels!=labelled_clients{labelled_clients=labels;changed=true;}emit(tx,audio_queue.take(network_check.elapsed().as_secs_f64()))?;emit(tx,json!({"type":"image_limits","limits":app.runtime.read().unwrap().settings.image_limits}))?;if let Ok(stats)=conn.get_network_stats(){emit(tx,json!({"type":"network","ts_rtt_ms":if stats.rtt.is_zero(){None}else{Some(stats.rtt.as_secs_f64()*1000.0)}}))?;}emit(tx,json!({"type":"heartbeat"}))?;network_check=Instant::now();}
                 if media.dirty&&!media.negotiating{media.offer(tx).await?;negotiated=Instant::now();}
                 if media.negotiating&&negotiated.elapsed()>Duration::from_secs(30){return Err(retryable("浏览器语音协商超时"));}
                 if check.elapsed()>=Duration::from_secs(1){let actual=media.check_cipher().await?;if actual!=cipher{if let Some(value)=&actual{emit(tx,value.clone())?;}cipher=actual;}check=Instant::now();let mut away_timeout=false;pending.retain(|handle,(id,start)|{if start.elapsed()>Duration::from_secs(15){away_timeout|=away_handles.remove(handle);let _=emit(tx,json!({"type":"result","id":id,"ok":false,"message":"TeamSpeak操作响应超时"}));false}else{true}});if away_timeout{bail!("离开状态更新超时，连接已停止；请重新连接以确认状态");}}
             },
-            packet=audio.recv()=>{let Some(packet)=packet else{return Err(retryable("语音通道已关闭"));};let channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);if lead_channel!=channel{lead.clear();lead_channel=channel;}
-            if !muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if transmit{if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}else if pre_roll&&crate::media::opus_has_audio(&packet.payload){lead.push(packet.payload,Instant::now());}}else{lead.clear();}},
+            packet=audio.recv()=>{let Some(packet)=packet else{return Err(retryable("语音通道已关闭"));};if !audio_queue.observe(packet.received_at,Instant::now()){continue;}let received_at=packet.received_at;let packet=packet.packet;let channel=conn.get_state()?.clients.get(&conn.get_state()?.own_client).map(|c|c.channel);if lead_channel!=channel{lead.clear();lead_channel=channel;}
+            if !muted&&media.secure.load(Ordering::Acquire)&&conn.can_send_audio(){if transmit{if crate::media::opus_has_audio(&packet.payload){send_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&packet.payload)?;voice_open=true;let own=conn.get_state()?.own_client.0;if speech_activity(&mut speaking,own,Instant::now()){emit(tx,json!({"type":"speaking","client":own}))?;}}else{finish_voice(conn,&mut sequence,&whisper_clients,&whisper_channels,&mut voice_open,tx)?;}}else if pre_roll&&crate::media::opus_has_audio(&packet.payload){lead.push(packet.payload,received_at);}}else{lead.clear();}},
             event=async {conn.events().next().await}=>{let event=event.context("TeamSpeak连接已结束，可能被踢出或服务器关闭")?.map_err(report_connection_error)?;if matches!(event,StreamItem::DisconnectedTemporarily(_)){return Err(retryable("TeamSpeak连接中断，正在自动重连"));}enforce(conn)?;match event{
                 StreamItem::BookEvents(events)=>{for event in events{if let Event::Message{target,invoker,message}=event{let(scope,recipient)=match target{MessageTarget::Server=>("server",None),MessageTarget::Channel=>("channel",None),MessageTarget::Client(id)=>("client",Some(id.0)),MessageTarget::Poke(_)=>{emit(tx,json!({"type":"poke","from":invoker.id.0,"name":invoker.name,"text":message}))?;continue;}};emit(tx,json!({"type":"chat","scope":scope,"from":invoker.id.0,"name":invoker.name,"text":message,"target":recipient}))?;}else{changed=true;}}},
                 StreamItem::AudioChange(_)=>{lead.clear();changed=true;},
@@ -702,7 +777,7 @@ async fn connected(
             }},
             completed=avatars.tasks.join_next(),if !avatars.tasks.is_empty()=>{if let Some(Ok(completed))=completed{avatar_completed(conn,&mut avatars,&mut pending,completed,tx)?;}},
             completed=images.tasks.join_next(),if !images.tasks.is_empty()=>{if let Some(Ok(completed))=completed{emit(tx,crate::channel_images::event(conn,completed))?;}},
-            message=input.next()=>{let Some(message)=message else{return Err(retryable("网页发送连接已中断"));};let message=message?;let Message::Text(text)=message else{if matches!(message,Message::Close(_)){return Err(retryable("网页连接已关闭"));}continue;};
+            message=input.next()=>{let Some(message)=message else{return Err(retryable("网页发送连接已中断"));};let message=message.map_err(|_|retryable("网页发送连接已中断"))?;last_browser=Instant::now();let Message::Text(text)=message else{if matches!(message,Message::Close(_)){return Err(retryable("网页连接已关闭"));}continue;};
                 if rate.0.elapsed()>Duration::from_secs(1){rate=(Instant::now(),0);}rate.1+=1;if rate.1>40{bail!("网页操作过于频繁");}
                 let value:Value=serde_json::from_str(&text).map_err(|_|anyhow::anyhow!("网页请求格式错误"))?;
                 match value["type"].as_str().unwrap_or(""){
@@ -1227,6 +1302,129 @@ fn wire_password(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn idle_websocket_gets_transport_ping_and_pong_without_application_messages()
+    -> Result<(), anyhow::Error> {
+        use super::*;
+        let (observed, received) = tokio::sync::oneshot::channel();
+        let observed = Arc::new(Mutex::new(Some(observed)));
+        let router = axum::Router::new().route(
+            "/ws",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let observed = observed.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let (sink, mut input) = socket.split();
+                        let (tx, rx) = mpsc::channel(1);
+                        let done = CancellationToken::new();
+                        let writer = tokio::spawn(websocket_writer(
+                            sink,
+                            rx,
+                            done.clone(),
+                            Duration::from_millis(20),
+                        ));
+                        let pong = matches!(
+                            tokio::time::timeout(Duration::from_secs(2), input.next()).await,
+                            Ok(Some(Ok(Message::Pong(_))))
+                        );
+                        if let Some(sender) = observed.lock().unwrap().take() {
+                            let _ = sender.send(pong);
+                        }
+                        drop(tx);
+                        let _ = writer.await;
+                        assert!(done.is_cancelled());
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let result: Result<()> = async {
+            let (mut client, _) =
+                tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await?;
+            let ping = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await?
+                .context("missing ping")??;
+            anyhow::ensure!(matches!(
+                ping,
+                tokio_tungstenite::tungstenite::Message::Ping(_)
+            ));
+            client.flush().await?;
+            anyhow::ensure!(tokio::time::timeout(Duration::from_secs(2), received).await??);
+            let _ = client.close(None).await;
+            Ok(())
+        }
+        .await;
+        server.abort();
+        result
+    }
+    fn reconnect_entry(owner: i64, session: &str, page: &str) -> super::Entry {
+        super::Entry {
+            owner,
+            session: session.into(),
+            identity: "identity".into(),
+            uid: "uid".into(),
+            target: "203.0.113.4:9987".into(),
+            address: "ts.example.invalid:9987".into(),
+            location: None,
+            client: None,
+            server: "fixture".into(),
+            page: page.into(),
+            port: 0,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+    #[test]
+    fn reconnect_from_same_authenticated_page_cancels_old_actor_without_reusing_its_port() {
+        use super::*;
+        let registry = Arc::new(Connections::new(1));
+        let old = registry
+            .reserve(reconnect_entry(7, "session", "page"), 40000, 40000)
+            .unwrap();
+        let error = registry
+            .reserve(reconnect_entry(7, "session", "page"), 40000, 40000)
+            .err()
+            .unwrap();
+        assert!(error.is::<Retryable>());
+        assert!(
+            old.cancel.is_cancelled(),
+            "a half-open connection from this same page must be cancelled"
+        );
+        assert_eq!(
+            registry.count(7),
+            1,
+            "old actor keeps its allocation until cleanup completes"
+        );
+        drop(old);
+        let new = registry
+            .reserve(reconnect_entry(7, "session", "page"), 40000, 40000)
+            .unwrap();
+        assert_eq!(new.port, 40000);
+        assert!(!new.cancel.is_cancelled());
+    }
+    #[test]
+    fn duplicate_uid_from_another_account_session_or_page_cannot_cancel_the_existing_connection() {
+        use super::*;
+        for (owner, session, page) in [
+            (8, "session", "page"),
+            (7, "another", "page"),
+            (7, "session", "another"),
+        ] {
+            let registry = Arc::new(Connections::new(2));
+            let old = registry
+                .reserve(reconnect_entry(7, "session", "page"), 40000, 40001)
+                .unwrap();
+            assert!(
+                registry
+                    .reserve(reconnect_entry(owner, session, page), 40000, 40001)
+                    .is_err()
+            );
+            assert!(!old.cancel.is_cancelled());
+        }
+    }
     #[test]
     fn presence_reports_only_live_owned_leases_and_authoritative_channel_metadata() {
         use super::*;
@@ -1242,6 +1440,7 @@ mod tests {
                     target: "203.0.113.4:9987".into(),
                     address: "ts.example.invalid:9987".into(),
                     location: None,
+                    client: None,
                     server: String::new(),
                     page: "page".into(),
                     port: 0,
@@ -1277,6 +1476,37 @@ mod tests {
                 Instant::now() - Duration::from_secs(46),
             );
         assert!(registry.activity(7).0.is_empty());
+    }
+
+    #[test]
+    fn web_labels_require_live_client_id_uid_and_the_same_target() {
+        let registry = std::sync::Arc::new(super::Connections::new(3));
+        let mut first = reconnect_entry(7, "session-seven", "page-seven");
+        first.uid = "web-uid".into();
+        let lease = registry.reserve(first, 40000, 40002).unwrap();
+        let mut other = reconnect_entry(8, "session-eight", "page-eight");
+        other.uid = "other-uid".into();
+        let peer = registry.reserve(other, 40000, 40002).unwrap();
+        let mut outside = reconnect_entry(9, "session-nine", "page-nine");
+        outside.uid = "outside-uid".into();
+        outside.target = "203.0.113.5:9987".into();
+        let foreign = registry.reserve(outside, 40000, 40002).unwrap();
+        let mut state = serde_json::json!({"own":4,"serverInfo":{"uid":"server-key"},"members":[{"id":4,"uid":"web-uid"},{"id":5,"uid":"web-uid"},{"id":6,"uid":"other-uid"},{"id":7,"uid":"outside-uid"},{"id":8,"uid":"native-uid","name":"Fake [WebTS]"}],"channels":[]});
+        registry.update_location(&peer.id, &mut serde_json::json!({"own":6,"serverInfo":{"uid":"server-key"},"members":[],"channels":[]}));
+        registry.update_location(&foreign.id, &mut serde_json::json!({"own":7,"serverInfo":{"uid":"server-key"},"members":[],"channels":[]}));
+        registry.update_location(&lease.id, &mut state);
+        let flags: Vec<_> = state["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["webts"].as_bool().unwrap())
+            .collect();
+        assert_eq!(flags, [true, false, true, false, false]);
+        peer.cancel.cancel();
+        registry.update_location(&lease.id, &mut state);
+        assert_eq!(state["members"][2]["webts"], false);
+        registry.update_location(&lease.id, &mut serde_json::json!({"own":4,"serverInfo":{"uid":"different-key"},"members":[],"channels":[]}));
+        assert_eq!(registry.webts_clients(&lease.id).len(), 1);
     }
     #[test]
     fn editing_does_not_reset_unmentioned_attributes_and_rejects_invalid_values() {
@@ -1344,7 +1574,11 @@ mod tests {
 
     #[test]
     fn reconnect_retries_capacity_but_never_credentials_bans_or_permissions() {
-        for reason in [TsError::ServerMaxclientsReached, TsError::ClientIsFlooding] {
+        for reason in [
+            TsError::ServerMaxclientsReached,
+            TsError::ClientIsFlooding,
+            TsError::ClientTooManyClonesConnected,
+        ] {
             assert!(super::retry_connection_error(&Error::ConnectTs(reason)));
             assert!(
                 super::report_connection_error(Error::ConnectTs(reason)).is::<super::Retryable>()

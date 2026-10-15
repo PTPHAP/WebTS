@@ -13,6 +13,36 @@ use web_ts::{
 const ORIGIN: &str = "https://friends.example";
 const PASSWORD: &str = "synthetic friends fixture password only";
 #[tokio::test]
+async fn key_registration_checks_explicit_account_scope_and_keeps_legacy_requests_compatible() {
+    let (_root, app) = setup();
+    let (ai, a) = user(&app, "key-scope-a@example.invalid");
+    let (bi, b) = user(&app, "key-scope-b@example.invalid");
+    let identity = webts_crypto::Engine::new();
+    let body =
+        |account| json!({"account":account,"password":PASSWORD,"public_key":identity.identity()});
+    assert_eq!(
+        call(&app, "/friends/key", Some(body(ai)), &b, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(&app, "/friends/me", None, &b, "", ORIGIN).await.1["public_key"],
+        ""
+    );
+    assert_eq!(
+        call(&app, "/friends/key", Some(body(bi)), &b, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "/friends/me", None, &b, "", ORIGIN).await.1["public_key"],
+        identity.identity()
+    );
+    register(&app, &a, &webts_crypto::Engine::new()).await;
+}
+#[tokio::test]
 async fn preference_merge_budget_rejects_without_losing_previous_values() {
     let (_root, app) = setup();
     let (id, cookie) = user(&app, "budget@example.invalid");

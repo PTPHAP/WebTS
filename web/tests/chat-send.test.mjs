@@ -32,7 +32,7 @@ function client(scope='channel'){
   let messages=[],draft='same message',sequence=0;const sent=[],notices=[];
   const context=createContext({scope,message:draft,reply:undefined,replyText:(_,text)=>text,send:(...args)=>context.sendChat(...args),setReply:()=>{},sticky:{current:true},recipient:{id:2},own:{name:'Sender'},state:{own:1,members:[{id:2}]},connected:true,
     crypto:{randomUUID:()=>String(++sequence)},pending:{current:new Map()},voice:{current:{send:value=>sent.push(value)}},
-    setActivityAlert:()=>{},setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
+    showActivity:()=>{},setActivityAlert:()=>{},setChat:update=>{messages=update(messages);},setMessage:value=>{draft=value;},setNotice:value=>notices.push(value),
     moves:{current:{result:()=>false}},channelAction:{current:''},avatarAction:{current:''},setAvatarBusy:()=>{},
     sounds:{current:{play:()=>{}}},previousState:{current:{own:1,members:[]}}});
   runInContext(code,context);

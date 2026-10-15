@@ -46,6 +46,8 @@ pub struct Page {
 #[serde(deny_unknown_fields)]
 pub struct Preference {
     email_enabled: bool,
+    #[serde(default)]
+    account: Option<i64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,12 +248,12 @@ impl Db {
             )
             .optional()?
             .unwrap_or(false);
-        Ok(json!({"items":items,"unread":unread,"email_enabled":enabled}))
+        Ok(json!({"account":owner,"items":items,"unread":unread,"email_enabled":enabled}))
     }
     fn notice_detail(&self, owner: i64, id: i64) -> Api<Value> {
         let mut c = self.connection.lock().unwrap();
         let tx = c.transaction().map_err(anyhow::Error::from)?;
-        let value=tx.query_row("SELECT n.id,n.title,n.html,n.created_at FROM notices n JOIN notice_receipts r ON r.notice_id=n.id WHERE r.user_id=? AND n.id=? AND n.withdrawn=0",params![owner,id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"title":r.get::<_,String>(1)?,"html":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?}))).optional().map_err(anyhow::Error::from)?.ok_or(Error(StatusCode::NOT_FOUND,"信件不存在或已撤回"))?;
+        let value=tx.query_row("SELECT n.id,n.title,n.html,n.created_at FROM notices n JOIN notice_receipts r ON r.notice_id=n.id WHERE r.user_id=? AND n.id=? AND n.withdrawn=0",params![owner,id],|r|Ok(json!({"account":owner,"id":r.get::<_,i64>(0)?,"title":r.get::<_,String>(1)?,"html":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?}))).optional().map_err(anyhow::Error::from)?.ok_or(Error(StatusCode::NOT_FOUND,"信件不存在或已撤回"))?;
         tx.execute("UPDATE notice_receipts SET read_at=COALESCE(read_at,?) WHERE user_id=? AND notice_id=?",params![now(),owner,id]).map_err(anyhow::Error::from)?;
         tx.commit().map_err(anyhow::Error::from)?;
         Ok(value)
@@ -333,10 +335,16 @@ pub async fn detail(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<i64>,
-    Json(_body): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Api<Json<Value>> {
     app.work(move |a| {
         let owner = a.session(&headers)?.user.id;
+        if body
+            .get("account")
+            .is_some_and(|v| v.as_i64() != Some(owner))
+        {
+            return Err(Error(StatusCode::CONFLICT, "账号已变化，未读取信件"));
+        }
         Ok(Json(a.db.notice_detail(owner, id)?))
     })
     .await
@@ -346,7 +354,7 @@ pub async fn preferences(
     headers: HeaderMap,
     Json(body): Json<Preference>,
 ) -> Api<Json<Value>> {
-    app.work(move|a|{let owner=a.session(&headers)?.user.id;let c=a.db.connection.lock().unwrap();c.execute("INSERT INTO notice_preferences VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled",params![owner,body.email_enabled]).map_err(anyhow::Error::from)?;if !body.email_enabled{c.execute("UPDATE notice_receipts SET mail_state='cancelled' WHERE user_id=? AND mail_state='pending'",[owner]).map_err(anyhow::Error::from)?;}Ok(Json(json!({"email_enabled":body.email_enabled})))}).await
+    app.work(move|a|{let session=a.session(&headers)?;let owner=session.user.id;if body.account.is_some_and(|v|v!=owner){return Err(Error(StatusCode::CONFLICT,"账号已变化，未修改订阅"));}let c=a.db.connection.lock().unwrap();crate::preferences::session_valid(&c,&session)?;c.execute("INSERT INTO notice_preferences VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled",params![owner,body.email_enabled]).map_err(anyhow::Error::from)?;if !body.email_enabled{c.execute("UPDATE notice_receipts SET mail_state='cancelled' WHERE user_id=? AND mail_state='pending'",[owner]).map_err(anyhow::Error::from)?;}Ok(Json(json!({"account":owner,"email_enabled":body.email_enabled})))}).await
 }
 pub async fn withdraw(
     State(app): State<Arc<App>>,
@@ -423,7 +431,7 @@ fn mail_message(
         related = related.singlepart(image);
     }
     Message::builder()
-        .from(from)
+        .from(crate::email::sender(from, site))
         .to(job.email.parse().ok()?)
         .subject(format!("[{site}] {}", job.title))
         .multipart(

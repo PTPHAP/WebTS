@@ -199,13 +199,19 @@ impl App {
         let origin = config.origin();
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
-                let mailer = mail_runtime.read().unwrap().mailer.clone();
+                let (mailer, site) = {
+                    let current = mail_runtime.read().unwrap();
+                    (
+                        current.mailer.clone(),
+                        current.settings.home.site_name.clone(),
+                    )
+                };
                 let success = if let Some(mailer) = mailer {
                     let (subject, plain, html) =
-                        crate::email::content(job.purpose, &origin, &job.token);
+                        crate::email::content(job.purpose, &origin, &job.token, &site);
                     let message = job.email.parse().ok().and_then(|to| {
                         Message::builder()
-                            .from(mailer.from)
+                            .from(crate::email::sender(mailer.from, &site))
                             .to(to)
                             .subject(subject)
                             .multipart(lettre::message::MultiPart::alternative_plain_html(
@@ -436,10 +442,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/client-build", get(crate::operations::client_build))
         .route("/admin/health", get(crate::operations::health))
         .route(
-            "/events",
-            get(crate::community::list).post(crate::community::create),
+            "/reports",
+            get(crate::reports::list).post(crate::reports::create),
         )
-        .route("/events/{id}", post(crate::community::action))
+        .route("/admin/reports", get(crate::reports::admin_list))
+        .route("/admin/reports/{id}", post(crate::reports::decide))
         .route("/watch", get(crate::watch::get))
         .route(
             "/admin/watch",
@@ -559,10 +566,6 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route_service(
             "/watch",
-            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
-        )
-        .route_service(
-            "/events",
             ServeFile::new(format!("{}/index.html", app.config.web_dir)),
         )
         .route_service(

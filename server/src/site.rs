@@ -114,6 +114,8 @@ impl Home {
             "e9e58f5a01abfabccc3f3ac83e31be649dbee6a3df639e52292c9a4959be2719",
             "e1665607675a56b87f4d761307d29bfb48574e264a1c1a78bd1469a3b44d974d",
             "2c292bf3affd8375396a60509446a8010e74d656fb0fe146e022ff2193e76a32",
+            "fe164fae28b367d166572256f0922a8418678770cde0fa6d50341808cd3032fd",
+            "4811f1614cafe663ec3824a952dd3df6172c364df581e4b3a46a7e6b37ee1975",
         ]
         .contains(&hex::encode(Sha256::digest(self.privacy_policy.replace("\r\n", "\n"))).as_str())
         {
@@ -322,6 +324,11 @@ mod tests {
     fn defaults_follow_site_branding_and_custom_policies_survive_upgrade() {
         let default = Home::default();
         assert!(default.privacy_policy.contains("{{site_name}}"));
+        assert!(
+            default
+                .privacy_policy
+                .contains("主动提交的账号举报及历史活动举报")
+        );
         assert!(default.terms.contains("{{site_name}}"));
         let mut home = Home {
             site_name: "自定义站点".into(),

@@ -1,3 +1,3 @@
 import {defineConfig} from 'vite';
 
-export default defineConfig({build:{outDir:'../.cache/e2ee-browser-dist',emptyOutDir:true,rollupOptions:{input:'tests/browser/private-messaging.html'}}});
+export default defineConfig({build:{outDir:'../.cache/e2ee-browser-dist',emptyOutDir:true,rollupOptions:{input:['index.html','tests/browser/private-messaging.html']}}});

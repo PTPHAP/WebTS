@@ -299,6 +299,8 @@ pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Val
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Key {
+    #[serde(default)]
+    account: Option<i64>,
     password: String,
     public_key: String,
 }
@@ -309,6 +311,7 @@ pub async fn set_key(
 ) -> Api<Json<Value>> {
     app.expensive(move |a| {
         let s=a.reauthenticate(&headers,&Zeroizing::new(body.password))?;
+        if body.account.is_some_and(|account|account!=s.user.id){return Err(Error(StatusCode::CONFLICT,"账号已变化，请刷新后重新登录"));}
         let key=body.public_key.trim();
         if !valid_identity(key) {return Err(Error::bad("需要有效的Olm公开身份，不能上传私钥"));}
         let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
@@ -329,7 +332,7 @@ pub async fn list(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<V
         for row in &mut rows {if row["status"]==1 {let (online,locations)=friend_activity(a,allow_custom,&servers,&db,row["id"].as_i64().unwrap())?;row["online"]=json!(online);row["locations"]=json!(locations);}}
         let unread:i64=db.query_row("SELECT count(*) FROM friend_messages m JOIN friendships f ON f.lo=min(m.sender,m.recipient) AND f.hi=max(m.sender,m.recipient) JOIN users u ON u.id=m.sender WHERE m.recipient=? AND m.ready=1 AND m.read_at IS NULL AND m.expires>? AND f.status=1 AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?",params![s.user.id,now(),now()],|r|r.get(0)).map_err(db_error)?;
         let latest:i64=db.query_row("SELECT friend_revision FROM users WHERE id=?",[s.user.id],|r|r.get(0)).map_err(db_error)?;
-        Ok(Json(json!({"friends":rows,"unread":unread,"latest_message":latest})))
+        Ok(Json(json!({"account":s.user.id,"friends":rows,"unread":unread,"latest_message":latest})))
     }).await
 }
 fn presence_policy(a: &App) -> (bool, Vec<crate::config::Server>) {
@@ -812,7 +815,12 @@ pub fn start_cleanup(app: Arc<App>) {
             let rows = app
                 .work(|a| {
                     let db = a.db.connection.lock().unwrap();
-                    crate::community::cleanup(&db)?;
+                    db.execute(
+                        "DELETE FROM community_events WHERE ends<?",
+                        [now() - 30 * 86400],
+                    )
+                    .map_err(anyhow::Error::from)?;
+                    crate::reports::cleanup(&db)?;
                     cleanup_candidates(&db)
                 })
                 .await;

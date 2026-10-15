@@ -72,6 +72,70 @@ fn draft(ids: Vec<i64>) -> Value {
     json!({"title":"测试更新","body":"# 更新\n\n**新功能** [查看](https://example.com)\n<script>steal()</script>","format":"markdown","audience":"selected","recipients":ids,"email":false,"password":PASSWORD,"request_id":"2e3f05f0-d4d6-4d48-9176-919d67ba5698"})
 }
 #[tokio::test]
+async fn account_scope_rejects_old_page_reads_and_subscription_changes() {
+    let (_root, app) = setup();
+    let (_, admin) = user(&app, "admin@example.invalid", true);
+    app.db.grant_admin("admin@example.invalid").unwrap();
+    let (id, one) = user(&app, "recipient@example.invalid", true);
+    let created = call(
+        &app,
+        "/admin/notices",
+        Some(draft(vec![id])),
+        &admin,
+        ORIGIN,
+    )
+    .await;
+    let path = format!("/notices/{}", created.2["id"].as_i64().unwrap());
+    assert_eq!(
+        call(&app, "/notices", None, &one, ORIGIN).await.2["account"],
+        id
+    );
+    assert_eq!(
+        call(&app, &path, Some(json!({"account":id+1})), &one, ORIGIN)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(&app, "/notices", None, &one, ORIGIN).await.2["unread"],
+        1
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/notices/preferences",
+            Some(json!({"account":id+1,"email_enabled":true})),
+            &one,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(&app, "/notices", None, &one, ORIGIN).await.2["email_enabled"],
+        false
+    );
+    assert_eq!(
+        call(&app, &path, Some(json!({"account":id})), &one, ORIGIN)
+            .await
+            .2["account"],
+        id
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/notices/preferences",
+            Some(json!({"email_enabled":true})),
+            &one,
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+#[tokio::test]
 async fn inbox_publication_is_admin_only_isolated_idempotent_and_revocable() {
     let (_root, app) = setup();
     let (_, admin) = user(&app, "admin@example.invalid", true);
@@ -494,4 +558,77 @@ async fn notification_worker_sends_only_one_recipient_and_persists_completion() 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(done, "SMTP completion must be persisted before another job");
+}
+
+#[tokio::test]
+async fn registration_mail_uses_current_site_name_after_hot_reload() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (_root, app) = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (sender, mut received) = tokio::sync::mpsc::channel(2);
+    let sink = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut reader = BufReader::new(read);
+            write
+                .write_all(b"220 localhost test SMTP\r\n")
+                .await
+                .unwrap();
+            let (mut data, mut body) = (false, String::new());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap() == 0 {
+                    break;
+                }
+                if data {
+                    if line == ".\r\n" {
+                        write.write_all(b"250 accepted\r\n").await.unwrap();
+                        sender.send(body).await.unwrap();
+                        break;
+                    }
+                    body.push_str(&line);
+                } else if line.starts_with("DATA") {
+                    data = true;
+                    write.write_all(b"354 send body\r\n").await.unwrap();
+                } else {
+                    write.write_all(b"250 localhost\r\n").await.unwrap();
+                }
+            }
+        }
+    });
+    // The only plaintext SMTP in this test is an isolated loopback fixture.
+    app.runtime.write().unwrap().mailer = Some(web_ts::settings::Mailer {
+        from: "WebTS <site@example.invalid>".parse().unwrap(),
+        transport: lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::builder_dangerous(
+            "127.0.0.1",
+        )
+        .port(port)
+        .build(),
+    });
+    for (name, address) in [
+        ("Community Alpha", "alpha@example.invalid"),
+        ("Community Beta", "beta@example.invalid"),
+    ] {
+        app.runtime.write().unwrap().settings.home.site_name = name.into();
+        let version = call(&app, "/policies", None, "", ORIGIN).await.2["version"].clone();
+        let result = call(&app, "/auth/register", Some(json!({"email":address,"password":PASSWORD,"accept_policies":true,"policy_version":version})), "", ORIGIN).await;
+        assert_eq!(result.0, StatusCode::OK);
+        let mail = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let from = mail.lines().find(|line| line.starts_with("From:")).unwrap();
+        assert!(
+            from.contains(name),
+            "current site name missing from SMTP From: {from}"
+        );
+        assert!(from.contains("site@example.invalid"));
+        assert!(!from.contains("WebTS"));
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), sink)
+        .await
+        .unwrap()
+        .unwrap();
 }

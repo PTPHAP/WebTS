@@ -394,7 +394,7 @@ dialog[open],.friends-panel {animation:surface-reveal .3s var(--ease);}
   .hero-copy h1 {font-size:clamp(34px,8vw,48px); letter-spacing:-1px;}
   .hero-copy>p {font-size:14px;}
   .hero-art {min-height:280px; border-radius:28px;}
-  .hero-art>img {height:280px;}
+  .hero-art>.home-display-image {height:auto;}
   .hero-actions {flex-wrap:wrap;}
   .home-features,.announcement-grid {grid-template-columns:1fr;}
   .home-features article {padding:22px;}

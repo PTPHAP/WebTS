@@ -152,9 +152,24 @@ const componentFile=ts.createSourceFile('Friends.tsx',componentSource,ts.ScriptT
 function componentFunctions(names,globals){const functions=[];let eligibility='';const visit=n=>{if(ts.isFunctionDeclaration(n)&&names.includes(n.name?.text))functions.push(n.getText(componentFile));if((names.includes('send')||names.includes('receive'))&&ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>['trusted',...(names.includes('send')?['canChat']:[])].includes(d.name.getText(componentFile))))eligibility+=n.getText(componentFile)+'\n';ts.forEachChild(n,visit);};visit(componentFile);assert.equal(functions.length,names.length);const code=ts.transpileModule(eligibility+'\n'+functions.join('\n')+`;exports.functions={${names.join(',')}};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;const context=vm.createContext({exports:{},AbortSignal,document:{hidden:false,hasFocus:()=>true},ordinary:false,...globals,me:globals.me?{public_key:globals.engine?.current?.record.publicKey,...globals.me}:undefined,trustedKey:globals.trustedKey??(globals.trusted?`${globals.me?.public_key??globals.engine?.current?.record.publicKey}\n${globals.peer?.public_key}`:'')});vm.runInContext(code,context);return context.exports.functions;}
 
 test('successful friend refresh clears a transient metadata error even when React defers the state updater',async()=>{
-  const updates=[],globals={refreshing:{current:false},alive:{current:true},metadataError:{current:'temporary busy'},snapshot:{current:undefined},engine:{current:undefined},api:async path=>path==='/friends/me'?{id:1}:{friends:[],unread:0,latest_message:0},setMe(){},setFriends(){},setStatus(update){updates.push(update);},friendEvents:()=>[],onNewRef:{current(){}},onUnreadRef:{current(){}}};
+  const updates=[],globals={account:1,refreshing:{current:false},alive:{current:true},metadataError:{current:'temporary busy'},snapshot:{current:undefined},engine:{current:undefined},api:async path=>path==='/friends/me'?{id:1}:{account:1,friends:[],unread:0,latest_message:0},setMe(){},setFriends(){},setStatus(update){updates.push(update);},friendEvents:()=>[],onNewRef:{current(){}},onUnreadRef:{current(){}}};
   await componentFunctions(['refresh'],globals).refresh();
   assert.equal(updates.length,1);assert.equal(updates[0]('temporary busy'),'');assert.equal(updates[0]('a new user-facing status'),'a new user-facing status');
+});
+
+test('metadata failure clears old conversation but never frees an engine still in use',async()=>{
+ const cleared=[],globals={account:1,refreshing:{current:false},alive:{current:true},metadataError:{current:''},snapshot:{current:{latest:1}},operation:{current:true},api:async()=>({id:2}),setMe:v=>cleared.push(['me',v]),setFriends:v=>cleared.push(['friends',v.length]),setSelected:v=>cleared.push(['selected',v]),setRecords:v=>cleared.push(['records',v.length]),onUnreadRef:{current:v=>cleared.push(['unread',v])},dispose:()=>cleared.push(['disposed']),setUnlocked:v=>cleared.push(['unlocked',v])};
+ await assert.rejects(componentFunctions(['refresh'],globals).refresh(),/账号已变化/);
+ assert.deepEqual(cleared,[['me',undefined],['friends',0],['selected',undefined],['records',0],['unread',0]]);
+ assert.equal(globals.refreshing.current,false);
+ componentFunctions(['finishOperation'],globals).finishOperation();
+ assert.deepEqual(cleared.slice(-2),[['disposed'],['unlocked',false]]);
+});
+test('unlock refuses another account before registering a locally stored private-message identity',async()=>{
+ const calls=[],owners=[];
+ const globals={account:1,me:{id:1,public_key:''},backup:{account:1,publicKey:'synthetic-public-identity'},operation:{current:false},engine:{current:undefined},password:'synthetic-password',passphrase:'',automatic:false,localRelease:{current:undefined},browserLock:async()=>{},api:async path=>{calls.push(path);return path==='/friends/me'?{id:2,public_key:''}:{};},loadLocal:async()=>undefined,unlockState:async()=>{throw new Error('fixture stops after an unsafe registration');},setBusy(){},setStatus(){},setMe:v=>owners.push(v.id),setPassphrase(){},setConfirm(){},setPassword(){},finishOperation(){globals.operation.current=false;}};
+ await componentFunctions(['unlock'],globals).unlock(false);
+ assert.deepEqual(calls,['/friends/me']);assert.deepEqual(owners,[]);
 });
 
 test('private HTTP timeout releases a hung request with a retryable error',async()=>{

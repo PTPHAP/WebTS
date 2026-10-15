@@ -97,3 +97,17 @@ test('private conversation filters both sent and received messages by selected p
  const sentA={scope:'private',from:1,target:2},replyA={scope:'client',from:2,target:1},sentB={scope:'private',from:1,target:3};
  assert.equal(chatVisible(sentA,'private',2),true);assert.equal(chatVisible(replyA,'private',2),true);assert.equal(chatVisible(sentA,'private',3),false);assert.equal(chatVisible(replyA,'private',3),false);assert.equal(chatVisible(sentB,'private',3),true);assert.equal(chatVisible(sentA,'private'),false);
 });
+
+
+test('display-ratio crops stay inside the image through all corners and zoom',()=>{
+  for(const [width,height] of [[300,600],[800,400],[4096,2],[2,4096],[1,4096],[4096,1]]){
+    let crop=initialCrop(width,height,false,16/9);
+    for(const handle of ['nw','ne','sw','se','move'])for(const [dx,dy] of [[-999,-999],[999,999],[10,-30],[-30,10]]){
+      const next=adjustCrop(crop,width,height,dx,dy,handle,false,16/9);
+      assert.ok(next.width>=1&&next.height>=1&&next.x>=0&&next.y>=0);
+      assert.ok(next.x+next.width<=width+.001&&next.y+next.height<=height+.001);
+      if(Math.abs(crop.width/crop.height-16/9)<.001)assert.ok(Math.abs(next.width/next.height-16/9)<.001);
+    }
+    const zoomed=zoomCrop(crop,width,height,1/8);assert.ok(zoomed.width>=1&&zoomed.height>=1);
+  }
+});

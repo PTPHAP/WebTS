@@ -146,6 +146,9 @@ async fn afk_state_interoperates_and_site_ban_stops_active_connection() {
 #[tokio::test]
 #[ignore = "requires an explicitly authorized isolated TS3 server"]
 async fn gateway_ts3_encrypted_voice_whisper_permission_and_revocation() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("web_ts=info")
+        .try_init();
     tokio::time::timeout(Duration::from_secs(90), run())
         .await
         .expect("live test timed out");
@@ -265,6 +268,57 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
     })
     .await
     .unwrap();
+    // Leave the original websocket open and unread, like the old route after a VPN switch.
+    // The same authenticated page must release its actor before attempting the identity again.
+    let (mut reclaim, _) = connect_async(request.clone()).await.unwrap();
+    reclaim.send(Message::Text(json!({"server":"","address":target,"identity":id,"page":"custom","name":"测试 · WebTS"}).to_string().into())).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut cleanup_reported = false;
+        loop {
+            if let Some(Ok(Message::Text(text))) = reclaim.next().await {
+                let message: Value = serde_json::from_str(&text).unwrap();
+                if message["type"] == "error" {
+                    assert!(message["message"].as_str().unwrap().contains("旧连接"));
+                    cleanup_reported = true;
+                }
+                if message["type"] == "disconnected" {
+                    assert!(cleanup_reported);
+                    assert_eq!(message["retryable"], true);
+                    return;
+                }
+            } else {
+                panic!("reclaim did not receive a retry verdict");
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(6), async {
+        while app.connections.count(owner) != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("old identity and port lease did not release");
+    let (mut replacement, _) = connect_async(request.clone()).await.unwrap();
+    replacement.send(Message::Text(json!({"server":"","address":target,"identity":id,"page":"custom","name":"测试 · WebTS"}).to_string().into())).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = replacement.next().await {
+                let message: Value = serde_json::from_str(&text).unwrap();
+                assert_ne!(message["type"], "error", "{message}");
+                if message["type"] == "state" {
+                    return;
+                }
+            } else {
+                panic!("same-page replacement did not connect");
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.connections.count(owner), 1);
+    first = replacement;
     let mut settings = app.runtime.read().unwrap().settings.clone();
     settings.allow_custom = false;
     let update = axum::http::Request::builder()
@@ -536,7 +590,7 @@ async fn run() {
                 socket.send(Message::Text(signal.to_string().into())).await.unwrap();
             },
             Some(packet)=audio_rx.recv()=>{
-                if packet.payload.as_ref()==whisper_payload {browser_whisper=true;} else {assert_eq!(packet.payload.as_ref(),payload);browser_voice=true;}
+                if packet.packet.payload.as_ref()==whisper_payload {browser_whisper=true;} else {assert_eq!(packet.packet.payload.as_ref(),payload);browser_voice=true;}
             },
             event=async{native.events().next().await}=>{
                 let event = event.unwrap().unwrap();
@@ -569,7 +623,7 @@ async fn run() {
                 }
             },
             event=socket.next()=>{
-                let Some(Ok(Message::Text(text)))=event else {assert!(revoked,"unexpected WebSocket close");break;};
+                let text=match event {Some(Ok(Message::Text(text)))=>text,Some(Ok(Message::Ping(_)|Message::Pong(_)))=>continue,other=>{assert!(revoked,"unexpected WebSocket frame: {other:?}");break;}};
                 let value:Value=serde_json::from_str(&text).unwrap();
                 match value["type"].as_str().unwrap_or(""){
                     "speaking" if value["enabled"]==false=>{if value["client"]==own_id{own_end_received=true;}else if value["client"]==native_id{native_end_received=true;}},
@@ -587,6 +641,9 @@ async fn run() {
                     },
                     "state"=>{let (_,locations)=app.connections.activity(owner);assert_eq!(locations.len(),1);assert_eq!(locations[0].1["location"]["server_uid"],value["serverInfo"]["uid"]);assert!(locations[0].1["address"].is_string());if own_id==0 {
                         own_id=value["own"].as_u64().unwrap() as u16;
+                        let marked=value["members"].as_array().unwrap().iter().find(|c|c["id"]==own_id).unwrap()["name"].as_str().unwrap();
+                        assert_eq!(marked,"WebTS isolated gateway");
+                        assert!(value["members"].as_array().unwrap().iter().any(|m|m["id"]==own_id&&m["webts"]==true));
                         socket.send(Message::Text(json!({"type":"avatar_upload","id":"avatar:live","data":STANDARD.encode(&avatar)}).to_string().into())).await.unwrap();
                         native.get_state().unwrap().send_message(MessageTarget::Channel,"WebTS peer reply").send_with_result(&mut native).unwrap();
                         native.get_state().unwrap().send_message(MessageTarget::Poke(tsproto_types::ClientId(own_id)),"WebTS poke").send_with_result(&mut native).unwrap();
@@ -674,6 +731,17 @@ async fn run() {
             && avatar_to_web
             && !revoked
         {
+            assert!(
+                native
+                    .get_state()
+                    .unwrap()
+                    .clients
+                    .get(&tsproto_types::ClientId(own_id))
+                    .unwrap()
+                    .name
+                    == "WebTS isolated gateway",
+                "independent TS peer must receive the original nickname"
+            );
             app.db.revoke(owner, None).unwrap();
             app.connections.cancel(owner, None, None);
             revoked = true;

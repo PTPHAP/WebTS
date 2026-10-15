@@ -4,6 +4,6 @@ export async function api<T>(path: string, body?: unknown, method?: string, sign
   return response.json();
 }
 export type Identity = {id:string; name:string; uid:string; is_default:boolean};
-export type Member = {id:number; channel:number; name:string; uid?:string; avatarHash:string; muted:boolean; deafened:boolean; away?:boolean; awayMessage?:string; description:string; talkPower:number; serverGroups:number[]; channelGroup:number};
+export type Member = {webts?:boolean;id:number; channel:number; name:string; uid?:string; avatarHash:string; muted:boolean; deafened:boolean; away?:boolean; awayMessage?:string; description:string; talkPower:number; serverGroups:number[]; channelGroup:number};
 export type Channel = {id:number; parent:number; order:number; name:string; topic?:string; description?:string; password:boolean; codec?:number;quality?:number;kind?:string;maxClients?:number;maxFamilyClients?:number;neededTalkPower?:number};
 export type State = {destination?:string;server:string; serverInfo?:{uid:string;welcome:string;message:string;platform:string;version:string;maxClients:number;icon:number;banner:string;bannerLink:string;buttonLabel:string;buttonLink:string;buttonImage?:string}; own:number; canSpeak:boolean; channels:Channel[]; members:Member[]};

@@ -95,6 +95,20 @@ fn valid(key: &str, v: &Value) -> bool {
                         .is_some_and(|n| (1..=12).contains(&n) && s == format!("F{n}")))
         }),
         "burn" => v.is_boolean(),
+        "notifications" => v.as_object().is_some_and(|o| {
+            o.len() == 7
+                && [
+                    "quiet",
+                    "messages",
+                    "poke",
+                    "friends",
+                    "mail",
+                    "activities",
+                    "channel",
+                ]
+                .iter()
+                .all(|key| o.get(*key).is_some_and(Value::is_boolean))
+        }),
         "burnSeconds" => v.as_i64().is_some_and(|n| {
             [60, 600, 1800, 3600, 43200, 86400, 172800, 345600, 604800].contains(&n)
         }),
@@ -165,7 +179,7 @@ pub async fn update(
     let Some(patch) = body.patch.as_object() else {
         return Err(Error::bad("偏好格式无效"));
     };
-    if patch.len() > 13
+    if patch.len() > 14
         || body.patch.to_string().len() > 16384
         || patch.iter().any(|(k, v)| !valid(k, v))
     {
@@ -182,6 +196,18 @@ pub async fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notification_policy_accepts_only_bounded_non_secret_boolean_categories() {
+        let value = json!({"quiet":true,"messages":true,"poke":true,"friends":true,"mail":true,"activities":true,"channel":true});
+        assert!(valid("notifications", &value));
+        for bad in [
+            json!({"quiet":true}),
+            json!({"quiet":true,"messages":true,"poke":true,"friends":true,"mail":true,"activities":true,"channel":"true"}),
+            json!({"quiet":true,"messages":true,"poke":true,"friends":true,"mail":true,"activities":true,"channel":true,"password":"private"}),
+        ] {
+            assert!(!valid("notifications", &bad));
+        }
+    }
     #[test]
     fn favorites_are_bounded_and_cannot_contain_credentials_or_other_fields() {
         let item = json!({"server":"fixture","uid":"server/uid=","channel":7,"name":"测试频道"});

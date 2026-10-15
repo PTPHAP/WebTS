@@ -30,11 +30,12 @@ export async function loadCropImage(file:File,purpose:ImagePurpose,limits?:Image
   if(!image.width||!image.height||image.width>4096||image.height>4096||image.width*image.height>8*1024*1024){image.close();throw new Error('图片尺寸过大，请先缩小图片。');}
   return image;
 }
-export function initialCrop(width:number,height:number,square:boolean):Crop {
+export function initialCrop(width:number,height:number,square:boolean,ratio?:number):Crop {
+  if(!square&&ratio&&Number.isFinite(ratio)&&ratio>0){const w=Math.min(width,height*ratio),h=w/ratio;if(w>=1&&h>=1)return {x:(width-w)/2,y:(height-h)/2,width:w,height:h};}
   const side=Math.min(width,height);
   return square?{x:(width-side)/2,y:(height-side)/2,width:side,height:side}:{x:0,y:0,width,height};
 }
-export function adjustCrop(crop:Crop,width:number,height:number,dx:number,dy:number,handle:string,square:boolean):Crop {
+export function adjustCrop(crop:Crop,width:number,height:number,dx:number,dy:number,handle:string,square:boolean,ratio?:number):Crop {
   const clamp=(v:number,min:number,max:number)=>Math.max(min,Math.min(max,v));
   if(handle==='move')return {...crop,x:clamp(crop.x+dx,0,width-crop.width),y:clamp(crop.y+dy,0,height-crop.height)};
   const left=handle.includes('w'),top=handle.includes('n');
@@ -42,6 +43,7 @@ export function adjustCrop(crop:Crop,width:number,height:number,dx:number,dy:num
   const maxW=left?ax:width-ax,maxH=top?ay:height-ay,min=Math.min(16,maxW,maxH);
   let w=clamp(crop.width+(left?-dx:dx),min,maxW),h=clamp(crop.height+(top?-dy:dy),min,maxH);
   if(square)w=h=clamp(crop.width+(Math.abs(dx)>=Math.abs(dy)?(left?-dx:dx):(top?-dy:dy)),min,Math.min(maxW,maxH));
+  else if(ratio&&Number.isFinite(ratio)&&ratio>0&&Math.abs(crop.width/crop.height-ratio)<.001){const max=Math.min(maxW,maxH*ratio);w=clamp(crop.width+(Math.abs(dx)>=Math.abs(dy*ratio)?(left?-dx:dx):(top?-dy:dy)*ratio),Math.min(Math.max(16,ratio),max),max);h=w/ratio;}
   return {x:left?ax-w:ax,y:top?ay-h:ay,width:w,height:h};
 }
 export function zoomCrop(crop:Crop,width:number,height:number,factor:number):Crop {

@@ -10,6 +10,15 @@ pub struct Vault {
 }
 
 impl Vault {
+    // Keyed request fingerprints avoid offline guessing of moderation evidence.
+    pub fn request_tag(&self, domain: &str, content: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(self.key.as_ref()).unwrap();
+        mac.update(domain.as_bytes());
+        mac.update(&[0]);
+        mac.update(content);
+        hex::encode(mac.finalize().into_bytes())
+    }
     pub fn new(key: [u8; 32]) -> Self {
         Self {
             key: Zeroizing::new(key),

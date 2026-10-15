@@ -3,6 +3,68 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use web_ts::{app::App, config::Config, media::Media};
 
+#[tokio::test]
+async fn repeated_transport_close_releases_its_udp_port() {
+    let root = tempfile::tempdir().unwrap();
+    let key = root.path().join("key");
+    std::fs::write(&key, hex::encode([9; 32])).unwrap();
+    let template: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+    let app = App::new(Config {
+        database: root.path().join("db").to_string_lossy().into_owned(),
+        master_key_file: key.to_string_lossy().into_owned(),
+        ..template
+    })
+    .unwrap();
+    for _ in 0..16 {
+        let reservation = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let (tx, mut rx) = mpsc::channel(64);
+        let (audio, _packets) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let mut media = Media::new(&app, 1, port, tx.clone(), audio, cancel.clone())
+            .await
+            .unwrap();
+        media.sync_speakers(&[7], &tx).await.unwrap();
+        media.offer(&tx).await.unwrap();
+        // The runtime expands wildcard binds to interface addresses. Check the
+        // actual gathered candidate, rather than an unbound wildcard socket.
+        let address = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let e = rx.recv().await.unwrap();
+                if e["type"] == "ice" {
+                    let candidate = e["candidate"]["candidate"].as_str().unwrap();
+                    let fields: Vec<_> = candidate.split_whitespace().collect();
+                    break (
+                        fields[4].parse::<std::net::IpAddr>().unwrap(),
+                        fields[5].parse::<u16>().unwrap(),
+                    );
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(address.1, port);
+        assert!(
+            std::net::UdpSocket::bind(address).is_err(),
+            "test candidate must actually be occupied by RTC"
+        );
+        media.close().await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(socket) = std::net::UdpSocket::bind(address) {
+                    drop(socket);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("closed RTC must release UDP port");
+        assert!(cancel.is_cancelled());
+    }
+}
+
 // Two real UDP/DTLS/SRTP peers, without a TeamSpeak server or fake crypto stats.
 #[tokio::test]
 async fn encrypted_opus_packet_round_trip() {
@@ -78,8 +140,8 @@ async fn encrypted_opus_packet_round_trip() {
             Some(event)=ar.recv()=>{if event["type"]=="ice"{b.peer.add_ice_candidate(serde_json::from_value(event["candidate"].clone()).unwrap()).await.unwrap();}},
             Some(event)=br.recv()=>{if event["type"]=="ice"{a.peer.add_ice_candidate(serde_json::from_value(event["candidate"].clone()).unwrap()).await.unwrap();}},
             _=timer.tick()=>{let ac=a.check_cipher().await.unwrap();let bc=b.check_cipher().await.unwrap();if let(Some(ac),Some(bc))=(ac,bc){assert_eq!(ac["browser"],"SRTP_AEAD_AES_256_GCM");assert_eq!(bc["browser"],"SRTP_AEAD_AES_256_GCM");a.audio(7,seq,&payload).await.unwrap();b.audio(8,seq,&payload).await.unwrap();seq+=1;}},
-            Some(packet)=a_audio.recv()=>{assert_eq!(packet.payload.as_ref(),payload);got_a=true;if got_b{break;}},
-            Some(packet)=b_audio.recv()=>{assert_eq!(packet.payload.as_ref(),payload);got_b=true;if got_a{break;}},
+            Some(packet)=a_audio.recv()=>{assert_eq!(packet.packet.payload.as_ref(),payload);got_a=true;if got_b{break;}},
+            Some(packet)=b_audio.recv()=>{assert_eq!(packet.packet.payload.as_ref(),payload);got_b=true;if got_a{break;}},
         }
     }
     a.audio(7, seq, &[])
@@ -96,9 +158,9 @@ async fn encrypted_opus_packet_round_trip() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let packet = b_audio.recv().await.unwrap();
-            if packet.payload.as_ref() == resumed {
+            if packet.packet.payload.as_ref() == resumed {
                 assert_eq!(
-                    packet.header.sequence_number, seq,
+                    packet.packet.header.sequence_number, seq,
                     "intentional TS end marker must not count as RTP packet loss"
                 );
                 break;

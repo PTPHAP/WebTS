@@ -1,4 +1,4 @@
-export type ConnectionQuality={rtt?:number;jitter?:number;buffer?:number;loss?:number;received?:number;sent?:number;route?:'direct'|'relay'};
+export type ConnectionQuality={rtt?:number;jitter?:number;buffer?:number;loss?:number;received?:number;sent?:number;route?:'direct'|'relay';statsAvailable?:boolean;windowSeconds?:number;recentLoss?:number;recentBuffer?:number;recentConcealed?:number;recentConcealmentEvents?:number};
 // Only numeric summaries reach the UI. Candidate addresses and raw reports stay local.
 export function connectionQuality(report:RTCStatsReport):ConnectionQuality {
   const rows=Array.from(report.values());
@@ -22,4 +22,45 @@ export function connectionQuality(report:RTCStatsReport):ConnectionQuality {
   if(received+lost>0)result.loss=lost/(received+lost)*100;
   if(emitted>0)result.buffer=delay/emitted*1000;
   return result;
+}
+
+type Counter='packetsReceived'|'packetsLost'|'jitterBufferDelay'|'jitterBufferEmittedCount'|'totalSamplesReceived'|'concealedSamples'|'concealmentEvents';
+type Counters=Partial<Record<Counter,number>>;
+type Period={from:number;to:number;packets:number;lost:number;delay:number;emitted:number;samples:number;concealed:number;events:number;hasEvents:boolean};
+const counters:Counter[]=['packetsReceived','packetsLost','jitterBufferDelay','jitterBufferEmittedCount','totalSamplesReceived','concealedSamples','concealmentEvents'];
+// Retain only numeric counters, never raw stats, candidates, addresses or device identifiers.
+export class QualityHistory {
+  private previous?:{at:number;streams:Map<string,Counters>};
+  private periods:Period[]=[];
+  reset(){this.previous=undefined;this.periods=[];}
+  update(report:RTCStatsReport,now:number):ConnectionQuality {
+    const result=connectionQuality(report),streams=new Map<string,Counters>();
+    if(!Number.isFinite(now)||now<0){this.reset();return result;}
+    report.forEach((row,id)=>{
+      if(streams.size>=128||row.type!=='inbound-rtp'||(row.kind??row.mediaType)!=='audio'||typeof id!=='string'||id.length>256)return;
+      const value:Counters={};for(const key of counters){const n=row[key];if(typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=Number.MAX_SAFE_INTEGER&&(n>=0||key==='packetsLost'))value[key]=n;}
+      streams.set(`${id}:${Number.isSafeInteger(row.ssrc)?row.ssrc:''}`,value);
+    });
+    const old=this.previous;this.previous={at:now,streams};
+    if(!old||now<=old.at||now-old.at>10000){this.periods=[];return result;}
+    const period:Period={from:old.at,to:now,packets:0,lost:0,delay:0,emitted:0,samples:0,concealed:0,events:0,hasEvents:false};
+    for(const [key,current] of streams){
+      const before=old.streams.get(key);if(!before)continue;
+      const delta=(name:Counter,signed=false)=>current[name]!==undefined&&before[name]!==undefined&&(signed||current[name]!>=before[name]!)?Math.max(0,current[name]!-before[name]!):undefined;
+      const rx=delta('packetsReceived');if(rx===undefined)continue;
+      const loss=delta('packetsLost',true);if(loss!==undefined){period.packets+=rx;period.lost+=loss;}
+      const emitted=delta('jitterBufferEmittedCount'),delay=delta('jitterBufferDelay');if(emitted!==undefined&&delay!==undefined){period.emitted+=emitted;period.delay+=delay;}
+      const total=delta('totalSamplesReceived'),concealed=delta('concealedSamples');if(total!==undefined&&concealed!==undefined){period.samples+=total;period.concealed+=Math.min(total,concealed);}
+      const events=delta('concealmentEvents');if(events!==undefined){period.events+=events;period.hasEvents=true;}
+    }
+    this.periods=[...this.periods,period].filter(p=>p.from>=now-10000).slice(-16);
+    result.windowSeconds=(now-this.periods[0].from)/1000;
+    const sum=(field:'packets'|'lost'|'delay'|'emitted'|'samples'|'concealed'|'events')=>this.periods.reduce((total,p)=>total+p[field],0);
+    const received=sum('packets'),lost=sum('lost'),emitted=sum('emitted'),samples=sum('samples');
+    if(received+lost>0)result.recentLoss=100*lost/(received+lost);
+    if(emitted>0)result.recentBuffer=1000*sum('delay')/emitted;
+    if(samples>0)result.recentConcealed=100*sum('concealed')/samples;
+    if(this.periods.some(p=>p.hasEvents))result.recentConcealmentEvents=sum('events');
+    return result;
+  }
 }

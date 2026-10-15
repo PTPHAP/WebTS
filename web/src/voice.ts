@@ -2,7 +2,7 @@ type Event = Record<string, unknown>;
 import {defaultAudioSettings,type AudioSettings} from './audio-settings';
 import {createReceiver} from './receive-audio';
 import type {NoiseProcessor} from './noise';
-import {connectionQuality} from './connection-quality';
+import {QualityHistory} from './connection-quality';
 class Retryable extends Error {}
 export class Voice {
   private socket?: WebSocket;
@@ -13,6 +13,8 @@ export class Voice {
   private context?: AudioContext;
   private timer?: number;
   private qualityTimer?: number;
+  private qualityDeadline?: number;
+  private transportDeadline?: number;
   private noiseNode?: NoiseProcessor;
   private captureGain?:GainNode;
   private processingRevision=0;
@@ -106,8 +108,26 @@ export class Voice {
     this.event({type:'audio_processing',noise:listenOnly?'listen':this.processingBlocked?'blocked':this.noiseNode?.mode??this.settings.noise,voice_only:this.settings.noise==='rnnoise'&&this.settings.voiceOnly&&!this.processingBlocked,actual:this.stream?.getAudioTracks()[0].getSettings?.()});
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
     const qualityPeer=this.peer;let reading=false;
-    this.qualityTimer=window.setInterval(async()=>{if(reading||!qualityPeer.getStats)return;reading=true;try{const report=await qualityPeer.getStats();if(generation===this.generation)this.event({type:'quality',...connectionQuality(report)});}catch{if(generation===this.generation)this.event({type:'quality'});}finally{reading=false;}},2000);
-    this.event({type:'audio_transport',state:'new'});this.peer.onconnectionstatechange=()=>{if(generation!==this.generation)return;this.event({type:'audio_transport',state:qualityPeer.connectionState});if(qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');};
+    const qualityHistory=new QualityHistory();
+    this.qualityTimer=window.setInterval(async()=>{
+      if(generation!==this.generation||reading)return;
+      if(!qualityPeer.getStats){this.event({type:'quality',statsAvailable:false});return;}
+      reading=true;let expired=false;
+      const deadline=window.setTimeout(()=>{expired=true;qualityHistory.reset();if(generation===this.generation)this.event({type:'quality',statsAvailable:false});},3000);
+      this.qualityDeadline=deadline;
+      try{const report=await qualityPeer.getStats();if(generation===this.generation&&!expired)this.event({type:'quality',statsAvailable:true,...qualityHistory.update(report,performance.now())});}
+      catch{qualityHistory.reset();if(generation===this.generation&&!expired)this.event({type:'quality',statsAvailable:false});}
+      finally{window.clearTimeout(deadline);if(this.qualityDeadline===deadline)this.qualityDeadline=undefined;reading=false;}
+    },2000);
+    this.event({type:'audio_transport',state:'new'});this.peer.onconnectionstatechange=()=>{
+      if(generation!==this.generation)return;
+      window.clearTimeout(this.transportDeadline);this.transportDeadline=undefined;
+      this.event({type:'audio_transport',state:qualityPeer.connectionState});
+      if(qualityPeer.connectionState==='failed')this.lost(true,'浏览器语音连接中断，正在自动重连。');
+      else if(qualityPeer.connectionState==='disconnected')this.transportDeadline=window.setTimeout(()=>{
+        if(generation===this.generation&&qualityPeer.connectionState==='disconnected')this.lost(true,'浏览器语音链路持续中断，正在自动重连并恢复频道。');
+      },10000);
+    };
     this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');},5000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
     this.peer.ontrack=e=>{if(generation!==this.generation)return; const receiver=createReceiver(this.context!,e.track),audio = new Audio();this.receivers.set(e.track.id,receiver);audio.autoplay=true;audio.srcObject=receiver.stream;this.elements.set(e.track.id,audio);this.applyAudio();Promise.all([receiver.play(),audio.play()]).then(()=>{if(generation===this.generation&&this.receivers.get(e.track.id)===receiver){this.playbackFailed.delete(e.track.id);this.event({type:'audio_playback',blocked:this.playbackFailed.size>0});}}).catch(()=>{if(generation===this.generation&&this.receivers.get(e.track.id)===receiver){this.playbackFailed.add(e.track.id);this.event({type:'audio_playback',blocked:true});this.event({type:'notice',message:'浏览器暂停了音频，请点击“恢复音频”。'});}});e.track.onended=()=>{if(generation!==this.generation||this.receivers.get(e.track.id)!==receiver)return;audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);receiver.destroy();this.receivers.delete(e.track.id);this.playbackFailed.delete(e.track.id);this.event({type:'audio_playback',blocked:this.playbackFailed.size>0});};};
@@ -139,7 +159,7 @@ export class Voice {
       if(generation===this.generation)this.event(message);
     }).catch(()=>{if(generation!==this.generation)return;this.lost(true,'语音协商失败，正在自动重连；请检查浏览器及网络设置。');});};
     socket.onclose=()=>{if(generation===this.generation)this.lost(true,'网页与网关的连接中断，正在自动重连。');};
-    socket.onerror=()=>{if(generation===this.generation)this.event({type:'error',message:'无法连接网关，请检查网络。'});};
+    socket.onerror=()=>{if(generation===this.generation)this.lost(true,'网页与网关的网络连接异常，正在自动重连。');};
     } catch(error){if(generation!==this.generation)return;this.dispose();if(error instanceof Retryable){this.schedule();return;}this.close();throw error;}
   }
   private watchCapture(stream:MediaStream|undefined,generation:number) {
@@ -270,5 +290,5 @@ export class Voice {
     this.retryTimer=window.setTimeout(async()=>{this.retryTimer=undefined;try{await this.open();}catch(error){this.event({type:'error',message:error instanceof Error?error.message:'重连失败'});this.event({type:'reconnecting',active:false});}},delay);
   }
   close(){this.away=false;this.awayMessage="";this.confirmedAway={enabled:false,text:""};this.event({type:"away",enabled:false,text:""});window.clearTimeout(this.retryTimer);this.retryTimer=undefined;this.intent=undefined;this.retryCount=0;this.lastChannel=undefined;this.currentChannel=undefined;this.restoreChannel=undefined;this.dispose();}
-  private dispose(){this.processingRevision++;this.processingTask=undefined;this.captureGain=undefined;window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.playbackFailed.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  private dispose(){this.processingRevision++;this.processingTask=undefined;this.captureGain=undefined;window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;window.clearTimeout(this.qualityDeadline);this.qualityDeadline=undefined;window.clearTimeout(this.transportDeadline);this.transportDeadline=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.playbackFailed.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

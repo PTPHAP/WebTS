@@ -127,7 +127,7 @@ pub async fn ice_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<
 }
 struct Handler {
     signals: mpsc::Sender<Value>,
-    audio: mpsc::Sender<Packet>,
+    audio: mpsc::Sender<InboundAudio>,
     secure: Arc<AtomicBool>,
     cancel: CancellationToken,
 }
@@ -176,10 +176,50 @@ impl PeerConnectionEventHandler for Handler {
             loop {
                 tokio::select! {_ = cancel.cancelled()=>break,event=track.poll()=>{
                     let Some(event)=event else{break;};if let TrackRemoteEvent::OnRtpPacket(packet)=event
-                        && secure.load(Ordering::Acquire)&&packet.payload.len()<=1276&&opus_samples(&packet.payload).is_ok(){let _=tx.try_send(packet);}
+                        && secure.load(Ordering::Acquire)&&packet.payload.len()<=1276&&opus_samples(&packet.payload).is_ok(){let _=tx.try_send(InboundAudio{packet,received_at:Instant::now()});}
                 }}
             }
         });
+    }
+}
+pub struct InboundAudio {
+    pub packet: Packet,
+    pub received_at: Instant,
+}
+#[derive(Default)]
+pub struct AudioQueueStats {
+    count: u64,
+    micros: u128,
+    buckets: [u64; 21],
+    dropped: u64,
+}
+impl AudioQueueStats {
+    // The queue already has eight slots. Never forward old speech after a stall.
+    pub fn observe(&mut self, received_at: Instant, now: Instant) -> bool {
+        let age = now.saturating_duration_since(received_at);
+        if age > Duration::from_millis(200) {
+            self.dropped += 1;
+            return false;
+        }
+        self.count += 1;
+        self.micros += age.as_micros();
+        self.buckets[age.as_nanos().div_ceil(10_000_000).min(20) as usize] += 1;
+        true
+    }
+    pub fn take(&mut self, seconds: f64) -> Value {
+        let rank = self.count.saturating_mul(95).div_ceil(100);
+        let mut cumulative = 0;
+        let p95 = if self.count > 0 {
+            self.buckets.iter().enumerate().find_map(|(i, n)| {
+                cumulative += n;
+                (cumulative >= rank).then_some(i * 10)
+            })
+        } else {
+            None
+        };
+        let value = json!({"type":"audio_queue","window_seconds":seconds,"received":self.count+self.dropped,"dropped":self.dropped,"mean_ms":if self.count>0{Some(self.micros as f64/self.count as f64/1000.0)}else{None},"p95_upper_ms":p95});
+        *self = Self::default();
+        value
     }
 }
 struct Speaker {
@@ -197,6 +237,7 @@ struct Speaker {
 pub struct Media {
     pub peer: Arc<dyn PeerConnection>,
     pub secure: Arc<AtomicBool>,
+    cancel: CancellationToken,
     speakers: HashMap<u16, Speaker>,
     pub negotiating: bool,
     pub dirty: bool,
@@ -211,7 +252,7 @@ impl Media {
         owner: i64,
         port: u16,
         signals: mpsc::Sender<Value>,
-        audio: mpsc::Sender<Packet>,
+        audio: mpsc::Sender<InboundAudio>,
         cancel: CancellationToken,
     ) -> Result<Self> {
         let mut engine = webrtc::peer_connection::MediaEngine::default();
@@ -252,7 +293,7 @@ impl Media {
                 signals: signals.clone(),
                 audio,
                 secure: secure.clone(),
-                cancel,
+                cancel: cancel.clone(),
             }))
             .with_udp_addrs(vec![format!("0.0.0.0:{port}")])
             .build()
@@ -268,6 +309,7 @@ impl Media {
         Ok(Self {
             peer: Arc::new(peer),
             secure,
+            cancel,
             speakers: HashMap::new(),
             negotiating: false,
             dirty: true,
@@ -504,6 +546,7 @@ impl Media {
     }
     pub async fn close(&self) {
         self.secure.store(false, Ordering::Release);
+        self.cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(2), self.peer.close()).await;
     }
 }
@@ -554,6 +597,39 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queue_age_is_bounded_and_metrics_reset_without_fabricating_silence() {
+        let now = Instant::now();
+        let mut stats = AudioQueueStats::default();
+        assert!(stats.observe(now - Duration::from_millis(7), now));
+        assert!(stats.observe(now - Duration::from_millis(200), now));
+        assert!(!stats.observe(now - Duration::from_millis(201), now));
+        let report = stats.take(2.0);
+        assert_eq!(report["received"], 3);
+        assert_eq!(report["dropped"], 1);
+        assert_eq!(report["p95_upper_ms"], 200);
+        assert_eq!(report["mean_ms"], 103.5);
+        let empty = stats.take(2.0);
+        assert!(empty["mean_ms"].is_null());
+        assert!(empty["p95_upper_ms"].is_null());
+        assert_eq!(empty["received"], 0);
+    }
+    #[test]
+    fn queue_p95_buckets_are_true_upper_bounds_at_submillisecond_edges() {
+        let now = Instant::now();
+        for (nanos, upper) in [
+            (0, 0),
+            (1, 10),
+            (900_000, 10),
+            (10_000_000, 10),
+            (10_900_000, 20),
+            (199_999_999, 200),
+        ] {
+            let mut stats = AudioQueueStats::default();
+            assert!(stats.observe(now - Duration::from_nanos(nanos), now));
+            assert_eq!(stats.take(2.0)["p95_upper_ms"], upper);
+        }
+    }
     #[tokio::test]
     async fn malformed_received_audio_does_not_close_the_media_connection() {
         let (_dir, app, _) = crate::app::tests::fixture();
@@ -569,12 +645,14 @@ mod tests {
             valid &= media.audio(2, 1, packet).await.is_ok();
         }
         let stayed_secure = media.secure.load(Ordering::Acquire);
+        let stayed_active = !cancel.is_cancelled();
         media.close().await;
         assert!(
             valid,
             "bad Opus frames must be dropped without tearing down a recipient's connection"
         );
-        assert!(stayed_secure && !cancel.is_cancelled());
+        assert!(stayed_secure && stayed_active);
+        assert!(cancel.is_cancelled() && !media.secure.load(Ordering::Acquire));
     }
     #[test]
     fn automatic_speech_retains_leading_packets_and_discards_expired_or_muted_audio() {

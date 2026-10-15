@@ -2,11 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
-const code=ts.transpileModule(await readFile(new URL('../src/notification-sounds.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const policyCode=ts.transpileModule(await readFile(new URL('../src/notification-policy.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const policyUrl=`data:text/javascript;base64,${Buffer.from(policyCode).toString('base64')}`;
+const {defaultNotificationPolicy,shouldNotify}=await import(policyUrl);
+const code=ts.transpileModule(await readFile(new URL('../src/notification-sounds.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText.replace('./notification-policy',policyUrl);
 const {NotificationSounds,readSoundSettings}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 test('sound preferences tolerate malformed storage, clamp volume and preserve explicit disable',()=>{
   globalThis.localStorage={getItem:()=>'{'};assert.deepEqual(readSoundSettings(),{enabled:true,volume:.5});
   localStorage.getItem=()=>'{"enabled":false,"volume":99}';assert.deepEqual(readSoundSettings(),{enabled:false,volume:1});
+});
+
+test('quiet mode and individual categories pause alerts without muting safety failures or voice audio',()=>{
+ assert.equal(shouldNotify({...defaultNotificationPolicy,quiet:true},'messages'),false);
+ assert.equal(shouldNotify({...defaultNotificationPolicy,activities:false},'activities'),false);
+ assert.equal(shouldNotify({...defaultNotificationPolicy,mail:false},'messages'),true);
+ const tones=[];globalThis.AudioContext=class {
+  state='running';currentTime=1;resume(){return Promise.resolve();}close(){return Promise.resolve();}
+  createOscillator(){tones.push(1);return {frequency:{value:0},connect(){},disconnect(){},start(){},stop(){}};}
+  createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};}
+ };
+ const sound=new NotificationSounds({enabled:true,volume:.5},{...defaultNotificationPolicy,quiet:true});sound.arm();
+ for(const kind of ['connect','join','message','poke','mail','friend','activity'])sound.play(kind);
+ assert.equal(tones.length,0);sound.play('error');assert.equal(tones.length,2);
+ sound.configure({enabled:true,volume:.5},{...defaultNotificationPolicy,mail:false});sound.play('mail');assert.equal(tones.length,2);sound.play('activity');assert.equal(tones.length,5);sound.close();
 });
 test('tones need a user-armed context, obey mute/volume and coalesce repeated events',()=>{
   const contexts=[],tones=[];

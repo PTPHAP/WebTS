@@ -18,6 +18,15 @@ test('channel invites contain no secrets and accept only bounded configured iden
  assert.ok(!JSON.stringify(favorites.readFavorites([value])).includes('password'));
 });
 const input={connected:true,reconnecting:false,transport:'connected',capture:'running',listenOnly:false,muted:false,deafened:false,away:false,canSpeak:true,playbackBlocked:false,otherSpeaking:false,quality:{rtt:20,received:50,sent:40,route:'direct'},cipher:'AES-256-GCM',gain:1,volume:1};
+test('recent quality replaces old loss warnings and queue diagnostics remain numeric-only',()=>{
+ assert.ok(!diagnostics.voiceDiagnosis({...input,quality:{loss:50,recentLoss:0}}).some(v=>v.title.includes('丢包')));
+ assert.ok(diagnostics.voiceDiagnosis({...input,quality:{recentLoss:6}}).some(v=>v.title==='近期接收丢包偏高'));
+ assert.ok(diagnostics.voiceDiagnosis({...input,quality:{statsAvailable:false}}).some(v=>v.title==='浏览器统计暂不可用'));
+ const queue=diagnostics.queueQuality({window_seconds:2,received:10,dropped:1,mean_ms:Infinity,p95_upper_ms:NaN,secret:'not exported'});
+ assert.equal(queue.mean,undefined);assert.equal(queue.p95Upper,undefined);
+ assert.ok(diagnostics.voiceDiagnosis({...input,queue}).some(v=>v.title==='网关已丢弃过期音频'));
+ const result=diagnostics.diagnosticReport({...input,queue});assert.equal(result.queue.expiredPackets,1);assert.ok(!JSON.stringify(result).includes('secret'));
+});
 test('diagnosis distinguishes intentional mute, permission denial and browser playback; exports strict whitelist',()=>{
  assert.equal(diagnostics.voiceDiagnosis(input)[0].title,'未发现明显的设置或连接异常');
  for(const [change,title] of [[{muted:true},'麦克风主动暂停'],[{canSpeak:false},'当前身份没有发言权限'],[{playbackBlocked:true},'浏览器尚未允许播放'],[{otherSpeaking:true,quality:{received:0}},'有人发言，但尚未收到音频包']])assert.ok(diagnostics.voiceDiagnosis({...input,...change}).some(v=>v.title===title));
@@ -26,10 +35,6 @@ test('diagnosis distinguishes intentional mute, permission denial and browser pl
 test('mentions require complete name boundaries and quoted replies are plain bounded text',()=>{
  assert.equal(conversation.mentioned('hello @Bob!', 'Bob'),true);assert.equal(conversation.mentioned('@Bobby', 'Bob'),false);assert.equal(conversation.mentioned('email@Bob', 'Bob'),false);assert.equal(conversation.mentioned('[b]@妮可[/b]，你好','妮可'),true);
  const reply=conversation.replyText({name:'peer',text:'[b]quoted[/b]'},'answer');assert.equal(reply,'↪ peer: quoted\nanswer');assert.ok(!reply.includes('[b]'));
-});
-test('event reminders exclude cancelled, unregistered, expired and already announced events',async()=>{
- const events=await load('CommunityEvents.tsx',{require:n=>n==='./api'?{api:()=>Promise.reject(Error('no network'))}:require(n)});
- const one={id:'one',starts:100,ends:300,attending:true,cancelled:false};const list=[one,{...one,id:'two',attending:false},{...one,id:'three',cancelled:true},{...one,id:'old',starts:1},{...one,id:'ended',ends:99}];assert.equal(events.eventReminders(list,100,new Set()).length,1);assert.equal(events.eventReminders(list,100,new Set(['one:100'])).length,0);
 });
 
 test('searching and hidden tabs do not acknowledge incoming TS messages as read',async()=>{
@@ -40,11 +45,6 @@ test('searching and hidden tabs do not acknowledge incoming TS messages as read'
   effects[1]();assert.deepEqual(Array.from(unread),[2]);effects[2]();listeners.get('visibilitychange')();assert.deepEqual(Array.from(unread),[2]);
  }
 });
-test('community cards safely render malicious text and retain native voice footer outside the scroll region',async()=>{
- const row={id:'one',title:'<script>bad</script>',description:'<img src=x onerror=bad()>',starts:100,ends:300,community:false,cancelled:false,attending:false,participants:1,server:'fixture',channel:7};let index=0;
- const events=await load('CommunityEvents.tsx',{crypto:{randomUUID:()=> 'id'},require:n=>n==='react'?{...React,useState:initial=>[index++===0?[row]:initial,()=>{}],useEffect(){},useCallback:f=>f,useRef:v=>({current:v})}:n==='./api'?{}:require(n)});
- const html=renderToStaticMarkup(events.CommunityEvents({admin:false,servers:[{id:'fixture',name:'fixture'}],loggedIn:true,onJoin(){},onLogin(){},voiceBar:React.createElement('footer',{},'voice')}));assert.ok(html.includes('&lt;script&gt;'));assert.ok(!html.includes('<script>'));assert.ok(html.endsWith('</main><footer>voice</footer>'));
-});
 
 test('update polling is single-flight, aborts on unmount and never reloads an active call',async()=>{
  const effects=[],timers=new Map(),listeners=new Map(),states=[];let finish,calls=0,reloads=0,signal,next=0;
@@ -54,11 +54,4 @@ test('update polling is single-flight, aborts on unmount and never reloads an ac
  let index=0;const rendering=await load('UpdateNotice.tsx',{confirm:()=>true,location:{reload:()=>reloads++},require:n=>n==='react'?{...React,useState:()=>[index++===0?'/assets/index-new.js':'',()=>{}],useEffect(){}}:require(n)});
  const html=renderToStaticMarkup(rendering.UpdateNotice({inCall:true}));assert.match(html,/button[^>]*disabled=""[^>]*>刷新/);assert.equal(reloads,0);
  for(const bad of ['/assets/index-a.js?secret=1','https://evil.example/assets/index-a.js','/assets/index-../../a.js'])assert.equal(module.bundlePath(bad),undefined);
-});
-
-test('activity reminders pause in background, avoid overlapping requests and suppress stale-account callbacks',async()=>{
- const effects=[],timers=new Map(),listeners=new Map(),notifications=[];let finish,calls=0;
- const document={hidden:false,addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)};
- const module=await load('CommunityEvents.tsx',{document,AbortSignal,setInterval:f=>{timers.set(1,f);return 1;},clearInterval:k=>timers.delete(k),require:n=>n==='react'?{...React,useRef:v=>({current:v}),useEffect:f=>effects.push(f())}:n==='./api'?{api:()=>{calls++;return new Promise(r=>finish=r);}}:require(n)});
- module.CommunityAlerts({onNotify:(...v)=>notifications.push(v)});assert.equal(calls,1);timers.get(1)();assert.equal(calls,1);finish({items:[],server_time:100});for(let n=0;n<10;n++)await Promise.resolve();document.hidden=true;timers.get(1)();assert.equal(calls,1);document.hidden=false;listeners.get('visibilitychange')();finish({items:[{id:'one',starts:100,ends:300,mine:false,attending:true,cancelled:false,title:'fixture'}],server_time:100});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(notifications.length,2);timers.get(1)();effects[0]();finish({items:[{id:'two',starts:100,ends:300,mine:false,attending:true,cancelled:false,title:'late'}],server_time:100});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(notifications.length,2);assert.equal(timers.size,0);assert.equal(listeners.size,0);
 });

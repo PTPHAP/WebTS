@@ -46,7 +46,7 @@ md-5 = "=0.10.6"
 time = { version = "=0.3.55", features = ["formatting"] }
 webts-crypto = { path = "../crypto-wasm" }
 
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 tempfile = "3"

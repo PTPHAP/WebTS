@@ -46,6 +46,36 @@ function browser(microphoneError) {
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
 
+test('stalled statistics are marked unavailable without overlapping queries or reconnecting voice',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+ let finish,calls=0;voice.peer.getStats=()=>{calls++;return new Promise(r=>finish=r);};
+ env.tick();assert.equal(calls,1);
+ const watchdog=[...env.delays.entries()].find(([,v])=>v.ms===3000);assert.ok(watchdog,'stats watchdog exists');
+ env.delays.delete(watchdog[0]);watchdog[1].callback();env.tick();assert.equal(calls,1);
+ assert.equal(events.filter(e=>e.type==='quality').at(-1).statsAvailable,false);
+ finish(new Map());for(let n=0;n<10;n++)await Promise.resolve();
+ assert.equal(events.filter(e=>e.type==='quality').at(-1).statsAvailable,false,'late result remains invalid');
+ voice.peer.getStats=async()=>{calls++;return new Map();};env.tick();for(let n=0;n<10;n++)await Promise.resolve();
+ assert.equal(events.filter(e=>e.type==='quality').at(-1).statsAvailable,true);
+ assert.equal(env.sockets.length,1);assert.ok(!events.some(e=>e.type==='disconnected'));voice.close();
+});
+
+test('statistics resolving after disconnect cannot publish stale quality',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+ let finish;voice.peer.getStats=()=>new Promise(r=>finish=r);env.tick();voice.close();
+ const count=events.length;finish(new Map());for(let n=0;n<10;n++)await Promise.resolve();
+ assert.equal(events.length,count);assert.ok(![...env.delays.values()].some(v=>v.ms===3000));
+});
+test('short disconnected transport recovers in place, persistent disconnection retries and restores its channel',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
+ await env.message({type:'state',own:1,members:[{id:1,channel:9}],channels:[{id:9,name:'room'}]});
+ const peer=voice.peer;peer.connectionState='disconnected';peer.onconnectionstatechange();const first=[...env.delays.entries()].find(([,v])=>v.ms===10000);assert.ok(first);
+ peer.connectionState='connected';peer.onconnectionstatechange();assert.ok(!env.delays.has(first[0]));first[1].callback();assert.equal(env.sockets.length,1);
+ peer.connectionState='disconnected';peer.onconnectionstatechange();const second=[...env.delays.entries()].find(([,v])=>v.ms===10000);env.delays.delete(second[0]);second[1].callback();assert.equal(env.sockets[0].readyState,3);assert.equal(voice.lastChannel,9);
+ await env.wait();assert.equal(env.sockets.length,2);await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1},{id:9,name:'room'}]});assert.ok(events.some(e=>e.type==='restore_channel'&&e.channel===9));
+ const count=events.length;peer.connectionState='failed';peer.onconnectionstatechange();assert.equal(events.length,count);voice.close();assert.ok(![...env.delays.values()].some(v=>v.ms===10000));
+});
+
 test('playback failure stays visible when another member starts successfully and clears after recovery',async()=>{
  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
  let count=0,blocked=true;globalThis.Audio=class{constructor(){this.id=count++;}play(){return this.id===1&&blocked?Promise.reject(Error('autoplay')):Promise.resolve();}pause(){}};
@@ -299,6 +329,22 @@ test('unexpected disconnect retries indefinitely with capped backoff and restore
   assert.equal(events.find(e=>e.type==='restore_channel').channel,7);
   assert.ok(env.sent.some(e=>e.identity==='fixture'&&e.password==='memory-only'));
   voice.close();assert.equal(env.delays.size,0);assert.ok(env.captured.every(t=>t.stopped));
+});
+
+test('network error without a close callback starts one retry and preserves page and channel',async()=>{
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+  await voice.connect({identity:'fixture',page:'same-page'},'',true);
+  await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});
+  const old=env.sockets.at(-1),lateError=old.onerror;
+  old.onerror();
+  assert.equal(env.delays.size,1);
+  assert.equal(old.readyState,3);
+  await env.wait();
+  assert.equal(env.sent.filter(v=>v.identity==='fixture').at(-1).page,'same-page');
+  lateError();assert.equal(env.delays.size,0);
+  await env.message({type:'state',own:2,members:[{id:2,channel:1}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});
+  assert.ok(events.some(e=>e.type==='restore_channel'&&e.channel===7));
+  voice.close();
 });
 
 test('explicit nonretryable server closure and deliberate disconnect cancel reconnect',async()=>{

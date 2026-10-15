@@ -26,6 +26,6 @@ test('navigation retains the watch component only after it was visited; account 
  assert.equal(watchShouldMount(false,'app'),false);assert.equal(watchShouldMount(false,'watch'),true);
  for(const view of ['app','home','privacy','terms','login'])assert.equal(watchShouldMount(true,view),true);
  const main=await readFile(new URL('../src/main.tsx',import.meta.url),'utf8');
- assert.match(main,/watchShouldMount\(watchVisited,view\)&&<WatchPage key=\{user\?\.id\?\?'public'\}/);
+ assert.match(main,/watchShouldMount\(watchVisited,view\)&&<WatchPage key=\{`watch:\$\{user\?\.id\?\?'public'\}`\}/);
  assert.match(main,/active=\{view==='watch'\}/);
 });

@@ -87,10 +87,20 @@ impl Db {
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_audit(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL REFERENCES users(id), target INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS account_audit_target ON account_audit(target,id)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS profiles(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS site_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS watch_settings(id INTEGER PRIMARY KEY CHECK(id=1), ciphertext BLOB NOT NULL)")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS reports(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('account','event')),target TEXT NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,ciphertext BLOB NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN('pending','processing','resolved','dismissed')),revision INTEGER NOT NULL DEFAULT 0 CHECK(revision BETWEEN 0 AND 128),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,UNIQUE(owner,request_id));
+          CREATE INDEX IF NOT EXISTS reports_owner ON reports(owner,seq);
+          CREATE INDEX IF NOT EXISTS reports_expiry ON reports(created_at,updated_at);
+          CREATE TABLE IF NOT EXISTS report_audit(report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,revision INTEGER NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),status TEXT NOT NULL,ciphertext BLOB NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(report_id,revision),UNIQUE(report_id,actor,request_id));")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS community_events(id TEXT PRIMARY KEY,owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,ciphertext BLOB NOT NULL,starts INTEGER NOT NULL,ends INTEGER NOT NULL,community INTEGER NOT NULL CHECK(community IN(0,1)),cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN(0,1)),UNIQUE(owner,request_id));
           CREATE TABLE IF NOT EXISTS community_invites(event_id TEXT NOT NULL REFERENCES community_events(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,attending INTEGER NOT NULL DEFAULT 0 CHECK(attending IN(0,1)),PRIMARY KEY(event_id,user_id));
           CREATE INDEX IF NOT EXISTS community_event_time ON community_events(ends,starts);
           CREATE INDEX IF NOT EXISTS community_invite_user ON community_invites(user_id,event_id);")?;
+        if !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('community_invites') WHERE name='wait_order')", [], |r| r.get::<_,bool>(0))? {
+            connection.execute_batch("ALTER TABLE community_invites ADD COLUMN wait_order INTEGER NOT NULL DEFAULT 0 CHECK(wait_order>=0)")?;
+        }
+        if !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('community_events') WHERE name='capacity')", [], |r| r.get::<_,bool>(0))? {
+            connection.execute_batch("ALTER TABLE community_events ADD COLUMN capacity INTEGER NOT NULL DEFAULT 0 CHECK(capacity BETWEEN 0 AND 1000)")?;
+        }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS watch_feed_state(id INTEGER PRIMARY KEY CHECK(id=1),event_id TEXT NOT NULL,sequence INTEGER NOT NULL)")?;
         let avatar_column: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('profiles') WHERE name='avatar_hash')",
@@ -730,5 +740,61 @@ mod tests {
         assert!(db.resend_verification("one@example.com").unwrap().is_none());
         db.consume_email_token(&new, "verify", None).unwrap();
         assert!(db.resend_verification("one@example.com").unwrap().is_none());
+    }
+    #[test]
+    fn legacy_community_migration_preserves_records_and_is_repeatable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("legacy.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        {
+            let db = Db::open(&path).unwrap();
+            let (owner, _, _) = db
+                .register("migration@example.invalid", "synthetic hash")
+                .unwrap();
+            let c = db.connection.lock().unwrap();
+            c.execute_batch("ALTER TABLE community_invites DROP COLUMN wait_order; ALTER TABLE community_events DROP COLUMN capacity")
+                .unwrap();
+            c.execute(
+                "INSERT INTO community_events VALUES('event',?,'request','hash',x'123456',1,2,0,0)",
+                [owner],
+            )
+            .unwrap();
+            c.execute("INSERT INTO community_invites VALUES('event',?,1)", [owner])
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let db = Db::open(&path).unwrap();
+            let c = db.connection.lock().unwrap();
+            assert_eq!(
+                c.query_row(
+                    "SELECT attending,wait_order FROM community_invites",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                )
+                .unwrap(),
+                (1, 0)
+            );
+            assert_eq!(
+                c.query_row("SELECT capacity FROM community_events", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT hex(ciphertext) FROM community_events", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+                "123456"
+            );
+            assert_eq!(
+                c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
+            );
+        }
     }
 }

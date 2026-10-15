@@ -7,7 +7,7 @@ async function fixture(file,api=async()=>{}){
   const timers=new Map(),events=new Map(),cleanups=[],states=[];let counter=0;
   const eventTarget={addEventListener:(name,fn)=>{events.set(name,fn);},removeEventListener:(name,fn)=>{if(events.get(name)===fn)events.delete(name);}};
   const document={...eventTarget,visibilityState:'visible',hidden:false,hasFocus:()=>true};
-  const context=vm.createContext({exports:{},document,window:eventTarget,setTimeout:(fn,ms)=>{timers.set(++counter,{fn,ms});return counter;},clearTimeout:id=>timers.delete(id),setInterval:()=>++counter,clearInterval(){},require:name=>name==='react'?{useRef:value=>({current:value}),useState:initial=>{const state={value:typeof initial==='function'?initial():initial};states.push(state);return[state.value,value=>{state.value=value;}];},useEffect:fn=>cleanups.push(fn())}:{api}});
+  const context=vm.createContext({exports:{},document,window:eventTarget,AbortController,AbortSignal,setTimeout:(fn,ms)=>{timers.set(++counter,{fn,ms});return counter;},clearTimeout:id=>timers.delete(id),setInterval:()=>++counter,clearInterval(){},require:name=>name==='react'?{useRef:value=>({current:value}),useState:initial=>{const state={value:typeof initial==='function'?initial():initial};states.push(state);return[state.value,value=>{state.value=value;}];},useEffect:fn=>cleanups.push(fn())}:{api}});
   const source=await readFile(new URL(`../src/${file}`,import.meta.url),'utf8');vm.runInContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,context);
   const drain=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
   return {module:context.exports,timers,events,states,document,cleanups,drain,async tick(){const [id,{fn}]=[...timers][0];timers.delete(id);fn();await drain();}};
@@ -15,6 +15,13 @@ async function fixture(file,api=async()=>{}){
 test('remote preferences update all mounted views and dirty fields merge without clobbering unrelated settings',async()=>{
   let saved={burn:true,burnSeconds:600,theme:'dark'},calls=[];const f=await fixture('account-preferences.ts',async(path,body)=>{calls.push(body);if(body)saved={...saved,...body.patch};return {account:1,initialized:true,preferences:saved};});
   const [,burn]=f.module.useAccountPreference('burn',false);f.module.useAccountPreference('burn',false);f.module.useAccountPreference('theme','light');const stop=f.module.startPreferences(1,assert.fail);await f.drain();assert.equal(f.states[0].value,true);assert.equal(f.states[1].value,true);assert.equal(f.states[2].value,'dark');burn(false);await f.tick();assert.equal(saved.burn,false);assert.equal(saved.burnSeconds,600);assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{account:1,patch:{burn:false}});stop();
+});
+
+test('a stalled preference query has a deadline and is cancelled when its account exits',async()=>{
+ let signal;const f=await fixture('account-preferences.ts',(path,body,method,s)=>{signal=s;return new Promise(()=>{});});
+ f.module.useAccountPreference('theme','light');const stop=f.module.startPreferences(1,()=>{});
+ assert.ok(signal instanceof AbortSignal);assert.ok([...f.timers.values()].some(timer=>timer.ms===15000));
+ stop();assert.equal(signal.aborted,true);assert.equal(f.timers.size,0);
 });
 test('stale previous-account responses cannot populate a new login or write under its cookie',async()=>{
   let complete;const calls=[];const f=await fixture('account-preferences.ts',(path,body)=>{calls.push(body);if(calls.length===1)return new Promise(done=>complete=done);return Promise.resolve({account:2,initialized:true,preferences:{burn:false}});});const [,burn]=f.module.useAccountPreference('burn',false);const old=f.module.startPreferences(1,assert.fail);old();const stop=f.module.startPreferences(2,assert.fail);await f.drain();complete({account:1,initialized:true,preferences:{burn:true}});await f.drain();assert.equal(f.states[0].value,false);burn(true);await f.tick();assert.equal(calls.at(-1).account,2);stop();

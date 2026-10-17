@@ -507,13 +507,14 @@ mod tests {
             assert!(!html.contains(bad), "{bad}");
         }
         d.format = "html".into();
-        d.body="<h2>标题</h2><img src='https://user:password@example.com/a.jpg'><img src='http://example.com/a.jpg'><input autofocus><style>evil</style>".into();
+        d.body=r#"<h2>标题</h2><img src='https://user:password@example.com/a.jpg'><img src='http://example.com/a.jpg'><p style='background:URL("https://tracking.invalid/ping")'>正文</p><input autofocus><style>evil</style>"#.into();
         let html = d.normalize().expect("valid notice");
         assert!(html.contains("<h2>标题</h2>"));
         assert!(!html.contains("password"));
         assert!(!html.contains("http:"));
         assert!(!html.contains("autofocus"));
         assert!(!html.contains("style"));
+        assert!(!html.contains("tracking.invalid"));
     }
     #[test]
     fn subjects_body_targets_and_inline_images_are_bounded() {

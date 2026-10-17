@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "web-ts"
-version = "1.0.8"
+version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "ammonia",

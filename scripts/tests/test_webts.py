@@ -15,6 +15,19 @@ manager=importlib.util.module_from_spec(spec);spec.loader.exec_module(manager)
 
 
 class ManagementTests(unittest.TestCase):
+    def test_failed_update_never_runs_old_program_over_new_security_state(self):
+        (self.root/'current').mkdir()
+        def failed_health():
+            (self.root/'data/security-after-start').write_text('new public session or content revision')
+            raise ValueError('synthetic readiness failure')
+        with patch.object(manager,'release_ref',return_value='main'),patch.object(manager,'download_source'),patch.object(manager,'run') as run,patch.object(manager,'compose') as compose,patch.object(manager,'health',side_effect=failed_health),patch.object(Path,'symlink_to'),patch.object(manager.os,'replace'),contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError):manager.update()
+        tags=[call.args[0] for call in run.call_args_list if call.args[0][:2]==['docker','tag']]
+        self.assertFalse(any(cmd[2].startswith('webts:rollback-') and cmd[3]=='webts:managed' for cmd in tags),'Never run old code over security state written by a started candidate')
+        self.assertEqual(compose.call_args.args,('stop','webts'))
+        self.assertEqual((self.root/'data/security-after-start').read_text(),'new public session or content revision')
+        self.assertEqual((self.root/'secrets/master.key').read_text(),'test key must stay unchanged')
+
     def test_updates_default_to_a_validated_stable_release_without_shell_interpolation(self):
         with patch.dict(os.environ,{'WEBTS_REF':''}),patch.object(manager.urllib.request,'urlopen',return_value=io.BytesIO(b'{"tag_name":"v1.0.2","draft":false,"prerelease":false}')):
             self.assertEqual(manager.release_ref(),'v1.0.2')
@@ -118,10 +131,16 @@ class ManagementTests(unittest.TestCase):
     def test_backup_uses_sqlite_consistent_backup_and_keeps_original_key(self):
         import sqlite3
         with contextlib.closing(sqlite3.connect(self.root/'data/web-ts.db')) as db:
+            db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA wal_autocheckpoint=0')
             db.execute('CREATE TABLE identities(uid TEXT)');db.execute("INSERT INTO identities VALUES('keep-uid')")
             db.commit()
-        with contextlib.redirect_stdout(io.StringIO()):folder=manager.backup()
-        with contextlib.closing(sqlite3.connect(folder/'web-ts.db')) as db:self.assertEqual(db.execute('SELECT uid FROM identities').fetchone()[0],'keep-uid')
+            self.assertGreater((self.root/'data/web-ts.db-wal').stat().st_size,0)
+            db.execute("INSERT INTO identities VALUES('not-committed')")
+            with contextlib.redirect_stdout(io.StringIO()):folder=manager.backup()
+            db.rollback()
+        with contextlib.closing(sqlite3.connect(folder/'web-ts.db')) as db:
+            self.assertEqual(db.execute('SELECT uid FROM identities').fetchall(),[('keep-uid',)])
+            self.assertEqual(db.execute('PRAGMA quick_check').fetchone(),('ok',))
         self.assertEqual((folder/'secrets/master.key').read_bytes(),(self.root/'secrets/master.key').read_bytes())
 
 

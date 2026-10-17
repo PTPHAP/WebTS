@@ -1,10 +1,12 @@
 import type {ConnectionQuality} from './connection-quality';
+import {bundlePath} from './client-build';
+export type AudioRuntime={context:string;processing:string;receivers:number;players:number;pausedPlayers:number};
 export type QueueQuality={windowSeconds?:number;received?:number;dropped?:number;mean?:number;p95Upper?:number};
 export function queueQuality(value:Record<string,unknown>):QueueQuality {
  const number=(n:unknown)=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:undefined;
  return {windowSeconds:number(value.window_seconds),received:number(value.received),dropped:number(value.dropped),mean:number(value.mean_ms),p95Upper:number(value.p95_upper_ms)};
 }
-export type DiagnosticInput={connected:boolean;reconnecting:boolean;transport:string;capture:string;listenOnly:boolean;muted:boolean;deafened:boolean;away:boolean;canSpeak:boolean;playbackBlocked:boolean;otherSpeaking:boolean;quality:ConnectionQuality;queue?:QueueQuality;tsRtt?:number;cipher:string;gain:number;volume:number};
+export type DiagnosticInput={connected:boolean;reconnecting:boolean;transport:string;capture:string;listenOnly:boolean;muted:boolean;deafened:boolean;away:boolean;canSpeak:boolean;playbackBlocked:boolean;otherSpeaking:boolean;quality:ConnectionQuality;queue?:QueueQuality;tsRtt?:number;cipher:string;gain:number;volume:number;echoRequested?:boolean;echoActual?:boolean;runtime?:AudioRuntime};
 export function voiceDiagnosis(s:DiagnosticInput):{title:string;help:string}[] {
   const items:{title:string;help:string}[]=[];
   const add=(title:string,help:string)=>items.push({title,help});
@@ -12,6 +14,10 @@ export function voiceDiagnosis(s:DiagnosticInput):{title:string;help:string}[] {
   if(s.transport!=='connected')add('浏览器语音链路尚未就绪','检查网络及网关 UDP / TURN 配置；网页信令连接成功不代表语音链路成功。');
   if(!s.cipher)add('等待语音加密确认','加密未确认时不要把连接标为安全可用。');
   if(!s.listenOnly&&s.capture!=='running')add('麦克风采集暂停或恢复中','检查设备与网站麦克风权限；可点击恢复音频，频道连接保持。');
+  if(!s.listenOnly&&s.echoRequested===true){
+    if(s.echoActual===false)add('设备未启用回声消除','已请求开启，但设备报告未启用。检查网站麦克风权限与浏览器版本；外放时可先降低系统音量或使用耳机，避免回声传给对方。');
+    else if(s.echoActual!==true)add('设备未报告回声消除状态','请求开启不代表实际生效；未报告也不代表已关闭。请双方分别做外放复测，不能用 AI 降噪代替回声消除。');
+  }
   if(s.listenOnly)add('当前为仅收听连接','需要发言时重新选择带麦克风的连接。');
   else if(s.muted||s.away)add('麦克风主动暂停','取消静音或 AFK 后再发言。');
   else if(!s.canSpeak)add('当前身份没有发言权限','由 TeamSpeak 服务器管理员调整权限；网站不会额外授予权限。');
@@ -28,8 +34,10 @@ export function voiceDiagnosis(s:DiagnosticInput):{title:string;help:string}[] {
   return items;
 }
 // A strict whitelist: never serialize RTCStatsReport, device IDs, names, addresses or chat.
-export function diagnosticReport(s:DiagnosticInput){
+export function diagnosticReport(s:DiagnosticInput,bundle?:string){
   const number=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0?v:null;
   const enumeration=(v:string,allowed:string[])=>allowed.includes(v)?v:'unknown';
-  return {format:'webts-diagnostic-v2',connection:{connected:s.connected===true,reconnecting:s.reconnecting===true,transport:enumeration(s.transport,['new','connecting','connected','disconnected','failed','closed']),capture:enumeration(s.capture,['running','paused','muted','ended','failed','recovering']),listenOnly:s.listenOnly===true,muted:s.muted===true,deafened:s.deafened===true,away:s.away===true,canSpeak:s.canSpeak===true,playbackBlocked:s.playbackBlocked===true},encryption:enumeration(s.cipher,['AES-256-GCM','AES-128-GCM']),queue:{windowSeconds:number(s.queue?.windowSeconds),receivedPackets:number(s.queue?.received),expiredPackets:number(s.queue?.dropped),meanMs:number(s.queue?.mean),p95UpperMs:number(s.queue?.p95Upper)},metrics:{statsAvailable:s.quality.statsAvailable===true,recentWindowSeconds:number(s.quality.windowSeconds),recentLossPercent:number(s.quality.recentLoss),recentBufferMs:number(s.quality.recentBuffer),recentConcealedPercent:number(s.quality.recentConcealed),recentConcealmentEvents:number(s.quality.recentConcealmentEvents),rttMs:number(s.quality.rtt),tsRttMs:number(s.tsRtt),jitterMs:number(s.quality.jitter),bufferMs:number(s.quality.buffer),lossPercent:number(s.quality.loss),receivedPackets:number(s.quality.received),sentPackets:number(s.quality.sent),route:enumeration(s.quality.route??'unknown',['direct','relay','unknown'])}};
+  const boolean=(v:unknown)=>typeof v==='boolean'?v:null;
+  const count=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:null;
+  return {format:'webts-diagnostic-v4',frontendBundle:bundlePath(bundle)??null,runtime:{context:enumeration(s.runtime?.context??'unknown',['running','suspended','interrupted','closed','inactive']),processing:enumeration(s.runtime?.processing??'unknown',['rnnoise','keyboard','off','blocked','listen','inactive']),receivers:count(s.runtime?.receivers),players:count(s.runtime?.players),pausedPlayers:count(s.runtime?.pausedPlayers)},audio:{echoRequested:boolean(s.echoRequested),echoActual:boolean(s.echoActual)},connection:{connected:s.connected===true,reconnecting:s.reconnecting===true,transport:enumeration(s.transport,['new','connecting','connected','disconnected','failed','closed']),capture:enumeration(s.capture,['running','paused','muted','ended','failed','recovering']),listenOnly:s.listenOnly===true,muted:s.muted===true,deafened:s.deafened===true,away:s.away===true,canSpeak:s.canSpeak===true,playbackBlocked:s.playbackBlocked===true},encryption:enumeration(s.cipher,['AES-256-GCM','AES-128-GCM']),queue:{windowSeconds:number(s.queue?.windowSeconds),receivedPackets:number(s.queue?.received),expiredPackets:number(s.queue?.dropped),meanMs:number(s.queue?.mean),p95UpperMs:number(s.queue?.p95Upper)},metrics:{statsAvailable:s.quality.statsAvailable===true,recentWindowSeconds:number(s.quality.windowSeconds),recentLossPercent:number(s.quality.recentLoss),recentBufferMs:number(s.quality.recentBuffer),recentConcealedPercent:number(s.quality.recentConcealed),recentConcealmentEvents:number(s.quality.recentConcealmentEvents),rttMs:number(s.quality.rtt),tsRttMs:number(s.tsRtt),jitterMs:number(s.quality.jitter),bufferMs:number(s.quality.buffer),lossPercent:number(s.quality.loss),receivedPackets:number(s.quality.received),sentPackets:number(s.quality.sent),route:enumeration(s.quality.route??'unknown',['direct','relay','unknown'])}};
 }

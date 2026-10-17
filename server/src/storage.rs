@@ -17,6 +17,87 @@ use std::{sync::Arc, time::Duration};
 use zeroize::{Zeroize, Zeroizing};
 
 pub const MAX_CIPHERTEXT: usize = 384 * 1024;
+pub fn default_store() -> String {
+    "default".into()
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub storage: Storage,
+}
+pub fn validate_profiles(settings: &crate::settings::Settings) -> Result<()> {
+    let mut ids = std::collections::HashSet::from(["default"]);
+    if settings.storage_profiles.len() > 7 {
+        bail!("最多8个存储配置");
+    }
+    for p in &settings.storage_profiles {
+        if p.id.len() != 64
+            || !p.id.bytes().all(|b| b.is_ascii_hexdigit())
+            || !ids.insert(p.id.as_str())
+            || p.name.trim().is_empty()
+            || p.name.chars().count() > 40
+            || p.name.chars().any(char::is_control)
+        {
+            bail!("存储编号或名称无效");
+        }
+        p.storage.validate()?;
+    }
+    if !ids.contains(settings.storage_active.as_str()) {
+        bail!("默认写入存储不存在");
+    }
+    Ok(())
+}
+pub fn resolve(settings: &crate::settings::Settings, id: &str) -> Api<Storage> {
+    if id == "default" {
+        return Ok(settings.storage.clone());
+    }
+    settings
+        .storage_profiles
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.storage.clone())
+        .ok_or(Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "原对象存储配置缺失，已停止读取或清理，未切换其他桶",
+        ))
+}
+pub fn selected(settings: &crate::settings::Settings) -> Api<(String, Storage)> {
+    Ok((
+        settings.storage_active.clone(),
+        resolve(settings, &settings.storage_active)?,
+    ))
+}
+pub fn object_store(app: &App, key: &str) -> Api<Storage> {
+    let runtime = app.runtime.read().unwrap();
+    let db = app.db.connection.lock().unwrap();
+    let id:String=db.query_row("SELECT store_id FROM friend_messages WHERE object_key=? UNION ALL SELECT store_id FROM storage_probes WHERE object_key=? LIMIT 1",rusqlite::params![key,key],|r|r.get(0)).map_err(anyhow::Error::from)?;
+    resolve(&runtime.settings, &id)
+}
+fn object_count(db: &rusqlite::Connection, id: &str) -> Api<i64> {
+    Ok(db.query_row("SELECT (SELECT count(*) FROM friend_messages WHERE store_id=?1)+(SELECT count(*) FROM storage_probes WHERE store_id=?1)+(SELECT count(*) FROM community_items WHERE store_id=?1 AND cleaned=0)+(SELECT count(*) FROM community_changes WHERE store_id=?1 AND cleaned=0)+(SELECT count(*) FROM community_icons WHERE store_id=?1)",rusqlite::params![id],|r|r.get(0)).map_err(anyhow::Error::from)?)
+}
+fn profile_view(db: &rusqlite::Connection, id: &str, config: &Storage) -> Api<Value> {
+    let (total,pending,expired):(i64,i64,i64)=db.query_row("SELECT count(*),COALESCE(sum(ready=0),0),COALESCE(sum(expires<=?),0) FROM friend_messages WHERE store_id=?",rusqlite::params![crate::db::now(),id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(anyhow::Error::from)?;
+    let probes: i64 = db
+        .query_row(
+            "SELECT count(*) FROM storage_probes WHERE store_id=?",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(anyhow::Error::from)?;
+    let community: i64 = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM community_items WHERE store_id=?1 AND cleaned=0)+(SELECT count(*) FROM community_changes WHERE store_id=?1 AND cleaned=0)+(SELECT count(*) FROM community_icons WHERE store_id=?1)",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(anyhow::Error::from)?;
+    let mut view = config.view();
+    view["objects"] = json!({"total":total,"pending":pending,"expired":expired,"probes":probes,"community":community});
+    Ok(view)
+}
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Storage {
@@ -200,6 +281,40 @@ pub async fn remove(config: &Storage, key: &str) -> Result<()> {
     }
 }
 pub async fn object(config: &Storage, method: &str, key: &str, body: Vec<u8>) -> Result<Vec<u8>> {
+    object_in(config, method, key, body, false).await
+}
+pub async fn community_object(
+    config: &Storage,
+    method: &str,
+    key: &str,
+    body: Vec<u8>,
+) -> Result<Vec<u8>> {
+    object_in(config, method, key, body, true).await
+}
+pub async fn community_remove(config: &Storage, key: &str) -> Result<()> {
+    match community_object(config, "DELETE", key, vec![]).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            if community_object(config, "GET", key, vec![])
+                .await
+                .as_ref()
+                .err()
+                .is_some_and(missing)
+            {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+async fn object_in(
+    config: &Storage,
+    method: &str,
+    key: &str,
+    body: Vec<u8>,
+    community: bool,
+) -> Result<Vec<u8>> {
     // Neither a user-supplied URL nor a pre-signed URL crosses this boundary.
     let result = tokio::time::timeout(Duration::from_secs(18), async {
         config.validate()?;
@@ -237,7 +352,7 @@ pub async fn object(config: &Storage, method: &str, key: &str, body: Vec<u8>) ->
             >(
                 "[year][month][day]T[hour][minute][second]Z",
             )?)?;
-        request_object(config, &client, url, method, key, body, &date).await
+        request_object(config, &client, url, method, (community, key), body, &date).await
     })
     .await;
     result
@@ -256,11 +371,17 @@ async fn request_object(
     client: &reqwest::Client,
     mut url: url::Url,
     method: &str,
-    key: &str,
+    location: (bool, &str),
     body: Vec<u8>,
     date: &str,
 ) -> Result<Vec<u8>> {
-    let path = format!("/{}/webts-temporary/v1/{key}", config.bucket);
+    let (community, key) = location;
+    let prefix = if community {
+        "webts-community"
+    } else {
+        "webts-temporary"
+    };
+    let path = format!("/{}/{prefix}/v1/{key}", config.bucket);
     url.set_path(&path);
     let hash = hex::encode(Sha256::digest(&body));
     let host = match url.port() {
@@ -343,35 +464,83 @@ pub async fn get(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Va
 pub async fn save(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Json(mut body): Json<Update>,
+    Json(body): Json<Update>,
 ) -> Api<Json<Value>> {
-    if body.password.len() > 128 {
-        return Err(Error::bad("密码输入超出限制"));
+    save_profile(
+        State(app),
+        headers,
+        Json(ProfileUpdate {
+            id: default_store(),
+            name: String::new(),
+            storage: Some(body.storage),
+            password: body.password,
+            action: "save".into(),
+        }),
+    )
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileUpdate {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    storage: Option<Storage>,
+    password: String,
+    action: String,
+}
+pub async fn profiles(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
+    app.work(move|a|{
+        let s=admin(a,&headers)?;let runtime=a.runtime.read().unwrap();let db=a.db.connection.lock().unwrap();crate::preferences::session_valid(&db,&s)?;
+        let allowed:bool=db.query_row("SELECT is_admin FROM users WHERE id=?",[s.user.id],|r|r.get(0)).map_err(anyhow::Error::from)?;if !allowed{return Err(Error(StatusCode::FORBIDDEN,"管理员权限已撤销"));}
+        let mut items=vec![json!({"id":"default","name":"原有存储","storage":profile_view(&db,"default",&runtime.settings.storage)?,"objects":object_count(&db,"default")?})];
+        for p in &runtime.settings.storage_profiles {items.push(json!({"id":p.id,"name":p.name,"storage":profile_view(&db,&p.id,&p.storage)?,"objects":object_count(&db,&p.id)?}));}
+        Ok(Json(json!({"active":runtime.settings.storage_active,"profiles":items})))
+    }).await
+}
+pub async fn save_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(mut body): Json<ProfileUpdate>,
+) -> Api<Json<Value>> {
+    if body.password.len() > 128
+        || body.id.len() > 64
+        || !matches!(body.action.as_str(), "save" | "activate" | "delete")
+    {
+        return Err(Error::bad("存储操作无效"));
     }
-    app.expensive(move |a| {
-        admin(a, &headers)?; let session = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
-        body.storage.normalize();
-        let mut runtime = a.runtime.write().unwrap(); let old = &runtime.settings.storage;
-        if body.storage.access_key.is_empty() { body.storage.access_key = old.access_key.clone(); }
-        if body.storage.secret_key.is_empty() {
-            if url::Url::parse(&body.storage.endpoint).ok() != url::Url::parse(&old.endpoint).ok() || body.storage.access_key != old.access_key { return Err(Error::bad("更换端点或Access Key时需要填写新Secret Key")); }
-            body.storage.secret_key = old.secret_key.clone();
-        }
-        body.storage.validate().map_err(|_| Error::bad("仅支持公网HTTPS443的S3兼容端点；检查桶名、区域、密钥和1–30天保留期"))?;
-        let _migration_guard = if !body.storage.same_bucket(old) {
-            let permit = a.friend_objects.clone().try_acquire_many_owned(crate::app::OBJECT_CONCURRENCY).map_err(|_| Error(StatusCode::CONFLICT,"临时对象正在传输或检测，请稍后再迁移存储桶"))?;
-            if a.db.connection.lock().unwrap().query_row("SELECT (SELECT count(*) FROM friend_messages)+(SELECT count(*) FROM storage_probes)", [], |r| r.get::<_,i64>(0)).map_err(anyhow::Error::from)? > 0 {
-                return Err(Error(StatusCode::CONFLICT, "仍有临时对象，清理完成前不能迁移存储桶；同桶Region修正、关闭新发送和凭据轮换不受此限制"));
+    app.expensive(move|a|{
+        admin(a,&headers)?;let session=a.reauthenticate(&headers,&Zeroizing::new(body.password))?;
+        let mut runtime=a.runtime.write().unwrap();let mut updated=runtime.settings.clone();
+        let new=body.id.is_empty();
+        if new {if body.action!="save" || updated.storage_profiles.len()>=7 {return Err(Error::bad("最多8个存储配置"));} body.id=crate::vault::token()?;}
+        let old=if new {Storage::default()} else {resolve(&updated,&body.id)?};
+        if body.action=="activate" {updated.storage_active=body.id.clone();}
+        else {
+            let mut config=body.storage.take().unwrap_or_else(||old.clone());
+            if body.action=="save" {
+                if config.access_key.is_empty() {config.access_key=old.access_key.clone();}
+                if config.secret_key.is_empty() {if url::Url::parse(&config.endpoint).ok()!=url::Url::parse(&old.endpoint).ok() || config.access_key!=old.access_key {return Err(Error::bad("更换端点或Access Key时需要填写新Secret Key"));}config.secret_key=old.secret_key.clone();}
+                config.normalize();config.validate().map_err(|_|Error::bad("仅支持公网HTTPS443的S3兼容端点；检查桶名、区域、密钥和1–30天保留期"))?;
             }
-            Some(permit)
-        } else { None };
-        let mut updated = runtime.settings.clone(); updated.storage = body.storage;
-        let next = crate::settings::Runtime::new(updated)?;
-        let bytes = Zeroizing::new(serde_json::to_vec(&next.settings).map_err(anyhow::Error::from)?);
-        let record = a.vault.seal(0, "site-settings", "v1", &bytes)?;
-        a.db.save_settings(session.user.id, &session.hash, &record)?;
-        *runtime = next;
-        Ok(Json(json!({"message":"存储设置已热加载。请在桶中关闭公开访问，并为webts-temporary/配置生命周期删除和旧版本清理。"})))
+            let _migration=if body.action=="delete" || !new&&!config.same_bucket(&old) {
+                let permit=a.friend_objects.clone().try_acquire_many_owned(crate::app::OBJECT_CONCURRENCY).map_err(|_|Error(StatusCode::CONFLICT,"对象正在传输或检测，请稍后再修改存储位置"))?;
+                if object_count(&a.db.connection.lock().unwrap(),&body.id)?>0 {return Err(Error(StatusCode::CONFLICT,"仍有未清理对象，不能修改该配置的端点、桶名或删除配置；可添加新配置并切换默认写入，旧对象继续从原桶读取和清理"));}Some(permit)
+            }else{None};
+            if body.action=="delete" {
+                if body.id=="default" || body.id==updated.storage_active {return Err(Error::bad("不能删除原有存储或当前默认写入配置"));}
+                updated.storage_profiles.retain(|p|p.id!=body.id);
+            }else if body.id=="default" {updated.storage=config;}
+            else {
+                let profile=Profile{id:body.id.clone(),name:body.name.trim().to_owned(),storage:config};
+                if new {updated.storage_profiles.push(profile);} else {let p=updated.storage_profiles.iter_mut().find(|p|p.id==body.id).unwrap();*p=profile;}
+            }
+        }
+        let next=crate::settings::Runtime::new(updated).map_err(|_|Error::bad("存储配置无效：名称1–40字、最多8个配置，默认配置必须存在"))?;
+        let bytes=Zeroizing::new(serde_json::to_vec(&next.settings).map_err(anyhow::Error::from)?);let record=a.vault.seal(0,"site-settings","v1",&bytes)?;
+        a.db.save_settings(session.user.id,&session.hash,&record)?;*runtime=next;
+        Ok(Json(json!({"id":body.id,"message":"存储配置已热加载；仅新对象使用默认写入位置，旧对象保留原桶归属。"})))
     }).await
 }
 
@@ -379,6 +548,8 @@ pub async fn save(
 #[serde(deny_unknown_fields)]
 pub struct Test {
     password: String,
+    #[serde(default = "default_store")]
+    store_id: String,
 }
 pub async fn test(
     State(app): State<Arc<App>>,
@@ -393,7 +564,7 @@ pub async fn test(
         .expensive(move |a| {
             admin(a, &headers)?;
             let s = a.reauthenticate(&headers, &Zeroizing::new(body.password))?;
-            let config = a.runtime.read().unwrap().settings.storage.clone();
+            let config = resolve(&a.runtime.read().unwrap().settings, &body.store_id)?;
             config
                 .validate()
                 .map_err(|_| Error::bad("请先保存完整的S3配置，再检测"))?;
@@ -412,8 +583,8 @@ pub async fn test(
                 ));
             }
             db.execute(
-                "INSERT INTO storage_probes VALUES(?,?)",
-                rusqlite::params![key, crate::db::now()],
+                "INSERT INTO storage_probes(object_key,created_at,store_id) VALUES(?,?,?)",
+                rusqlite::params![key, crate::db::now(), body.store_id],
             )
             .map_err(anyhow::Error::from)?;
             let payload = a.vault.seal(
@@ -495,142 +666,192 @@ mod tests {
     #[tokio::test]
     async fn fixed_prefix_signed_put_get_delete_and_oversized_response() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let c = Storage {
-            enabled: false,
-            endpoint: String::new(),
-            retention_days: 0,
-            bucket: "fixture-bucket".into(),
-            region: "us-east-1".into(),
-            access_key: "synthetic-key".into(),
-            secret_key: "synthetic secret only".into(),
-        };
-        let check = c.clone();
-        let key = "a".repeat(64);
-        let object_key = key.clone();
-        let date = "20261010T000000Z";
-        let payload = crate::vault::Vault::new([4; 32])
-            .seal(1, "fixture", "2", b"already end-to-end encrypted envelope")
-            .unwrap();
-        let expected = payload.clone();
-        let server = tokio::spawn(async move {
-            let mut stored = Vec::new();
-            for step in 0..6 {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut input = Vec::new();
-                let mut buffer = [0; 1024];
-                let header_end = loop {
-                    let n = socket.read(&mut buffer).await.unwrap();
-                    assert!(n > 0);
-                    input.extend_from_slice(&buffer[..n]);
-                    assert!(input.len() < 8192);
-                    if let Some(i) = input.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break i + 4;
+        for community in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let c = Storage {
+                enabled: false,
+                endpoint: String::new(),
+                retention_days: 0,
+                bucket: "fixture-bucket".into(),
+                region: "us-east-1".into(),
+                access_key: "synthetic-key".into(),
+                secret_key: "synthetic secret only".into(),
+            };
+            let check = c.clone();
+            let key = "a".repeat(64);
+            let object_key = key.clone();
+            let date = "20261010T000000Z";
+            let payload = crate::vault::Vault::new([4; 32])
+                .seal(1, "fixture", "2", b"already end-to-end encrypted envelope")
+                .unwrap();
+            let expected = payload.clone();
+            let server = tokio::spawn(async move {
+                let mut stored = Vec::new();
+                for step in 0..6 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut input = Vec::new();
+                    let mut buffer = [0; 1024];
+                    let header_end = loop {
+                        let n = socket.read(&mut buffer).await.unwrap();
+                        assert!(n > 0);
+                        input.extend_from_slice(&buffer[..n]);
+                        assert!(input.len() < 8192);
+                        if let Some(i) = input.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i + 4;
+                        }
+                    };
+                    let headers = String::from_utf8(input[..header_end].to_vec()).unwrap();
+                    assert!(
+                        !headers.to_ascii_lowercase().contains("content-type:"),
+                        "optional unsigned Content-Type breaks the configured S3-compatible endpoint"
+                    );
+                    let method = if step == 0 {
+                        "PUT"
+                    } else if step == 2 {
+                        "DELETE"
+                    } else {
+                        "GET"
+                    };
+                    let path = format!(
+                        "/fixture-bucket/{}/v1/{object_key}",
+                        if community {
+                            "webts-community"
+                        } else {
+                            "webts-temporary"
+                        }
+                    );
+                    assert!(headers.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    while input.len() - header_end < length {
+                        let n = socket.read(&mut buffer).await.unwrap();
+                        assert!(n > 0);
+                        input.extend_from_slice(&buffer[..n]);
                     }
-                };
-                let headers = String::from_utf8(input[..header_end].to_vec()).unwrap();
-                assert!(
-                    !headers.to_ascii_lowercase().contains("content-type:"),
-                    "optional unsigned Content-Type breaks the configured S3-compatible endpoint"
-                );
-                let method = if step == 0 {
-                    "PUT"
-                } else if step == 2 {
-                    "DELETE"
-                } else {
-                    "GET"
-                };
-                let path = format!("/fixture-bucket/webts-temporary/v1/{object_key}");
-                assert!(headers.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length: ")
-                            .and_then(|v| v.parse::<usize>().ok())
-                    })
-                    .unwrap_or(0);
-                while input.len() - header_end < length {
-                    let n = socket.read(&mut buffer).await.unwrap();
-                    assert!(n > 0);
-                    input.extend_from_slice(&buffer[..n]);
+                    let body = &input[header_end..header_end + length];
+                    let hash = hex::encode(Sha256::digest(body));
+                    let auth =
+                        authorization(&check, method, &path, &address.to_string(), date, &hash);
+                    assert!(headers.contains(&format!("authorization: {auth}\r\n")));
+                    assert!(headers.contains(&format!("x-amz-content-sha256: {hash}\r\n")));
+                    let (status, response, declared) = match step {
+                        0 => {
+                            stored = body.to_vec();
+                            assert_eq!(stored, expected);
+                            ("200 OK", Vec::new(), 0)
+                        }
+                        1 => ("200 OK", stored.clone(), stored.len()),
+                        2 => {
+                            stored.clear();
+                            ("404 Not Found", Vec::new(), 0)
+                        }
+                        3 => ("200 OK", Vec::new(), MAX_CIPHERTEXT + 30),
+                        4 => {
+                            let error=b"<Error><Code>AccessDenied</Code><Message>private-provider-response-do-not-echo</Message></Error>".to_vec();
+                            ("403 Forbidden", error.clone(), error.len())
+                        }
+                        _ => {
+                            let error = b"<Error><Code>NoSuchKey</Code></Error>".to_vec();
+                            ("404 Not Found", error.clone(), error.len())
+                        }
+                    };
+                    socket.write_all(format!("HTTP/1.1 {status}\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                    socket.write_all(&response).await.unwrap();
                 }
-                let body = &input[header_end..header_end + length];
-                let hash = hex::encode(Sha256::digest(body));
-                let auth = authorization(&check, method, &path, &address.to_string(), date, &hash);
-                assert!(headers.contains(&format!("authorization: {auth}\r\n")));
-                assert!(headers.contains(&format!("x-amz-content-sha256: {hash}\r\n")));
-                let (status, response, declared) = match step {
-                    0 => {
-                        stored = body.to_vec();
-                        assert_eq!(stored, expected);
-                        ("200 OK", Vec::new(), 0)
-                    }
-                    1 => ("200 OK", stored.clone(), stored.len()),
-                    2 => {
-                        stored.clear();
-                        ("404 Not Found", Vec::new(), 0)
-                    }
-                    3 => ("200 OK", Vec::new(), MAX_CIPHERTEXT + 30),
-                    4 => {
-                        let error=b"<Error><Code>AccessDenied</Code><Message>private-provider-response-do-not-echo</Message></Error>".to_vec();
-                        ("403 Forbidden", error.clone(), error.len())
-                    }
-                    _ => {
-                        let error = b"<Error><Code>NoSuchKey</Code></Error>".to_vec();
-                        ("404 Not Found", error.clone(), error.len())
-                    }
-                };
-                socket.write_all(format!("HTTP/1.1 {status}\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n").as_bytes()).await.unwrap();
-                socket.write_all(&response).await.unwrap();
-            }
-        });
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(3))
-            .build()
-            .unwrap();
-        let url = url::Url::parse(&format!("http://{address}")).unwrap();
-        request_object(&c, &client, url.clone(), "PUT", &key, payload.clone(), date)
+            });
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let url = url::Url::parse(&format!("http://{address}")).unwrap();
+            request_object(
+                &c,
+                &client,
+                url.clone(),
+                "PUT",
+                (community, &key),
+                payload.clone(),
+                date,
+            )
             .await
             .unwrap();
-        assert_eq!(
-            request_object(&c, &client, url.clone(), "GET", &key, vec![], date)
+            assert_eq!(
+                request_object(
+                    &c,
+                    &client,
+                    url.clone(),
+                    "GET",
+                    (community, &key),
+                    vec![],
+                    date
+                )
                 .await
                 .unwrap(),
-            payload
-        );
-        request_object(&c, &client, url.clone(), "DELETE", &key, vec![], date)
+                payload
+            );
+            request_object(
+                &c,
+                &client,
+                url.clone(),
+                "DELETE",
+                (community, &key),
+                vec![],
+                date,
+            )
             .await
             .unwrap();
-        assert!(
-            request_object(&c, &client, url.clone(), "GET", &key, vec![], date)
+            assert!(
+                request_object(
+                    &c,
+                    &client,
+                    url.clone(),
+                    "GET",
+                    (community, &key),
+                    vec![],
+                    date
+                )
                 .await
                 .is_err()
-        );
-        let error = request_object(&c, &client, url.clone(), "GET", &key, vec![], date)
+            );
+            let error = request_object(
+                &c,
+                &client,
+                url.clone(),
+                "GET",
+                (community, &key),
+                vec![],
+                date,
+            )
             .await
             .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<ObjectError>().unwrap().code,
-            "AccessDenied"
-        );
-        assert!(failure_message(&error).contains("AccessDenied"));
-        assert!(!error.to_string().contains("private-provider-response"));
-        assert!(!failure_message(&error).contains("private-provider-response"));
-        let absent = request_object(&c, &client, url, "GET", &key, vec![], date)
-            .await
-            .unwrap_err();
-        assert!(missing(&absent));
-        assert!(!missing(&error));
-        server.await.unwrap();
-        // The test-only local transport does not weaken the production endpoint validator.
-        let mut rejected = c.clone();
-        rejected.endpoint = format!("http://{address}");
-        assert!(rejected.validate().is_err());
+            assert_eq!(
+                error.downcast_ref::<ObjectError>().unwrap().code,
+                "AccessDenied"
+            );
+            assert!(failure_message(&error).contains("AccessDenied"));
+            assert!(!error.to_string().contains("private-provider-response"));
+            assert!(!failure_message(&error).contains("private-provider-response"));
+            let absent = request_object(&c, &client, url, "GET", (community, &key), vec![], date)
+                .await
+                .unwrap_err();
+            assert!(missing(&absent));
+            assert!(!missing(&error));
+            server.await.unwrap();
+            // The test-only local transport does not weaken the production endpoint validator.
+            let mut rejected = c.clone();
+            rejected.endpoint = format!("http://{address}");
+            assert!(rejected.validate().is_err());
+        }
     }
     #[test]
     fn credentials_paths_and_retention_are_restricted() {
@@ -695,5 +916,65 @@ mod tests {
                 &hex::encode(Sha256::digest(b"ciphertext"))
             )
         );
+    }
+    #[tokio::test]
+    async fn legacy_object_columns_migrate_without_changing_existing_indices() {
+        let (dir, app, _) = crate::app::tests::fixture();
+        let file = dir.path().join("legacy-store.db");
+        let path = file.to_str().unwrap();
+        let db = crate::db::Db::open(path).unwrap();
+        {
+            let c = db.connection.lock().unwrap();
+            c.execute("INSERT INTO users(id,email,password_hash,verified) VALUES(1,'one@example.invalid','synthetic',1),(2,'two@example.invalid','synthetic',1)",[]).unwrap();
+            c.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires) VALUES('old',1,2,?,'old-digest',1,100)",["a".repeat(64)]).unwrap();
+            c.execute(
+                "INSERT INTO storage_probes(object_key,created_at) VALUES(?,1)",
+                ["b".repeat(64)],
+            )
+            .unwrap();
+            for table in ["friend_messages", "storage_probes"] {
+                c.execute_batch(&format!(
+                    "DROP INDEX {table}_store; ALTER TABLE {table} DROP COLUMN store_id"
+                ))
+                .unwrap();
+            }
+        }
+        drop(db);
+        let db = crate::db::Db::open(path).unwrap();
+        let c = db.connection.lock().unwrap();
+        for table in ["friend_messages", "storage_probes"] {
+            assert_eq!(
+                c.query_row(&format!("SELECT store_id FROM {table}"), [], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                "default"
+            );
+        }
+        assert_eq!(
+            c.query_row(
+                "SELECT content_hash FROM friend_messages WHERE id='old'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "old-digest"
+        );
+        let mut old = serde_json::to_value(&app.runtime.read().unwrap().settings).unwrap();
+        old.as_object_mut().unwrap().remove("storage_profiles");
+        old.as_object_mut().unwrap().remove("storage_active");
+        let settings: crate::settings::Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(selected(&settings).unwrap().0, "default");
+        assert!(resolve(&settings, "unknown").is_err());
+        let mut invalid = settings.clone();
+        invalid.storage_active = "missing".into();
+        assert!(validate_profiles(&invalid).is_err());
+        for _ in 0..8 {
+            invalid.storage_profiles.push(Profile {
+                id: crate::vault::token().unwrap(),
+                name: "Fixture".into(),
+                storage: Storage::default(),
+            });
+        }
+        assert!(validate_profiles(&invalid).is_err());
     }
 }

@@ -3,6 +3,7 @@ export async function appFixture(page,{loggedIn=true,watch=false,replies={}}={})
   const home={site_name:'WebTS',site_icon:'',footer_html:'',operator:'',contact:'',data_details:'',privacy_policy:'',terms:'',title:'今天，和朋友一起相聚。',subtitle:'本地界面验收，无真实用户数据。',image:'',announcements:[]};
   const data={
     '/api/site':home,
+    '/api/community':{account:1,enabled:false,items:[],next:null,server_time:now},
     '/api/me':{user:loggedIn?{id:1,email:'navigation@example.invalid',is_admin:false}:null},
     '/api/profile':{display_name:'页面切换验收',avatar:''},
     '/api/preferences':{account:1,initialized:true,preferences:{}},

@@ -71,6 +71,12 @@ fn b64_any(value: &str) -> bool {
         .is_ok()
 }
 fn device(db: &rusqlite::Connection, s: &Session, headers: &HeaderMap) -> Api<()> {
+    if s.user.public_device {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "陌生环境不允许使用端到端设备身份，请在个人设备操作",
+        ));
+    }
     let value = headers
         .get("x-webts-chat-device")
         .and_then(|v| v.to_str().ok())
@@ -86,6 +92,25 @@ fn device(db: &rusqlite::Connection, s: &Session, headers: &HeaderMap) -> Api<()
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod public_device_tests {
+    #[tokio::test]
+    async fn public_session_cannot_use_an_existing_device_lease() {
+        let (_dir, a, mut headers) = crate::app::tests::fixture();
+        let token =
+            a.db.create_session_with_security(1, false, "fixture hash", "", "", true)
+                .unwrap();
+        headers.insert("cookie", format!("webts_dev={token}").parse().unwrap());
+        headers.insert("x-webts-chat-device", "a".repeat(64).parse().unwrap());
+        let session = a.session(&headers).unwrap();
+        let db = a.db.connection.lock().unwrap();
+        assert_eq!(
+            super::device(&db, &session, &headers).err().unwrap().0,
+            axum::http::StatusCode::FORBIDDEN
+        );
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,7 +314,7 @@ pub async fn encryption(
 }
 pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.work(move |a| {
-        let s=current(a,&headers)?; let storage=a.runtime.read().unwrap().settings.storage.clone(); let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
+        let s=current(a,&headers)?; let (_,storage)=storage::selected(&a.runtime.read().unwrap().settings)?; let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         db.execute("INSERT OR IGNORE INTO friend_keys(user_id,code,public_key) VALUES(?,?,'')",params![s.user.id,&token()?[..24]]).map_err(db_error)?;
         let (code,key,share):(String,String,bool)=db.query_row("SELECT code,public_key,share_presence FROM friend_keys WHERE user_id=?",[s.user.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;a.connections.touch(s.user.id,&s.hash);
         let left:i64=db.query_row("SELECT count(*) FROM friend_prekeys WHERE user_id=? AND used=0",[s.user.id],|r|r.get(0)).map_err(db_error)?;
@@ -612,21 +637,21 @@ pub async fn send(
     });
     let (owner,key,duplicate,storage)=app.expensive(move |a| {
         let s=current(a,&check_headers)?;let runtime=a.runtime.read().unwrap();
-        let storage=runtime.settings.storage.clone();let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;if mode=="e2ee" {device(&db,&s,&check_headers)?;} accepted(&db,s.user.id,peer)?;
+        let (store_id,storage)=storage::selected(&runtime.settings)?;let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;if mode=="e2ee" {device(&db,&s,&check_headers)?;} accepted(&db,s.user.id,peer)?;
         require_mode(&db,s.user.id,peer,&mode,epoch)?;
         if mode=="server" {crate::friend_content::validate(&validation,&a.config.origin(),&id,s.user.id,peer,(burn,burn_seconds),epoch)?;}
-        if !storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"管理员尚未启用私有对象存储，私信不会降级为明文"));}
         if mode=="e2ee" {let active:String=db.query_row("SELECT device FROM friend_keys WHERE user_id=?",[peer],|r|r.get(0)).map_err(db_error)?;if active!=check_device{return Err(Error(StatusCode::CONFLICT,"对方私信设备发生变化，请重新建立加密会话"));}}
-        let existing:Option<(i64,i64,String,String,bool,i64,i64)>=db.query_row("SELECT sender,recipient,object_key,content_hash,ready,expires,created_at FROM friend_messages WHERE id=?",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(db_error)?;
-        if let Some((sender,recipient,key,old,ready,expires,created))=existing {
+        let existing=db.query_row("SELECT sender,recipient,object_key,content_hash,ready,expires,created_at,store_id FROM friend_messages WHERE id=?",[&id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,bool>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,String>(7)?))).optional().map_err(db_error)?;
+        if let Some((sender,recipient,key,old,ready,expires,created,original_store))=existing {
             if sender!=s.user.id||recipient!=peer||old!=hash||expires<=now()||(!ready&&created<=now()-3600){return Err(Error(StatusCode::CONFLICT,"消息编号已使用或消息已过期"));}
-            return Ok((s.user.id,key,ready,storage));
+            let original=storage::resolve(&runtime.settings,&original_store)?;return Ok((s.user.id,key,ready,original));
         }
+        if !storage.enabled {return Err(Error(StatusCode::SERVICE_UNAVAILABLE,"管理员尚未启用私有对象存储，私信不会降级为明文"));}
         let (total,own,recent):(i64,i64,i64)=db.query_row("SELECT count(*),sum(sender=?),sum(sender=? AND created_at>?) FROM friend_messages",params![s.user.id,s.user.id,now()-60],|r|Ok((r.get(0)?,r.get::<_,Option<i64>>(1)?.unwrap_or(0),r.get::<_,Option<i64>>(2)?.unwrap_or(0)))).map_err(db_error)?;
         if total>=10000||own>=1000||recent>=20{return Err(Error(StatusCode::TOO_MANY_REQUESTS,"临时消息容量或发送频率达到上限"));}
         let key=token()?;
         let days=storage.retention_days.max(1);
-        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,mode,mode_epoch,burn_seconds) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn,mode,epoch,burn_seconds]).map_err(db_error)?;
+        db.execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready,burn,mode,mode_epoch,burn_seconds,store_id) VALUES(?,?,?,?,?,?,?,0,?,?,?,?,?)",params![id,s.user.id,peer,key,hash,now(),now()+i64::from(days)*86400,burn,mode,epoch,burn_seconds,store_id]).map_err(db_error)?;
         Ok((s.user.id,key,false,storage))
     }).await?;
     if !duplicate {
@@ -679,7 +704,8 @@ pub async fn content(
         let (sender,recipient,key,mode,epoch)=row.ok_or(Error(StatusCode::NOT_FOUND,"消息不存在或已过期"))?;if mode=="e2ee" {device(&db,&s,&h)?;}
         accepted(&db,s.user.id,if sender==s.user.id{recipient}else{sender})?;Ok((sender,recipient,key,mode,epoch))
     }).await?;
-    let storage = app.runtime.read().unwrap().settings.storage.clone();
+    let lookup = key.clone();
+    let storage = app.work(move |a| storage::object_store(a, &lookup)).await?;
     let sealed = storage::object(&storage, "GET", &key, Vec::new())
         .await
         .map_err(|_| {
@@ -835,7 +861,10 @@ pub fn start_cleanup(app: Arc<App>) {
                 let Ok(_permit) = app.friend_objects.clone().try_acquire_owned() else {
                     break;
                 };
-                let storage = app.runtime.read().unwrap().settings.storage.clone();
+                let lookup = key.clone();
+                let Ok(storage) = app.work(move |a| storage::object_store(a, &lookup)).await else {
+                    continue;
+                };
                 let _ = cleanup_object(&app, id, key, probe, |key| async move {
                     storage::remove(&storage, &key).await
                 })
@@ -939,7 +968,7 @@ mod tests {
         let c = db.connection.lock().unwrap();
         for i in 0..101 {
             c.execute(
-                "INSERT INTO storage_probes VALUES(?,?)",
+                "INSERT INTO storage_probes(object_key,created_at) VALUES(?,?)",
                 params![format!("{i:064x}"), now() - 1000 + i],
             )
             .unwrap();

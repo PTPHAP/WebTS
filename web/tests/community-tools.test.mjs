@@ -10,7 +10,8 @@ const require=createRequire(import.meta.url),options={module:ts.ModuleKind.Commo
 async function load(file,extra={}){const context=vm.createContext({exports:{},URL,URLSearchParams,TextEncoder,require,...extra});vm.runInContext(ts.transpileModule(await readFile(new URL(`../src/${file}`,import.meta.url),'utf8'),{compilerOptions:options}).outputText,context);return context.exports;}
 const text=await load('ts-text.ts');
 const seasons=await load('seasons.ts');
-const favorites=await load('favorites.ts'),diagnostics=await load('voice-diagnostics.ts');
+const build=await load('client-build.ts');
+const favorites=await load('favorites.ts'),diagnostics=await load('voice-diagnostics.ts',{require:n=>n==='./client-build'?build:require(n)});
 const conversation=await load('TsConversation.tsx',{require:n=>n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
 test('channel invites contain no secrets and accept only bounded configured identifiers',()=>{
  const value={server:'fixture',channel:7,uid:'server/uid=',name:'房间',password:'must never share'};const link=favorites.invitation(value,'https://webts.example');assert.ok(!link.includes('password'));assert.equal(favorites.readInvitation(new URL(link).search).channel,7);
@@ -19,6 +20,16 @@ test('channel invites contain no secrets and accept only bounded configured iden
  assert.ok(!JSON.stringify(favorites.readFavorites([value])).includes('password'));
 });
 const input={connected:true,reconnecting:false,transport:'connected',capture:'running',listenOnly:false,muted:false,deafened:false,away:false,canSpeak:true,playbackBlocked:false,otherSpeaking:false,quality:{rtt:20,received:50,sent:40,route:'direct'},cipher:'AES-256-GCM',gain:1,volume:1};
+test('echo diagnostics distinguish a request, rejection and unreported state without exporting raw device settings',()=>{
+ for(const [echoActual,title] of [[false,'设备未启用回声消除'],[undefined,'设备未报告回声消除状态']]){
+  const value={...input,echoRequested:true,echoActual,deviceId:'do not export',label:'private microphone'};
+  assert.ok(diagnostics.voiceDiagnosis(value).some(row=>row.title===title));
+  const report=diagnostics.diagnosticReport(value);assert.equal(report.audio.echoRequested,true);assert.equal(report.audio.echoActual,echoActual??null);
+  assert.ok(!JSON.stringify(report).includes('private'));assert.ok(!JSON.stringify(report).includes('do not export'));
+ }
+ for(const changes of [{echoRequested:false,echoActual:false},{echoRequested:true,echoActual:true},{listenOnly:true,echoRequested:true}])assert.ok(!diagnostics.voiceDiagnosis({...input,...changes}).some(row=>row.title.startsWith('设备未')));
+ const report=diagnostics.diagnosticReport({...input,echoRequested:'untrusted',echoActual:'private settings'});assert.equal(report.audio.echoRequested,null);assert.equal(report.audio.echoActual,null);
+});
 test('recent quality replaces old loss warnings and queue diagnostics remain numeric-only',()=>{
  assert.ok(!diagnostics.voiceDiagnosis({...input,quality:{loss:50,recentLoss:0}}).some(v=>v.title.includes('丢包')));
  assert.ok(diagnostics.voiceDiagnosis({...input,quality:{recentLoss:6}}).some(v=>v.title==='近期接收丢包偏高'));
@@ -41,7 +52,7 @@ test('mentions require complete name boundaries and quoted replies are plain bou
 test('searching and hidden tabs do not acknowledge incoming TS messages as read',async()=>{
  for(const [search,hidden] of [['older message',false],['',true]]){
   const effects=[],listeners=new Map();let stateIndex=0,refIndex=0,unread=[];
-  const module=await load('TsConversation.tsx',{document:{hidden,addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>{const index=stateIndex++;return [index===0?search:index===2?unread:undefined,v=>{if(index===2)unread=typeof v==='function'?v(unread):v;}];},useRef:v=>({current:refIndex++===1?new Set([1]):v}),useEffect:f=>effects.push(f)}:n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
+  const module=await load('TsConversation.tsx',{document:{hidden,addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)},require:n=>n==='./client-build'?build:n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>{const index=stateIndex++;return [index===0?search:index===2?unread:undefined,v=>{if(index===2)unread=typeof v==='function'?v(unread):v;}];},useRef:v=>({current:refIndex++===1?new Set([1]):v}),useEffect:f=>effects.push(f)}:n==='./ts-text'?text:n==='./Stickers'?{StickerPicker:()=>null}:n==='./chat'?{chatVisible:(m,s)=>m.scope===s}:require(n)});
   module.TsConversation({chat:[{key:1,scope:'channel',from:2,text:'older'},{key:2,scope:'channel',from:2,text:'new'}],scope:'channel',nickname:'me',own:1,message:'',setScope(){},setMessage(){},send(){},render(){},channel:'fixture',privateCount:0,onPrivate(){}});
   effects[1]();assert.deepEqual(Array.from(unread),[2]);effects[2]();listeners.get('visibilitychange')();assert.deepEqual(Array.from(unread),[2]);
  }
@@ -49,10 +60,10 @@ test('searching and hidden tabs do not acknowledge incoming TS messages as read'
 
 test('update polling is single-flight, aborts on unmount and never reloads an active call',async()=>{
  const effects=[],timers=new Map(),listeners=new Map(),states=[];let finish,calls=0,reloads=0,signal,next=0;
- const document={hidden:false,querySelector:()=>({src:'https://fixture.example/assets/index-old.js'}),addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)};
- const module=await load('UpdateNotice.tsx',{document,location:{href:'https://fixture.example',reload:()=>reloads++},AbortController,confirm:()=>true,setInterval:f=>{timers.set(++next,f);return next;},clearInterval:k=>timers.delete(k),setTimeout:()=>99,clearTimeout(){},fetch:(_,options)=>{calls++;signal=options.signal;return new Promise(r=>finish=r);},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:v=>{const s={value:v};states.push(s);return [v,v=>s.value=v];},useEffect:f=>effects.push(f())}:require(n)});
+ const document={hidden:false,querySelectorAll:()=>[{src:'https://fixture.example/assets/index-old.js'}],addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k)};
+ const module=await load('UpdateNotice.tsx',{document,location:{origin:'https://fixture.example',reload:()=>reloads++},AbortController,confirm:()=>true,setInterval:f=>{timers.set(++next,f);return next;},clearInterval:k=>timers.delete(k),setTimeout:()=>99,clearTimeout(){},fetch:(_,options)=>{calls++;signal=options.signal;return new Promise(r=>finish=r);},require:n=>n==='./client-build'?build:n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:v=>{const s={value:v};states.push(s);return [v,v=>s.value=v];},useEffect:f=>effects.push(f())}:require(n)});
  module.UpdateNotice({inCall:true});assert.equal(calls,1);timers.values().next().value();assert.equal(calls,1);effects[0]();assert.equal(signal.aborted,true);finish({ok:true,json:async()=>({bundle:'/assets/index-new.js'})});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(states[0].value,'');assert.equal(timers.size,0);assert.equal(listeners.size,0);assert.equal(reloads,0);
- let index=0;const rendering=await load('UpdateNotice.tsx',{confirm:()=>true,location:{reload:()=>reloads++},require:n=>n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>[index++===0?'/assets/index-new.js':'',()=>{}],useEffect(){}}:require(n)});
+ let index=0;const rendering=await load('UpdateNotice.tsx',{confirm:()=>true,location:{reload:()=>reloads++},require:n=>n==='./client-build'?build:n==='./seasons'?seasons:n==='react'?{...React,useRef:v=>({current:v}),useState:()=>[index++===0?'/assets/index-new.js':'',()=>{}],useEffect(){}}:require(n)});
  const html=renderToStaticMarkup(rendering.UpdateNotice({inCall:true}));assert.match(html,/button[^>]*disabled=""[^>]*>刷新/);assert.equal(reloads,0);
  for(const bad of ['/assets/index-a.js?secret=1','https://evil.example/assets/index-a.js','/assets/index-../../a.js'])assert.equal(module.bundlePath(bad),undefined);
 });
@@ -61,4 +72,24 @@ test('season IDs reject executable input and explicit classic preference wins ov
  for(const s of seasons.seasons){assert.equal(seasons.readSeason(s.id),s.id);assert.equal(seasons.effectiveSeason(s.id,'classic'),'classic');assert.equal(seasons.effectiveSeason(s.id,'follow'),s.id);}
  for(const invalid of [null,{},'SPRING','../winter','https://evil.example/theme.css','<script>alert(1)</script>'])assert.equal(seasons.readSeason(invalid),'classic');
  assert.equal(seasons.effectiveSeason('spring','unexpected'),'classic');
+});
+
+
+test('loaded build identifies the same-origin entry without leaking URLs',()=>{
+ const doc=(...src)=>({querySelectorAll:()=>src.map(src=>({src}))}),origin='https://fixture.example';
+ assert.equal(build.loadedBundle(doc('https://other.example/assets/index-remote.js','/assets/index-loaded_123.js'),origin),'/assets/index-loaded_123.js');
+ for(const invalid of ['https://user:pass@other.example/assets/index-secret.js','/assets/index-a.js?token=secret','/assets/index-a.js#secret','/src/main.tsx','data:text/javascript,secret','/assets/index-'+ 'a'.repeat(101)+'.js'])assert.equal(build.loadedBundle(doc(invalid),origin),undefined);
+ assert.equal(build.loadedBundle(doc(),origin),undefined);
+ const report=diagnostics.diagnosticReport(input,'/assets/index-loaded_123.js');assert.equal(report.frontendBundle,'/assets/index-loaded_123.js');assert.equal(report.format,'webts-diagnostic-v4');
+ for(const invalid of ['https://fixture.example/assets/index-loaded.js','/assets/index-a.js?token=secret','/assets/index-../a.js'])assert.equal(diagnostics.diagnosticReport(input,invalid).frontendBundle,null);
+});
+
+test('runtime exports only enumerated states and nonnegative integer counts',()=>{
+ const runtime={context:'interrupted',processing:'keyboard',receivers:2,players:2,pausedPlayers:1,deviceId:'private',trackIds:['sensitive'],url:'https://private.example'};
+ const report=diagnostics.diagnosticReport({...input,runtime});assert.equal(report.runtime.context,'interrupted');assert.equal(report.runtime.processing,'keyboard');assert.equal(report.runtime.pausedPlayers,1);
+ for(const value of [-1,Infinity,NaN,.5,9007199254740992,'3']){
+  const bad=diagnostics.diagnosticReport({...input,runtime:{...runtime,context:'private',processing:'sensitive',receivers:value,players:value,pausedPlayers:value}});
+  assert.equal(bad.runtime.context,'unknown');assert.equal(bad.runtime.processing,'unknown');assert.equal(bad.runtime.receivers,null);assert.equal(bad.runtime.players,null);assert.equal(bad.runtime.pausedPlayers,null);
+ }
+ assert.ok(!/private|sensitive|trackIds|deviceId/.test(JSON.stringify(report)));assert.equal(diagnostics.diagnosticReport(input).runtime.context,'unknown');
 });

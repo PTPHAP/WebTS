@@ -164,6 +164,9 @@ impl App {
         } else {
             crate::settings::Settings {
                 storage: Default::default(),
+                storage_profiles: Vec::new(),
+                storage_active: crate::storage::default_store(),
+                community_enabled: false,
                 home: Default::default(),
                 image_limits: Default::default(),
                 servers: config.servers.clone(),
@@ -311,6 +314,26 @@ impl App {
         }
         Ok(())
     }
+    pub(crate) fn quick_login_limit(&self, id: &str, approval: bool) -> Api<()> {
+        let (bucket, window, cap) = if approval {
+            ("qr-approval", 120, 5)
+        } else {
+            ("qr-ticket-poll", 60, 30)
+        };
+        if self
+            .limits
+            .lock()
+            .unwrap()
+            .check(RateKey::Subject(crate::db::digest(id), bucket), window, cap)
+            .is_some()
+        {
+            return Err(Error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "扫码请求过于频繁，请稍后重试或重新生成二维码",
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn friend_transfer(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut transfers = self.friend_transfers.lock().unwrap();
         transfers.retain(|_, lock| lock.strong_count() > 0);
@@ -389,7 +412,7 @@ impl App {
             "webts_dev"
         }
     }
-    fn cookie(&self, token: &str, remember: bool, clear: bool) -> String {
+    pub(crate) fn cookie(&self, token: &str, remember: bool, clear: bool) -> String {
         format!(
             "{}={}; Path=/; HttpOnly; SameSite=Strict{}{}",
             self.cookie_name(),
@@ -428,6 +451,12 @@ impl App {
     }
     pub(crate) fn reauthenticate(&self, headers: &HeaderMap, password: &str) -> Api<Session> {
         let session = self.session(headers)?;
+        if session.user.public_device {
+            return Err(Error(
+                StatusCode::FORBIDDEN,
+                "陌生设备不允许执行此敏感操作，请在个人设备操作",
+            ));
+        }
         let hash = self.db.password_by_id(session.user.id)?;
         if !password::verify(password, &hash) {
             return Err(Error(StatusCode::UNAUTHORIZED, "当前密码不正确"));
@@ -500,6 +529,50 @@ pub fn router(app: Arc<App>) -> Router {
             get(crate::storage::get).post(crate::storage::save),
         )
         .route("/admin/storage/test", post(crate::storage::test))
+        .route(
+            "/community",
+            get(crate::community::list)
+                .post(crate::community::publish)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route("/community/replies", get(crate::community::reply_list))
+        .route(
+            "/community/replies/read",
+            post(crate::community::reply_read).layer(DefaultBodyLimit::max(1024)),
+        )
+        .route("/community/{id}", get(crate::community::content))
+        .route(
+            "/community/{id}/edit",
+            post(crate::community::edit).layer(DefaultBodyLimit::max(192 * 1024)),
+        )
+        .route(
+            "/admin/community/{id}/control",
+            post(crate::community::control).layer(DefaultBodyLimit::max(1024)),
+        )
+        .route(
+            "/community/categories/{id}/icon",
+            get(crate::community::icon),
+        )
+        .route(
+            "/admin/community/categories/{id}/icon",
+            post(crate::community::set_icon).layer(DefaultBodyLimit::max(192 * 1024)),
+        )
+        .route("/community/{id}/avatar", get(crate::community::avatar))
+        .route("/community/{id}/delete", post(crate::community::delete))
+        .route("/community/{id}/like", post(crate::community::like))
+        .route(
+            "/admin/community",
+            get(crate::community::admin_config).post(crate::community::configure),
+        )
+        .route("/admin/community/{id}", post(crate::community::decide))
+        .route(
+            "/admin/community/categories",
+            post(crate::community::configure_categories).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/admin/storage/profiles",
+            get(crate::storage::profiles).post(crate::storage::save_profile),
+        )
         .route("/site", get(crate::site::public))
         .route("/policies", get(crate::site::policies))
         .route("/notices", get(crate::notices::list))
@@ -539,6 +612,36 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/resend", post(resend))
         .route("/auth/login", post(login))
+        .route(
+            "/auth/username",
+            get(crate::quick_login::get_name)
+                .post(crate::quick_login::set_name)
+                .layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/start",
+            post(crate::quick_login::start).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/poll",
+            post(crate::quick_login::poll).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/inspect",
+            post(crate::quick_login::inspect).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/approve",
+            post(crate::quick_login::approve).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/claim",
+            post(crate::quick_login::claim).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/auth/qr/cancel",
+            post(crate::quick_login::cancel).layer(DefaultBodyLimit::max(2048)),
+        )
         .route("/auth/verify", post(verify))
         .route("/auth/forgot", post(forgot))
         .route("/auth/reset", post(reset))
@@ -564,6 +667,10 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route_service(
             "/app",
+            ServeFile::new(format!("{}/index.html", app.config.web_dir)),
+        )
+        .route_service(
+            "/community",
             ServeFile::new(format!("{}/index.html", app.config.web_dir)),
         )
         .route_service(
@@ -654,9 +761,25 @@ async fn guard(
         .path()
         .strip_prefix("/api")
         .unwrap_or(request.uri().path());
+    if crate::quick_login::restricted(path, mutation) && request.headers().contains_key("cookie") {
+        match app.session_async(request.headers()).await {
+            Ok(s) if s.user.public_device => {
+                return Error(
+                    StatusCode::FORBIDDEN,
+                    "陌生设备不允许此操作，请在个人设备操作",
+                )
+                .into_response();
+            }
+            Err(error) => return error.into_response(),
+            _ => {}
+        }
+    }
     let (bucket, window, cap, by_ip) = match path {
         "/watch/feed" => ("watch-feed", 60, 120, true),
         "/auth/login" => ("login", 600, 300, true),
+        "/auth/qr/start" => ("qr-create", 600, 300, true),
+        "/auth/qr/poll" => ("qr-poll", 60, 6000, true),
+        "/auth/qr/claim" | "/auth/qr/cancel" => ("qr-claim", 60, 600, true),
         "/auth/register" => ("register", 600, 100, true),
         "/auth/forgot" => ("recovery-mail", 600, 100, true),
         "/auth/resend" => ("verification-mail", 600, 100, true),
@@ -725,6 +848,8 @@ struct CredentialsBody {
     password: String,
     #[serde(default)]
     remember: bool,
+    #[serde(default)]
+    public_device: bool,
     #[serde(default)]
     accept_policies: bool,
     #[serde(default)]
@@ -812,12 +937,20 @@ async fn login(
     if !body.accept_policies {
         return Err(Error::bad("请先阅读并同意隐私政策与使用协议及免责声明"));
     }
-    let email = email(&body.email)?;
+    let email = if body.email.contains('@') {
+        email(&body.email)?
+    } else {
+        crate::quick_login::login_name(&body.email)?
+    };
+    if body.public_device && body.remember {
+        return Err(Error::bad("陌生设备不能记住长期登录"));
+    }
     app.credential_limit(&email, "login")?;
     app.expensive(move |a| {
         let runtime=a.runtime.read().unwrap();
         if body.policy_version!=crate::site::policy_version(&runtime.settings.home){return Err(Error(StatusCode::CONFLICT,"协议已更新，请重新阅读并勾选同意"));}
         let found = a.db.password(&email)?;
+        if let Some((id,_,_))=&found { a.credential_limit(&format!("account:{id}"),"login-account")?; }
         let stored = found
             .as_ref()
             .map(|(_, h, _)| h.as_str())
@@ -827,11 +960,11 @@ async fn login(
         let Some((id, hash, true)) = found.filter(|_| valid) else {
             return Err(Error(
                 StatusCode::UNAUTHORIZED,
-                "邮箱或密码错误，或邮箱尚未验证",
+                "账号或密码错误，或邮箱尚未验证",
             ));
         };
         let (browser,platform)=crate::sessions::client_label(&headers);
-        let token = a.db.create_session_with_client(id, body.remember, &hash,browser,platform)?;
+        let token = a.db.create_session_with_security(id, body.remember, &hash,browser,platform,body.public_device)?;
         a.db.connection.lock().unwrap().execute("INSERT INTO policy_acceptances VALUES(?,?,?) ON CONFLICT(user_id,version) DO UPDATE SET accepted_at=excluded.accepted_at",rusqlite::params![id,body.policy_version,crate::db::now()]).map_err(anyhow::Error::from)?;
         drop(runtime);
         let mut response =
@@ -1074,6 +1207,43 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_edit_keeps_permits_and_target_lease_until_owned_task_exits() {
+        let (_dir, a, h) = crate::app::tests::fixture();
+        let blocked = a.cpu_workers.clone().acquire_many_owned(2).await.unwrap();
+        let app = a.clone();
+        let request = tokio::spawn(async move {
+            crate::community::edit(State(app),h,Path("00000000-0000-4000-8000-000000000301".into()),Json(serde_json::from_value(json!({"account":1,"id":"00000000-0000-4000-8000-000000000302","revision":0,"issued_at":crate::db::now(),"payload":{"title":"valid","text":"test","image":""}})).unwrap())).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while a.cpu_queue.available_permits() == 16 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        request.abort();
+        let _ = request.await;
+        assert!(
+            a.friend_transfer("community:00000000-0000-4000-8000-000000000301")
+                .try_lock_owned()
+                .is_err()
+        );
+        assert_eq!(a.friend_objects.available_permits(), 7);
+        drop(blocked);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while a.friend_objects.available_permits() != 8 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            a.friend_transfer("community:00000000-0000-4000-8000-000000000301")
+                .try_lock_owned()
+                .is_ok()
+        );
+    }
+    #[tokio::test]
     async fn cancelled_message_request_keeps_transfer_lease_until_worker_finishes() {
         let (_dir, app, headers) = fixture();
         let blocked = app.cpu_workers.clone().acquire_many_owned(2).await.unwrap();
@@ -1286,5 +1456,50 @@ pub(crate) mod tests {
             available,
             "configuration contention must not lock the database and deadlock a settings writer"
         );
+    }
+    #[tokio::test]
+    async fn community_page_direct_access_and_reload_serve_html_without_api_authority() {
+        let (directory, mut app, _) = fixture();
+        let web = directory.path().join("public");
+        std::fs::create_dir(&web).unwrap();
+        std::fs::write(
+            web.join("index.html"),
+            "<title>Community static route fixture</title>",
+        )
+        .unwrap();
+        Arc::get_mut(&mut app).unwrap().config.web_dir = web.to_string_lossy().into_owned();
+        let router = router(app);
+        for path in ["/community", "/community?refresh=1", "/app", "/watch"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(
+                response.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/html")
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                bytes.as_ref(),
+                b"<title>Community static route fixture</title>"
+            );
+        }
+        for path in ["/api/community?account=1", "/api/admin/community"] {
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
     }
 }

@@ -1,16 +1,70 @@
-:is(:root,.season-preview)[data-season=spring]{--season-dark:#ffb0a5;--season-light:#a42735;--season-bg-dark:#4b2931;--season-bg-light:#fbe4df;--season-symbol:"❖"}
-:is(:root,.season-preview)[data-season=midautumn]{--season-dark:#e9cb87;--season-light:#705016;--season-bg-dark:#3b3544;--season-bg-light:#f7edd4;--season-symbol:"☾"}
-:is(:root,.season-preview)[data-season=winter]{--season-dark:#8bd9be;--season-light:#176850;--season-bg-dark:#233d37;--season-bg-light:#dbf2e8;--season-symbol:"✧"}
-:is(:root,.season-preview)[data-season=halloween]{--season-dark:#cfb1ff;--season-light:#7543a6;--season-bg-dark:#3b2d51;--season-bg-light:#efe4fb;--season-symbol:"✦"}
-:is(:root,.season-preview)[data-season=newyear]{--season-dark:#adc5ff;--season-light:#3c52ae;--season-bg-dark:#2c3657;--season-bg-light:#e6eaff;--season-symbol:"✺"}
+:is(:root,.season-preview)[data-season=spring]{--season-dark:#ffb0a5;--season-light:#a42735;--season-bg-dark:#4b2931;--season-bg-light:#fbe4df}
+:is(:root,.season-preview)[data-season=midautumn]{--season-dark:#e9cb87;--season-light:#705016;--season-bg-dark:#3b3544;--season-bg-light:#f7edd4}
+:is(:root,.season-preview)[data-season=winter]{--season-dark:#8bd9be;--season-light:#176850;--season-bg-dark:#233d37;--season-bg-light:#dbf2e8}
+:is(:root,.season-preview)[data-season=halloween]{--season-dark:#cfb1ff;--season-light:#7543a6;--season-bg-dark:#3b2d51;--season-bg-light:#efe4fb}
+:is(:root,.season-preview)[data-season=newyear]{--season-dark:#adc5ff;--season-light:#3c52ae;--season-bg-dark:#2c3657;--season-bg-light:#e6eaff}
 :root[data-season]:not([data-season=classic]){--accent:var(--season-dark);--accent-bg:var(--season-bg-dark)}
 :root[data-theme=light][data-season]:not([data-season=classic]){--accent:var(--season-light);--accent-bg:var(--season-bg-light)}
 :root[data-season]:not([data-season=classic]) .topbar{box-shadow:inset 0 -2px 0 var(--accent-bg)}
 :root[data-season]:not([data-season=classic]) :is(.community-welcome,.site-hero){position:relative;isolation:isolate}
-:root[data-season]:not([data-season=classic]) :is(.community-welcome,.site-hero)::after{content:var(--season-symbol);position:absolute;right:18px;top:4px;font-size:100px;line-height:1;opacity:.09;color:var(--accent);pointer-events:none;z-index:-1}
 .season-editor{margin:20px 0}.season-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0}.season-choices button{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:46px;padding:12px 8px;border:1px solid var(--border);border-radius:13px;background:var(--bg);font-size:12px}.season-choices button[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}.season-choices button>span{font-size:20px}.season-choices strong{font-size:12px;overflow-wrap:anywhere}
 .season-preview{--accent:#8cb5ff;--accent-bg:#253b60;padding:20px;border:1px solid var(--border);border-radius:18px;background:var(--bg);color:var(--text);overflow:hidden;min-width:0}.season-preview-heading{display:flex;align-items:center;gap:14px}.season-preview-heading>span{font-size:42px;color:var(--accent);flex-shrink:0}.season-preview-heading small{font-size:8px;letter-spacing:1px;color:var(--muted)}.season-preview-heading h3{font-size:21px;margin:5px 0}.season-preview-heading p{font-size:12px;line-height:1.8;color:var(--muted);overflow-wrap:anywhere}.season-preview-panels{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:10px;margin-top:20px}.season-preview-panels>div{padding:15px 12px;border:1px solid var(--border);border-radius:13px;background:var(--panel);font-size:12px;min-width:0;overflow-wrap:anywhere}.season-preview-panels small{display:block;font-size:10px;color:var(--muted);margin-top:9px}.season-preview-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:6px}.season-preview-action{display:inline-block;padding:8px 10px;margin-top:14px;border-radius:9px;color:var(--accent);background:var(--accent-bg);font-size:11px}.season-preferences{display:grid;gap:15px}.season-preferences>p{font-size:12px;line-height:1.8}
 :root[data-theme=light] .season-preview{--accent:#335ed3;--accent-bg:#e3ebff}
 .season-preview:not([data-season=classic]){--accent:var(--season-dark);--accent-bg:var(--season-bg-dark)}
 :root[data-theme=light] .season-preview:not([data-season=classic]){--accent:var(--season-light);--accent-bg:var(--season-bg-light)}
 @media(max-width:420px){.season-preview{padding:14px}.season-preview-heading{gap:10px}.season-preview-heading>span{font-size:32px}.season-preview-heading h3{font-size:18px}.season-preview-panels{grid-template-columns:minmax(0,1fr)}.season-choices button{min-height:46px}.season-preview-panels>div{padding:12px}}
+
+.season-art{display:block;width:100%;height:auto;max-width:480px;min-width:0;color:var(--accent);pointer-events:none;user-select:none;overflow:hidden;contain:paint}
+.season-art-compact{width:36px;height:40px;flex:0 0 36px}
+.season-preview-scene{display:grid;justify-items:center;margin-top:14px;border:1px solid var(--border);border-radius:16px;background:radial-gradient(ellipse at 50% 40%,var(--accent-bg),transparent 75%),var(--panel);overflow:hidden}
+.season-preview-scene>.season-art{height:190px;max-width:100%}.season-preview-scene>span{padding:0 12px 14px;font-size:11px;line-height:1.8;color:var(--muted);text-align:center}
+.community-now>.season-home-art{width:100%;height:155px;margin:0 auto 10px}.community-now-status{min-width:0}
+.community-welcome.has-image .community-now:has(.season-home-art){display:grid;grid-template-columns:132px minmax(0,1fr);align-items:center;gap:12px;padding:12px}
+.community-welcome.has-image .community-now>.season-home-art{height:105px;margin:0}
+.hero-art>.season-art{max-width:100%;height:300px}
+.season-hero-moment{display:flex;align-items:center;gap:12px;max-width:420px;padding:4px 14px 4px 0;margin-top:20px;border:1px solid var(--border);border-radius:16px;background:var(--panel)}
+.season-hero-moment>.season-art{width:160px;height:98px;flex-shrink:0}.season-hero-moment>span{font-size:11px;color:var(--muted);line-height:1.9;overflow-wrap:anywhere}
+.brand-note:has(.season-art){display:flex;align-items:center;gap:5px;white-space:nowrap}.brand-note>.season-art{width:26px;height:30px;flex-basis:26px}
+.season-channel-art{margin-left:auto;width:38px;height:42px;flex-basis:38px}.chat-heading:has(.season-channel-art){gap:12px}.chat-heading:has(.season-channel-art)>div:first-child{min-width:0}.chat-heading:has(.season-channel-art) h1{overflow-wrap:anywhere}
+.season-art:not(.season-art-compact) .season-art-spark{transform-box:fill-box;transform-origin:center;animation:season-twinkle 4s ease-in-out infinite alternate}
+@keyframes season-twinkle{from{opacity:.45;transform:scale(.93)}to{opacity:.85;transform:scale(1.04)}}
+@media(max-width:760px){.community-now:has(.season-home-art),.community-welcome.has-image .community-now:has(.season-home-art){display:grid;grid-template-columns:94px minmax(0,1fr);align-items:center;gap:8px;padding:10px}.community-now>.season-home-art,.community-welcome.has-image .community-now>.season-home-art{height:88px;margin:0}.season-hero-moment{margin-top:16px}.season-hero-moment>.season-art{width:125px;height:85px}}
+@media(max-width:760px){.community-now:has(.season-home-art) .community-now-status strong{display:block;margin:0;font-size:12px;line-height:1.6}.community-now:has(.season-home-art) .community-now-status>.dot{float:left;margin:6px 6px 0 0}.community-now:has(.season-home-art) .community-now-status p{font-size:12px;line-height:1.7;margin:6px 0}.community-now:has(.season-home-art) .community-now-status small{display:block;font-size:10px;line-height:1.65}}
+@media(max-width:420px){.season-preview-scene>.season-art{height:155px}.season-channel-art{width:28px;height:32px;flex-basis:28px}.chat-heading:has(.season-channel-art){gap:6px}}
+.app[data-layout=mobile] .brand-note:has(.season-art){display:none}
+.season-art :is(.season-art-main,.season-art-side-lantern,.season-art-blossom,.season-art-clouds>path,.season-art-snow>path,.season-art-bats>path,.season-art-fireworks>path,.season-art-second-hand){transform-box:fill-box;transform-origin:center}
+.season-art[data-festival=spring] .season-art-main,.season-art:not(.season-art-compact) .season-art-side-lantern{transform-origin:50% 0;animation:season-lantern 5s ease-in-out infinite alternate}
+.season-art:not(.season-art-compact) .season-art-side-lantern{animation-delay:-2s;animation-duration:6s}
+.season-art:not(.season-art-compact) .season-art-blossom{animation:season-petal 7s ease-in-out infinite alternate}
+.season-art:not(.season-art-compact) .season-art-clouds>path{animation:season-cloud 9s ease-in-out infinite alternate}.season-art-clouds>path+path{animation-delay:-4s!important}
+.season-art[data-festival=midautumn] .season-art-main{animation:season-rabbit 6s ease-in-out infinite}
+.season-art:not(.season-art-compact) .season-art-snow>path{animation:season-snow 7s ease-in-out infinite}.season-art-snow>path:nth-child(2){animation-delay:-2.5s!important}.season-art-snow>path:nth-child(3){animation-delay:-5s!important}
+.season-art .season-art-lights{animation:season-tree-lights 4s ease-in-out infinite alternate}.season-art .season-art-lights-late{animation-delay:-2s}
+.season-art:not(.season-art-compact) .season-art-bats>path{animation:season-bat 3.5s ease-in-out infinite}.season-art-bats>path+path{animation-delay:-1.7s!important}
+.season-art[data-festival=halloween] .season-art-main{animation:season-pumpkin 5s ease-in-out infinite alternate}
+.season-art:not(.season-art-compact) .season-art-fireworks>path{animation:season-firework 7s ease-out infinite}.season-art-fireworks>path+path{animation-delay:-3.5s!important}
+.season-art .season-art-second-hand{transform-origin:50% 100%;animation:season-clock 60s steps(60) infinite}
+@keyframes season-lantern{from{transform:rotate(-3deg)}to{transform:rotate(3deg)}}
+@keyframes season-petal{from{transform:rotate(-9deg) scale(.94)}to{transform:rotate(10deg) scale(1.06)}}
+@keyframes season-cloud{from{transform:translateX(-10px)}to{transform:translateX(10px)}}
+@keyframes season-rabbit{0%,65%,100%{transform:translateY(0)}78%{transform:translateY(-5px)}88%{transform:translateY(-1px)}}
+@keyframes season-snow{0%,100%{opacity:.3;transform:translateY(-5px) rotate(-9deg)}50%{opacity:.85;transform:translateY(9px) rotate(12deg)}}
+@keyframes season-tree-lights{from{opacity:.45}to{opacity:1}}
+@keyframes season-bat{0%,100%{transform:translate(0,0) scaleY(1)}30%{transform:translate(7px,-4px) scaleY(.6)}65%{transform:translate(11px,1px) scaleY(1)}}
+@keyframes season-pumpkin{from{transform:translateY(0) rotate(-1deg)}to{transform:translateY(-4px) rotate(1deg)}}
+@keyframes season-firework{0%,58%,100%{transform:scale(.2);opacity:0}63%{opacity:1}83%{transform:scale(1.18);opacity:.7}94%{transform:scale(1.35);opacity:0}}
+@keyframes season-clock{to{transform:rotate(360deg)}}
+.season-click-layer{position:fixed;inset:0;z-index:100;pointer-events:none;overflow:hidden;contain:strict}.season-click-layer *{pointer-events:none!important}
+.season-click-burst{position:absolute;width:0;height:0;color:var(--accent);animation:season-click-life .9s linear both}
+.season-click-ring{position:absolute;left:-9px;top:-9px;width:18px;height:18px;border:1px solid currentColor;border-radius:50%;animation:season-click-ring .65s ease-out both}
+.season-click-particle{position:absolute;left:-4px;top:-4px;width:8px;height:8px;background:currentColor;border-radius:2px;animation:season-click-particle .8s cubic-bezier(.14,.68,.28,1) both}
+.season-click-layer[data-festival=spring] .season-click-particle{width:8px;height:11px;border-radius:2px 75% 2px 75%;background:#e99a92}.season-click-layer[data-festival=spring] .season-click-particle:nth-child(3n){background:#e8c381}
+.season-click-layer[data-festival=midautumn] .season-click-particle{width:11px;height:11px;background:#e2b96c;clip-path:polygon(50% 0,62% 35%,100% 50%,62% 62%,50% 100%,36% 62%,0 50%,36% 35%)}
+.season-click-layer[data-festival=winter] .season-click-particle{background:linear-gradient(90deg,transparent 42%,#86b9c7 42%,#86b9c7 58%,transparent 58%);width:12px;height:12px}.season-click-layer[data-festival=winter] .season-click-particle::before,.season-click-layer[data-festival=winter] .season-click-particle::after{content:"";position:absolute;left:5px;width:2px;height:12px;border-radius:1px;background:#86b9c7}.season-click-layer[data-festival=winter] .season-click-particle::before{transform:rotate(60deg)}.season-click-layer[data-festival=winter] .season-click-particle::after{transform:rotate(-60deg)}
+.season-click-layer[data-festival=halloween] .season-click-particle{width:16px;height:10px;background:#ae8ace;clip-path:polygon(0 30%,25% 0,44% 40%,50% 20%,56% 40%,75% 0,100% 30%,75% 55%,68% 100%,50% 78%,32% 100%,25% 55%)}
+.season-click-layer[data-festival=newyear] .season-click-particle{width:5px;height:11px;background:#8faff1}.season-click-layer[data-festival=newyear] .season-click-particle:nth-child(3n){background:#dfb978}.season-click-layer[data-festival=newyear] .season-click-particle:nth-child(3n+1){background:#d792b3}
+@keyframes season-click-life{0%,75%{opacity:1}100%{opacity:0}}
+@keyframes season-click-ring{from{opacity:.7;transform:scale(.4)}to{opacity:0;transform:scale(3.3)}}
+@keyframes season-click-particle{from{opacity:.95;transform:translate(0,0) rotate(0) scale(.6)}to{opacity:0;transform:translate(var(--dx),var(--dy)) rotate(var(--spin)) scale(.2)}}
+:root[data-season-paused] .season-art *,.app:has(dialog[open]) :is(.community-home,.site-home) .season-art *{animation-play-state:paused!important}
+@media(prefers-reduced-motion:reduce){.season-art *,.season-click-layer *{animation:none!important}.season-click-layer{display:none}}

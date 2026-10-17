@@ -8,11 +8,12 @@ export function receiveGain(rms:number,current:number,enabled:boolean):number {
 }
 export function createReceiver(context:AudioContext,track:MediaStreamTrack) {
   // Chromium can leave remote RTC decoding idle when only Web Audio consumes it.
-  // Start the original track silently; the processed stream is the audible output.
-  const decoder=new Audio();decoder.srcObject=new MediaStream([track]);decoder.volume=0;
-  const source=context.createMediaStreamSource(new MediaStream([track])),analyser=context.createAnalyser(),gain=context.createGain(),limiter=context.createDynamicsCompressor(),destination=context.createMediaStreamDestination();
+  // Never route original PCM through the helper: element volume is not a silence guarantee.
+  const silent=track.clone();silent.enabled=false;
+  const decoder=new Audio();decoder.muted=true;decoder.volume=0;decoder.srcObject=new MediaStream([silent]);
+  const source=context.createMediaStreamSource(new MediaStream([track])),analyser=context.createAnalyser(),gain=context.createGain(),limiter=context.createDynamicsCompressor(),volume=context.createGain(),destination=context.createMediaStreamDestination();
   analyser.fftSize=512;limiter.threshold.value=-1;limiter.knee.value=0;limiter.ratio.value=20;limiter.attack.value=.003;limiter.release.value=.08;
-  source.connect(analyser);source.connect(gain);gain.connect(limiter);limiter.connect(destination);
+  source.connect(analyser);source.connect(gain);gain.connect(limiter);limiter.connect(volume);volume.connect(destination);
   const data=new Float32Array(analyser.fftSize);let current=1;
-  return {stream:destination.stream,play(){return decoder.play();},tick(enabled:boolean){analyser.getFloatTimeDomainData(data);const rms=Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);current=receiveGain(rms,current,enabled);gain.gain.setTargetAtTime(current,context.currentTime,.03);},destroy(){decoder.pause();decoder.srcObject=null;for(const node of [source,analyser,gain,limiter,destination])node.disconnect();destination.stream.getTracks().forEach(t=>t.stop());}};
+  return {stream:destination.stream,play(){return decoder.play();},volume(value:number){volume.gain.value=Number.isFinite(value)?Math.max(0,Math.min(1,value)):0;},tick(enabled:boolean){analyser.getFloatTimeDomainData(data);const rms=Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);current=receiveGain(rms,current,enabled);gain.gain.setTargetAtTime(current,context.currentTime,.03);},destroy(){decoder.pause();decoder.srcObject=null;silent.stop();for(const node of [source,analyser,gain,limiter,volume,destination])node.disconnect();destination.stream.getTracks().forEach(t=>t.stop());}};
 }

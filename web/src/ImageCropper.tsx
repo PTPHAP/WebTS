@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import type {KeyboardEvent,PointerEvent} from 'react';
 import {createPortal} from 'react-dom';
 import {adjustCrop,croppedImage,initialCrop,loadCropImage,zoomCrop} from './avatar';
@@ -19,8 +19,8 @@ export function ImageCropper({file,purpose,onComplete,onCancel,limits,displayAsp
   },[file,purpose,square,limits,displayAspect]);
   const[width,height]=dimensions,scale=Math.min(600/(width||1),360/(height||1),1);
   const previewWidth=Math.max(1,Math.round(width*scale)),previewHeight=Math.max(1,Math.round(height*scale));
-  useEffect(()=>{if(!image.current||!canvas.current)return;const context=canvas.current.getContext('2d');context?.drawImage(image.current,0,0,canvas.current.width,canvas.current.height);},[width,height]);
-  useEffect(()=>{const bitmap=image.current,node=preview.current;if(!crop||!bitmap||!node)return;const scale=Math.min(1,400/crop.width,300/crop.height);node.width=Math.max(1,Math.round(crop.width*scale));node.height=Math.max(1,Math.round(crop.height*scale));const context=node.getContext('2d');if(context){context.fillStyle='#151b2c';context.fillRect(0,0,node.width,node.height);context.drawImage(bitmap,crop.x,crop.y,crop.width,crop.height,0,0,node.width,node.height);}},[crop,width,height]);
+  useLayoutEffect(()=>{if(!image.current||!canvas.current)return;const context=canvas.current.getContext('2d');context?.drawImage(image.current,0,0,canvas.current.width,canvas.current.height);},[width,height]);
+  useLayoutEffect(()=>{const bitmap=image.current,node=preview.current;if(!crop||!bitmap||!node)return;const scale=Math.min(1,400/crop.width,300/crop.height);node.width=Math.max(1,Math.round(crop.width*scale));node.height=Math.max(1,Math.round(crop.height*scale));const context=node.getContext('2d');if(context){context.fillStyle='#151b2c';context.fillRect(0,0,node.width,node.height);context.drawImage(bitmap,crop.x,crop.y,crop.width,crop.height,0,0,node.width,node.height);}},[crop,width,height]);
   function start(e:PointerEvent<HTMLDivElement>){
     if(!crop||e.button!==0)return;
     const handle=(e.target as HTMLElement).dataset.handle||'move';
@@ -39,7 +39,7 @@ export function ImageCropper({file,purpose,onComplete,onCancel,limits,displayAsp
   return createPortal(<dialog ref={dialog} className="image-cropper" aria-labelledby="crop-title" onCancel={e=>{e.preventDefault();e.stopPropagation();onCancel();}}>
     <div className="dialog-head"><h2 id="crop-title">{square?'裁剪头像':'裁剪图片'}</h2><button type="button" className="icon-button" aria-label="取消裁剪" onClick={onCancel}>×</button></div>
     <p className="muted">拖动图片移动选区，拖动四角调整范围。{square?'头像保持正方形。':ratio?'选区与展示框比例一致。':'图片可自由调整宽高。'}键盘方向键微调，Shift 加速。</p>
-    {!square&&displayAspect&&<label>裁剪比例<select value={fit?'display':'free'} disabled={!crop} onChange={e=>{const next=e.target.value==='display';setFit(next);setCrop(initialCrop(width,height,false,next?displayAspect:undefined));setZoom(1);}}><option value="display">按{displayLabel} · {displayAspect===4/3?'4:3':'16:9'}</option><option value="free">自由比例 · 完整显示，比例不同留边</option></select></label>}
+    {!square&&displayAspect&&<label>裁剪比例<select value={fit?'display':'free'} disabled={!crop} onChange={e=>{const next=e.target.value==='display';setFit(next);setCrop(initialCrop(width,height,false,next?displayAspect:undefined));setZoom(1);}}><option value="display">按{displayLabel} · {displayAspect===1?'1:1':displayAspect===4/3?'4:3':'16:9'}</option><option value="free">自由比例 · 完整显示，比例不同留边</option></select></label>}
     {crop&&<><div className="crop-stage" style={{width:previewWidth,aspectRatio:`${previewWidth}/${previewHeight}`}} onPointerDown={start} onPointerMove={move} onPointerUp={()=>{drag.current=null;}} onPointerCancel={()=>{drag.current=null;}} onLostPointerCapture={()=>{drag.current=null;}}>
       <canvas ref={canvas} width={previewWidth} height={previewHeight} aria-label="原图与裁剪范围"/>
       <div className="crop-selection" role="group" tabIndex={0} aria-label="移动裁剪选区" onKeyDown={e=>keys(e,'move')} style={{left:`${crop.x/width*100}%`,top:`${crop.y/height*100}%`,width:`${crop.width/width*100}%`,height:`${crop.height/height*100}%`}}>

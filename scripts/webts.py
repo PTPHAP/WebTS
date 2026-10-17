@@ -331,15 +331,17 @@ def update():
     folder=backup();old=(ROOT/'current').resolve()
     rollback='webts:rollback-'+folder.name
     run(['docker','tag','webts:managed',rollback])
+    private_write(folder/'update.json',json.dumps({'previous_source':str(old),'candidate_source':str(candidate),'rollback_image':rollback}))
     compose('stop','webts')
     pointer=ROOT/'next';pointer.unlink(missing_ok=True);pointer.symlink_to(candidate);os.replace(pointer,ROOT/'current')
     run(['docker','tag','webts:managed-candidate','webts:managed'])
     try:
         compose('up','-d','--no-build','--force-recreate');health()
     except Exception:
-        pointer.symlink_to(old);os.replace(pointer,ROOT/'current')
-        run(['docker','tag',rollback,'webts:managed']);compose('up','-d','--no-build','--force-recreate')
-        raise ValueError('更新启动失败，已回退程序；配置、身份和密钥未被替换。') from None
+        # A started candidate may already have written security state unknown to
+        # the old binary. Preserve it and fail closed instead of downgrading.
+        compose('stop','webts')
+        raise ValueError('更新就绪检查失败，已停止本实例；保留新程序、当前数据及回退镜像。请查看日志并按备份恢复文档处理，不要直接降级或覆盖数据库。') from None
     print('更新完成，原账号、身份、配置和密钥已保留。')
 
 

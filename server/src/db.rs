@@ -16,6 +16,7 @@ pub struct User {
     pub id: i64,
     pub email: String,
     pub is_admin: bool,
+    pub public_device: bool,
 }
 #[derive(Serialize)]
 pub struct IdentityRow {
@@ -143,7 +144,57 @@ impl Db {
         if !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('friend_keys') WHERE name='share_presence')", [], |r| r.get::<_, bool>(0))? {
             connection.execute("ALTER TABLE friend_keys ADD COLUMN share_presence INTEGER NOT NULL DEFAULT 1 CHECK(share_presence IN(0,1))", [])?;
         }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS community_items(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,owner INTEGER NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN('post','comment','report')),parent TEXT,object_key TEXT UNIQUE NOT NULL,store_id TEXT NOT NULL,request_hash TEXT NOT NULL,created_at INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0,deleted INTEGER NOT NULL DEFAULT 0,deleted_at INTEGER,deleted_by INTEGER,decision TEXT NOT NULL DEFAULT '',cleaned INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0);
+          CREATE INDEX IF NOT EXISTS community_listing ON community_items(kind,parent,seq DESC);
+          CREATE INDEX IF NOT EXISTS community_owner ON community_items(owner,created_at);
+          CREATE INDEX IF NOT EXISTS community_cleanup ON community_items(deleted,ready,next_attempt);
+          CREATE INDEX IF NOT EXISTS community_store ON community_items(store_id);
+          CREATE TABLE IF NOT EXISTS community_likes(item TEXT NOT NULL REFERENCES community_items(id) ON DELETE CASCADE,owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,PRIMARY KEY(item,owner));
+          CREATE INDEX IF NOT EXISTS community_liker ON community_likes(owner);")?;
+        if !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('community_items') WHERE name='category')", [], |r| r.get::<_, bool>(0))? {
+            connection.execute_batch("ALTER TABLE community_items ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")?;
+        }
+        connection.execute_batch("CREATE INDEX IF NOT EXISTS community_category_listing ON community_items(category,kind,seq DESC);
+          CREATE TABLE IF NOT EXISTS community_categories(id TEXT PRIMARY KEY,name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN(0,1)),position INTEGER NOT NULL);
+          INSERT OR IGNORE INTO community_categories(id,name,enabled,position) VALUES('general','综合',1,0);
+          CREATE TABLE IF NOT EXISTS community_category_revision(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL);
+          INSERT OR IGNORE INTO community_category_revision VALUES(1,0);")?;
+        for (column, definition) in [
+            ("content_version", "TEXT NOT NULL DEFAULT ''"),
+            ("revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN(0,1))"),
+            ("locked", "INTEGER NOT NULL DEFAULT 0 CHECK(locked IN(0,1))"),
+        ] {
+            if !connection.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('community_items') WHERE name='{column}')"), [], |r| r.get::<_,bool>(0))? {
+                connection.execute_batch(&format!("ALTER TABLE community_items ADD COLUMN {column} {definition}"))?;
+            }
+        }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS community_icons(category TEXT PRIMARY KEY REFERENCES community_categories(id),object_key TEXT NOT NULL,store_id TEXT NOT NULL,version TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS community_changes(id TEXT PRIMARY KEY,target TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN('edit','icon')),owner INTEGER NOT NULL REFERENCES users(id),base_revision INTEGER NOT NULL,request_hash TEXT NOT NULL,object_key TEXT NOT NULL,store_id TEXT NOT NULL,created_at INTEGER NOT NULL,applied INTEGER NOT NULL DEFAULT 0,cleaned INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0);
+          CREATE INDEX IF NOT EXISTS community_change_cleanup ON community_changes(cleaned,applied,next_attempt,created_at);
+          CREATE INDEX IF NOT EXISTS community_change_owner ON community_changes(owner,created_at);
+          CREATE INDEX IF NOT EXISTS community_change_target ON community_changes(kind,target,cleaned);
+          CREATE INDEX IF NOT EXISTS community_change_store ON community_changes(store_id,cleaned);
+          CREATE INDEX IF NOT EXISTS community_reply_time ON community_items(parent,kind,created_at DESC,seq DESC);
+          CREATE TABLE IF NOT EXISTS community_reply_reads(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,through_seq INTEGER NOT NULL CHECK(through_seq>=0));
+          CREATE INDEX IF NOT EXISTS community_author_listing ON community_items(owner,kind,seq DESC);
+          CREATE INDEX IF NOT EXISTS community_pinned ON community_items(kind,pinned,seq DESC);")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS storage_probes(object_key TEXT PRIMARY KEY,created_at INTEGER NOT NULL)")?;
+        for table in ["friend_messages", "storage_probes"] {
+            let exists: bool = connection.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='store_id')"), [], |r| r.get(0))?;
+            if !exists {
+                connection.execute(
+                    &format!(
+                        "ALTER TABLE {table} ADD COLUMN store_id TEXT NOT NULL DEFAULT 'default'"
+                    ),
+                    [],
+                )?;
+            }
+            connection.execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS {table}_store ON {table}(store_id)"
+            ))?;
+        }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS account_preferences(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,data TEXT NOT NULL CHECK(length(data)<=4096))")?;
         for (column, definition) in [
             ("mode", "TEXT NOT NULL DEFAULT 'e2ee'"),
@@ -223,7 +274,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id,password_hash,(verified=1 AND banned_until!=-1 AND banned_until<=?) FROM users WHERE email=?",
+                "SELECT id,password_hash,(verified=1 AND banned_until!=-1 AND banned_until<=?) FROM users WHERE email=?2 OR id=(SELECT user_id FROM login_names WHERE name=?2)",
                 params![now(),email],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -397,6 +448,27 @@ impl Db {
         browser: &str,
         platform: &str,
     ) -> Result<String> {
+        self.create_session_with_security(
+            owner,
+            remembered,
+            verified_hash,
+            browser,
+            platform,
+            false,
+        )
+    }
+    pub fn create_session_with_security(
+        &self,
+        owner: i64,
+        remembered: bool,
+        verified_hash: &str,
+        browser: &str,
+        platform: &str,
+        public_device: bool,
+    ) -> Result<String> {
+        if public_device && remembered {
+            bail!("陌生设备不能记住长期登录");
+        }
         let value = token()?;
         let mut c = self.connection.lock().unwrap();
         let tx = c.transaction()?;
@@ -418,10 +490,17 @@ impl Db {
             params![
                 digest(&value),
                 owner,
-                now() + if remembered { 30 * 86400 } else { 12 * 3600 }
+                now()
+                    + if public_device {
+                        4 * 3600
+                    } else if remembered {
+                        30 * 86400
+                    } else {
+                        12 * 3600
+                    }
             ],
         )?;
-        tx.execute("INSERT INTO session_details(hash,id,created_at,browser,platform,remembered) VALUES(?,?,?,?,?,?)",params![digest(&value),token()?,now(),browser,platform,remembered])?;
+        tx.execute("INSERT INTO session_details(hash,id,created_at,browser,platform,remembered,public_device) VALUES(?,?,?,?,?,?,?)",params![digest(&value),token()?,now(),browser,platform,remembered,public_device])?;
         tx.commit()?;
         Ok(value)
     }
@@ -431,7 +510,7 @@ impl Db {
         }
         let hash = digest(value);
         let c = self.connection.lock().unwrap();
-        let user = c.query_row("SELECT u.id,u.email,u.is_admin,s.expires FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?", params![hash,now(),now()], |r| Ok((User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get(2)?},r.get(3)?))).optional()?;
+        let user = c.query_row("SELECT u.id,u.email,u.is_admin,s.expires,COALESCE(d.public_device,0) FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_details d ON d.hash=s.hash WHERE s.hash=? AND s.expires>? AND u.verified=1 AND u.banned_until!=-1 AND u.banned_until<=?", params![hash,now(),now()], |r| Ok((User {id:r.get(0)?,email:r.get(1)?,is_admin:r.get::<_,bool>(2)?&&!r.get::<_,bool>(4)?,public_device:r.get(4)?},r.get(3)?))).optional()?;
         Ok(user.map(|(user, expires)| Session {
             user,
             hash,

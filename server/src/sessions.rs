@@ -20,6 +20,12 @@ pub(crate) fn migrate(db: &mut Connection) -> anyhow::Result<()> {
     tx.execute_batch("CREATE INDEX IF NOT EXISTS sessions_owner_expiry ON sessions(user_id,expires);
       CREATE TABLE IF NOT EXISTS session_details(hash TEXT PRIMARY KEY REFERENCES sessions(hash) ON DELETE CASCADE,id TEXT UNIQUE NOT NULL,created_at INTEGER NOT NULL,browser TEXT NOT NULL,platform TEXT NOT NULL,remembered INTEGER CHECK(remembered IN(0,1)));
       INSERT INTO session_details(hash,id,created_at,browser,platform,remembered) SELECT hash,lower(hex(randomblob(32))),0,'','',NULL FROM sessions WHERE hash NOT IN(SELECT hash FROM session_details);")?;
+    if !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_details') WHERE name='public_device')",[],|r|r.get::<_,bool>(0))? {
+        tx.execute_batch("ALTER TABLE session_details ADD COLUMN public_device INTEGER NOT NULL DEFAULT 0 CHECK(public_device IN(0,1))")?;
+    }
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS login_names(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,name TEXT UNIQUE NOT NULL);
+      CREATE TABLE IF NOT EXISTS quick_logins(id TEXT PRIMARY KEY,poll_hash TEXT NOT NULL,approve_hash TEXT NOT NULL,code TEXT NOT NULL,expires INTEGER NOT NULL,policy TEXT NOT NULL,browser TEXT NOT NULL,platform TEXT NOT NULL,authorizer TEXT REFERENCES sessions(hash) ON DELETE CASCADE);
+      CREATE INDEX IF NOT EXISTS quick_login_expiry ON quick_logins(expires);")?;
     tx.commit()?;
     Ok(())
 }
@@ -89,8 +95,8 @@ pub async fn list(
         let s=a.session(&headers)?;scope(s.user.id,q.account)?;
         let db=a.db.connection.lock().unwrap();session_valid(&db,&s)?;
         let total:i64=db.query_row("SELECT count(*) FROM sessions WHERE user_id=? AND expires>?",params![s.user.id,now()],|r|r.get(0)).map_err(anyhow::Error::from)?;
-        let mut stmt=db.prepare("SELECT d.id,d.created_at,d.browser,d.platform,d.remembered,s.expires,s.hash=? FROM sessions s JOIN session_details d ON d.hash=s.hash WHERE s.user_id=? AND s.expires>? ORDER BY (s.hash=?) DESC,d.created_at DESC,d.id LIMIT 50").map_err(anyhow::Error::from)?;
-        let items=stmt.query_map(params![s.hash,s.user.id,now(),s.hash],|r|Ok(json!({"id":r.get::<_,String>(0)?,"created_at":r.get::<_,i64>(1)?,"browser":r.get::<_,String>(2)?,"platform":r.get::<_,String>(3)?,"remembered":r.get::<_,Option<bool>>(4)?,"expires":r.get::<_,i64>(5)?,"current":r.get::<_,bool>(6)?}))).map_err(anyhow::Error::from)?.collect::<Result<Vec<_>,_>>().map_err(anyhow::Error::from)?;
+        let mut stmt=db.prepare("SELECT d.id,d.created_at,d.browser,d.platform,d.remembered,s.expires,s.hash=?,d.public_device FROM sessions s JOIN session_details d ON d.hash=s.hash WHERE s.user_id=? AND s.expires>? ORDER BY (s.hash=?) DESC,d.created_at DESC,d.id LIMIT 50").map_err(anyhow::Error::from)?;
+        let items=stmt.query_map(params![s.hash,s.user.id,now(),s.hash],|r|Ok(json!({"id":r.get::<_,String>(0)?,"created_at":r.get::<_,i64>(1)?,"browser":r.get::<_,String>(2)?,"platform":r.get::<_,String>(3)?,"remembered":r.get::<_,Option<bool>>(4)?,"expires":r.get::<_,i64>(5)?,"current":r.get::<_,bool>(6)?,"public_device":r.get::<_,bool>(7)?}))).map_err(anyhow::Error::from)?.collect::<Result<Vec<_>,_>>().map_err(anyhow::Error::from)?;
         Ok(Json(json!({"account":s.user.id,"items":items,"total":total,"server_time":now()})))
     }).await
 }

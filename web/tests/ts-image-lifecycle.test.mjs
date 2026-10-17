@@ -14,7 +14,7 @@ const {defaultImageLimits,readImageLimits}=await import(`data:text/javascript;ba
 function fixture(){
   const url='ts3image://same.png?channel=1&path=/';const key=`1:${url}`;const sent=[];
   const context={friendJoin:{current:undefined},watchJoin:{current:undefined},connectedServer:{current:''},readImageLimits,imagePolicy:{current:defaultImageLimits},channelAction:{current:''},connectionEpoch:{current:1},tsImageCache:{current:{[key]:{data:'prior-server-private-image'}}},tsImagePending:{current:new Map([['old',{key,epoch:1}]])},tsImageQueue:{current:[{id:'queued',key,url,source:1,epoch:1}]},tsImageCounter:{current:2},connected:true,voice:{current:{close(){},send:e=>sent.push(e),configure(){},connect:async()=>{}}},previousState:{current:null},sounds:{current:null},moves:{current:null},avatarRequests:{current:new Set()},avatarInFlight:{current:new Set()},avatarAttempts:{current:new Map()},avatarRetryTimers:{current:new Map()},clearTimeout(){},pending:{current:new Map()},audio:{},server:'test',identity:'new-account',page:{current:'page'},input:'',navigator:{},FormData:class{get(){return 'on';}}};
-  for(const name of ['ActivityAlert','ServerOverview','ChannelTarget','CreateParent','MoveParent','Context','Level','InputLevel','Capture','CaptureState','PlaybackBlocked','CapturePaused','AudioTransport','ChannelSaving','ChannelError','ImageLimits','TsImages','Reconnecting','Quality','Queue','TsRtt','PasswordTarget','Modal','Speaking','Busy','Avatars','AvatarErrors','Chat','PrivatePeer','PrivateMessage','Message','Volumes','Scope','InspectedChannel','Selected','AvatarBusy','Processing','Connected','State','Status','Cipher','Transmitting','Notice'])context[`set${name}`]=()=>{};
+  for(const name of ['ActivityAlert','ServerOverview','ChannelTarget','CreateParent','MoveParent','Context','Level','InputLevel','Capture','CaptureState','PlaybackBlocked','CapturePaused','AudioTransport','ChannelSaving','ChannelError','ImageLimits','TsImages','Reconnecting','Quality','Queue','TsRtt','PasswordTarget','Modal','Speaking','Busy','Avatars','AvatarErrors','Chat','PrivatePeer','PrivateMessage','Message','Volumes','Scope','InspectedChannel','Selected','AvatarBusy','Processing','EchoActual','Connected','State','Status','Cipher','Transmitting','Notice'])context[`set${name}`]=()=>{};
   vm.createContext(context);vm.runInContext(code,context);return {context,key,url,sent};
 }
 for(const boundary of ['manual disconnect/account change','new server connection'])test(`channel images are cleared at ${boundary}`,async()=>{
@@ -22,6 +22,11 @@ for(const boundary of ['manual disconnect/account change','new server connection
   if(boundary==='new server connection')await context.connection({preventDefault(){},currentTarget:{}});else context.disconnect();
   assert.equal(Object.keys(context.tsImageCache.current).length,0);assert.equal(context.tsImagePending.current.size,0);assert.equal(context.tsImageQueue.current.length,0);
   context.loadTsImage(1,url);assert.equal(sent.length,1);assert.equal(sent[0].type,'ts_image_get');assert.equal(context.tsImageCache.current[key].data,undefined);assert.equal(context.tsImagePending.current.get(sent[0].id).epoch,2);
+});
+test('capture events expose only the boolean echo state and both disconnect paths clear it',()=>{
+ const {context}=fixture(),states=[];context.processingLabel=()=>'';context.setEchoActual=value=>states.push(value);
+ for(const actual of [{echoCancellation:false,deviceId:'private'},{echoCancellation:true},{echoCancellation:'private'},undefined])context.receive({type:'audio_processing',actual});
+ context.disconnect();context.receive({type:'disconnected'});assert.deepEqual(states,[false,true,undefined,undefined,undefined,undefined]);
 });
 
 test('hot image policy clears stale responses and enforces the new cache bound',()=>{

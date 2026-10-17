@@ -2094,3 +2094,334 @@ fn migration_preserves_old_opaque_messages_as_e2ee_and_is_idempotent() {
         );
     }
 }
+
+fn multi_storage_setup() -> (tempfile::TempDir, Arc<App>) {
+    let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("multi-storage-fixture-")
+        .tempdir_in(cache)
+        .unwrap();
+    let key = root.path().join("key");
+    std::fs::write(&key, hex::encode([29; 32])).unwrap();
+    let template: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+    let app = App::new(Config {
+        database: root.path().join("db").to_string_lossy().into_owned(),
+        master_key_file: key.to_string_lossy().into_owned(),
+        public_url: ORIGIN.into(),
+        ..template
+    })
+    .unwrap();
+    (root, app)
+}
+
+#[tokio::test]
+async fn multiple_stores_keep_historical_ownership_and_reject_destructive_edits() {
+    let (_root, app) = multi_storage_setup();
+    let (owner, cookie) = user(&app, "multi-admin@example.invalid");
+    let (peer, regular) = user(&app, "multi-peer@example.invalid");
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE users SET is_admin=1 WHERE id=?", [owner])
+        .unwrap();
+    let config = json!({"enabled":true,"endpoint":"https://cn-sy1.rains3.com","bucket":"old-fixture","region":"us-east-1","access_key":"synthetic-access","secret_key":"synthetic-secret-for-fixture","retention_days":7});
+    let save = |id: &str, bucket: &str, action: &str| {
+        let mut config = config.clone();
+        config["bucket"] = json!(bucket);
+        json!({"id":id,"name":"社区存储","storage":config,"action":action,"password":PASSWORD})
+    };
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save("default", "old-fixture", "save")),
+            &regular,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save("default", "old-fixture", "save")),
+            &cookie,
+            "",
+            "https://elsewhere.example"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save("default", "old-fixture", "save")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let added = call(
+        &app,
+        "/admin/storage/profiles",
+        Some(save("", "new-fixture", "save")),
+        &cookie,
+        "",
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(added.0, StatusCode::OK, "{}", added.1);
+    let id = added.1["id"].as_str().unwrap();
+    let key = "b".repeat(64);
+    app.db.connection.lock().unwrap().execute("INSERT INTO friend_messages(id,sender,recipient,object_key,content_hash,created_at,expires,ready) VALUES('legacy-store',?,?,?,'hash',0,?,1)",rusqlite::params![owner,peer,key,web_ts::db::now()+3600]).unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save(id, "new-fixture", "activate")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        web_ts::storage::selected(&app.runtime.read().unwrap().settings)
+            .unwrap()
+            .0,
+        id
+    );
+    assert_eq!(
+        web_ts::storage::object_store(&app, &key).unwrap().bucket,
+        "old-fixture"
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save("default", "wrong-bucket", "save")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO storage_probes(object_key,created_at,store_id) VALUES(?,?,?)",
+            rusqlite::params!["c".repeat(64), 0, id],
+        )
+        .unwrap();
+    assert_eq!(
+        web_ts::storage::object_store(&app, &"c".repeat(64))
+            .unwrap()
+            .bucket,
+        "new-fixture"
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save("default", "old-fixture", "activate")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save(id, "new-fixture", "delete")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let view = call(&app, "/admin/storage/profiles", None, &cookie, "", ORIGIN).await;
+    assert_eq!(view.0, StatusCode::OK);
+    assert_eq!(view.1["profiles"][1]["objects"], 1);
+    assert_eq!(view.1["profiles"][1]["storage"]["objects"]["probes"], 1);
+    assert!(!view.1.to_string().contains("synthetic-"));
+    let restored: web_ts::settings::Settings = serde_json::from_slice(
+        &app.vault
+            .open(
+                0,
+                "site-settings",
+                "v1",
+                &app.db.settings().unwrap().unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.storage_profiles[0].id, id);
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM storage_probes WHERE store_id=?", [id])
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "/admin/storage/profiles",
+            Some(save(id, "new-fixture", "delete")),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.runtime.read().unwrap().settings.storage_profiles.len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn reserved_upload_retains_its_store_across_default_changes_without_local_payload_files() {
+    let (root, app) = multi_storage_setup();
+    let (owner, cookie) = user(&app, "routing-a@example.invalid");
+    let (peer, _) = user(&app, "routing-b@example.invalid");
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO friendships(lo,hi,requester,status,created_at) VALUES(?,?,?,1,0)",
+            rusqlite::params![owner, peer, owner],
+        )
+        .unwrap();
+    let store = "d".repeat(64);
+    {
+        let mut runtime = app.runtime.write().unwrap();
+        runtime
+            .settings
+            .storage_profiles
+            .push(web_ts::storage::Profile {
+                id: store.clone(),
+                name: "Routing fixture".into(),
+                storage: web_ts::storage::Storage {
+                    enabled: true,
+                    endpoint: "https://127.0.0.1".into(),
+                    bucket: "private-fixture".into(),
+                    region: "us-east-1".into(),
+                    access_key: "synthetic-access".into(),
+                    secret_key: "synthetic-secret-only".into(),
+                    retention_days: 7,
+                },
+            });
+        runtime.settings.storage_active = store.clone();
+    }
+    // Deliberately inject a rejected private endpoint. Validation fails before DNS or sockets.
+    let id = "550e8400-e29b-41d4-a716-446655440001";
+    let packet = readable_packet(owner, peer, id, 0);
+    let files = || {
+        let mut names = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = files();
+    let body = json!({"peer":peer,"id":id,"ciphertext":packet,"mode":"server","epoch":0});
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(body.clone()),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let original: (String, String) = app
+        .db
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT store_id,object_key FROM friend_messages WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(original.0, store);
+    {
+        let mut runtime = app.runtime.write().unwrap();
+        runtime.settings.storage_active = "default".into();
+    }
+    assert_eq!(
+        call(
+            &app,
+            "/friends/messages",
+            Some(body.clone()),
+            &cookie,
+            "",
+            ORIGIN
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        app.db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT object_key FROM friend_messages WHERE id=?",
+                [id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        original.1
+    );
+    app.db
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE friend_messages SET ready=1 WHERE id=?", [id])
+        .unwrap();
+    assert_eq!(
+        call(&app, "/friends/messages", Some(body), &cookie, "", ORIGIN)
+            .await
+            .0,
+        StatusCode::OK,
+        "acknowledged retry must not require new writes to the disabled default store"
+    );
+    assert_eq!(
+        files(),
+        before,
+        "object storage failure must not create local payload files"
+    );
+}

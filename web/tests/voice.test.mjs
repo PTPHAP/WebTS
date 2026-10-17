@@ -81,9 +81,23 @@ test('playback failure stays visible when another member starts successfully and
  let count=0,blocked=true;globalThis.Audio=class{constructor(){this.id=count++;}play(){return this.id===1&&blocked?Promise.reject(Error('autoplay')):Promise.resolve();}pause(){}};
  const node=()=>({connect(){},disconnect(){},stream:new MediaStream([]),gain:{value:1},threshold:{},knee:{},ratio:{},attack:{},release:{}});
  Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createDynamicsCompressor:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
- voice.peer.ontrack({track:{id:'first'}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
- voice.peer.ontrack({track:{id:'second'}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
+ voice.peer.ontrack({track:{id:'first',clone:()=>({stop(){}})}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
+ voice.peer.ontrack({track:{id:'second',clone:()=>({stop(){}})}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
  blocked=false;voice.resume();for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,false);voice.close();assert.equal(voice.playbackFailed.size,0);
+});
+
+test('repeated RTC track notifications keep one playback chain and an ended track can be replaced',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
+ const audios=[];globalThis.Audio=class{constructor(){audios.push(this);}play(){return Promise.resolve();}pause(){this.paused=true;}};
+ const node=()=>({connect(){},disconnect(){},stream:new MediaStream([]),gain:{value:1},threshold:{},knee:{},ratio:{},attack:{},release:{}});
+ Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createDynamicsCompressor:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
+ const track={id:'repeated',clone:()=>({stop(){}})};voice.peer.ontrack({track});const receiver=voice.receivers.get(track.id),output=voice.elements.get(track.id);
+ voice.peer.ontrack({track});await Promise.resolve();
+ assert.equal(audios.length,2,'one silent decoding helper and one processed player; duplicate track events must not orphan audible players');
+ assert.equal(voice.receivers.get(track.id),receiver);assert.equal(voice.elements.get(track.id),output);
+ const ended=track.onended;ended();assert.equal(output.paused,true);assert.equal(output.srcObject,null);assert.equal(voice.receivers.size,0);
+ voice.peer.ontrack({track:{id:'repeated',clone:()=>({stop(){}})}});assert.equal(audios.length,4);assert.equal(voice.receivers.size,1);ended();assert.equal(voice.receivers.size,1,'old ended callbacks cannot remove the replacement');voice.close();
+ assert.ok(audios.every(audio=>audio.paused&&audio.srcObject===null));
 });
 
 test('AI processing switches live without replacing the connection or microphone track',async()=>{
@@ -208,10 +222,10 @@ test('autoplay resume waiting for a gesture cannot stall TS connect; stale devic
 
 test('speaking ducks remote audio without undoing per-member volume, mute or live settings',async()=>{
  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
- const audio={volume:0,muted:false,pause(){}};voice.elements.set('remote',audio);voice.tracks.set('remote',2);voice.volume(2,.6);voice.outputVolume(.8);
- assert.equal(audio.volume,.48);env.processors[0].onspeech(true);assert.ok(Math.abs(audio.volume-.48*.65)<1e-9);
- voice.setMute(true,false);assert.equal(audio.volume,.48);voice.setMute(false,true);assert.equal(audio.muted,true);
- voice.configure({...voice.settings,ducking:0});assert.equal(audio.volume,.48);voice.close();
+ const audio={volume:0,muted:false,pause(){}},receiver={volume:value=>receiver.level=value,destroy(){}};voice.elements.set('remote',audio);voice.receivers.set('remote',receiver);voice.tracks.set('remote',2);voice.volume(2,.6);voice.outputVolume(.8);
+ assert.equal(audio.volume,1);assert.equal(receiver.level,.48);env.processors[0].onspeech(true);assert.ok(Math.abs(receiver.level-.48*.65)<1e-9);
+ voice.setMute(true,false);assert.equal(receiver.level,.48);voice.setMute(false,true);assert.equal(audio.muted,true);assert.equal(receiver.level,0);
+ await voice.configure({...voice.settings,ducking:0});assert.equal(receiver.level,0);voice.setMute(false,false);assert.equal(receiver.level,.48);voice.close();
 });
 
 test('typing suppression sends only a local timing marker and stops after disconnect',async()=>{
@@ -493,4 +507,16 @@ test('manual recovery reacquires a microphone that remains hardware-muted withou
   const socket=voice.socket;env.captured[0].muted=true;env.captured[0].onmute();assert.equal(voice.sendTrack.enabled,false);
   voice.resume();await voice.microphoneTask;
   assert.equal(env.requests(),2);assert.equal(voice.socket,socket);assert.equal(voice.sendTrack.enabled,true);voice.close();
+});
+
+
+test('diagnostic snapshots follow live processing and disposal without exposing track identifiers',async()=>{
+ const env=browser(),voice=new Voice(()=>{});
+ assert.deepEqual(voice.diagnostics(),{context:'inactive',processing:'inactive',receivers:0,players:0,pausedPlayers:0});
+ await voice.connect({identity:'fixture'},'',true);assert.equal(voice.diagnostics().processing,'listen');assert.equal(voice.diagnostics().context,'running');
+ voice.elements.set('private-track',{paused:true,pause(){},srcObject:null});voice.receivers.set('private-track',{destroy(){}});
+ const report=voice.diagnostics();assert.equal(report.receivers,1);assert.equal(report.players,1);assert.equal(report.pausedPlayers,1);assert.ok(!JSON.stringify(report).includes('private-track'));
+ voice.close();assert.deepEqual(voice.diagnostics(),{context:'inactive',processing:'inactive',receivers:0,players:0,pausedPlayers:0});
+ await voice.configure({...voice.settings,noise:'rnnoise',keyboard:true});await voice.connect({identity:'fixture'},'',false);assert.equal(voice.diagnostics().processing,'keyboard');
+ await voice.configure({...voice.settings,noise:'off'});assert.equal(voice.diagnostics().processing,'off');voice.context.state='suspended';assert.equal(voice.diagnostics().context,'suspended');voice.close();
 });

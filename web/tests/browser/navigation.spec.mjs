@@ -12,6 +12,7 @@ test('repeated navigation does not leave activity pages or duplicate voice bars 
   for(let cycle=0;cycle<12;cycle++){
     await page.getByRole('button',{name:'联合观赛',exact:true}).click();
     await expect(page.locator('.app')).toHaveAttribute('data-view','watch');
+    await page.getByRole('button',{name:'社区',exact:true}).click();await expect(page.locator('.app')).toHaveAttribute('data-view','community');await expect(page.locator('.community-hub')).toHaveCount(1);await expect(page.locator('.workspace-shell')).toHaveCount(0);
     await page.getByRole('button',{name:'首页',exact:true}).click();
     await expect(page.locator('.app')).toHaveAttribute('data-view','home');
     await expect(page.getByRole('button',{name:'社区活动',exact:true})).toHaveCount(0);
@@ -42,6 +43,7 @@ test('a playing iframe keeps its instance while navigating through activities an
     await page.getByRole('button',{name:'语音空间',exact:true}).click();
     await expect(page.locator('.workspace-shell')).toHaveCount(1);
     await page.getByRole('button',{name:'联合观赛',exact:true}).click();
+    await page.getByRole('button',{name:'社区',exact:true}).click();await page.getByRole('button',{name:'联合观赛',exact:true}).click();
     await expect(player).toHaveCount(1);
     await expect(player).toHaveAttribute('data-continuity','original');
     expect(loads).toBe(1);
@@ -50,14 +52,16 @@ test('a playing iframe keeps its instance while navigating through activities an
 
 
 test('WebTS nickname marker is compact in the channel tree and member profile',async({page})=>{
+  test.skip(!(await page.evaluate(()=>typeof AudioContext==='function')), 'This browser build lacks AudioContext; it cannot validate a connected voice session.');
+  let connections=0;
   await fixture(page,{replies:{
     '/api/identities':{identities:[{id:'fixture-identity',name:'测试身份',uid:'fixture-uid',is_default:true}]},
     '/api/rtc':{ice_servers:[]},
   }});
-  await page.routeWebSocket('**/api/connect',socket=>socket.onMessage(text=>{
+  await page.routeWebSocket('**/api/connect',socket=>{connections++;socket.onMessage(text=>{
     const request=JSON.parse(String(text));
     if(request.identity)socket.send(JSON.stringify({type:'state',server:'本地服务器',own:1,canSpeak:true,channels:[{id:1,parent:0,order:0,name:'公共大厅',password:false}],members:[{id:1,channel:1,name:'测试用户',webts:true,uid:'fixture-uid',avatarHash:'',muted:false,deafened:false,description:'',talkPower:0,serverGroups:[],channelGroup:0},{id:2,channel:1,name:'普通客户端',uid:'native-uid',avatarHash:'',muted:false,deafened:false,description:'',talkPower:0,serverGroups:[],channelGroup:0}]}));
-  }));
+  });});
   await page.goto('/app');
   await expect(page.getByRole('button',{name:'连接服务器',exact:true}).first()).toBeEnabled();
   await page.getByRole('button',{name:'连接服务器',exact:true}).first().click();
@@ -72,4 +76,6 @@ test('WebTS nickname marker is compact in the channel tree and member profile',a
   await expect(page.locator('.profile h2')).toContainText('测试用户');
   await page.locator('.profile').screenshot({path:test.info().outputPath('webts-tag.png')});
   await expect(page.getByRole('button',{name:/^断开(连接|服务器)$/}).first()).toBeVisible();
+  for(let cycle=0;cycle<3;cycle++){await page.getByRole('button',{name:'首页',exact:true}).click();await page.getByRole('button',{name:'社区',exact:true}).click();await expect(page.locator('.community-hub')).toHaveCount(1);await expect(page.locator('.workspace-shell')).toHaveCount(0);await page.getByRole('button',{name:'语音空间',exact:true}).click();await expect(page.locator('.member-row').filter({hasText:'测试用户'})).toBeVisible();await expect(page.locator('.voice-bar:visible')).toHaveCount(1);await expect(page.locator('.voice-bar')).toHaveCount(2);}
+  expect(connections).toBe(1);
 });

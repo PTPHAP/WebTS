@@ -109,6 +109,10 @@ impl Home {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
         if [
+            "3453a5536a55c0fea3b24a10900e301c17f8845d71b32924e252b6f08be3826f",
+            "7a4ce0e27ccdf642a827a345451e635ec5e909e9ff1ccfe44632a4cc2a3c0c13",
+            "e4faccd7ce4fb565f4b87d9a499e97b1ab179b0ae01959c671da7212a4e02e19",
+            "ada84697bac599f47c77490782f9e855af7b83e0187ef473837bbdb0c61dd357",
             "b2bc2236eb1cebb8cb4b255c8557627078231ab648f016f7bc1ba9d8efed9da2",
             "647a4585ba0bc7df0e1864c1c6d7d09d8aac3f6e2354ecbbfdf33462bb204930",
             "65ba77d6f7423d96ecd1b1d0c554397bee833769445062bb9e28c20cd3bb37e7",
@@ -410,6 +414,18 @@ mod tests {
         home.upgrade_default_policies();
         assert_eq!(home.privacy_policy, "自定义隐私政策");
         assert_eq!(home.terms, "自定义协议");
+    }
+    #[test]
+    fn previous_default_privacy_upgrades_with_both_line_endings() {
+        let old = include_str!("../tests/fixtures/privacy-20261016.md").replace("\r\n", "\n");
+        for text in [old.clone(), old.replace('\n', "\r\n")] {
+            let mut home = Home {
+                privacy_policy: text,
+                ..Home::default()
+            };
+            home.upgrade_default_policies();
+            assert_eq!(home.privacy_policy, Home::default().privacy_policy);
+        }
     }
     #[test]
     fn partial_commit_preserves_intervening_settings_and_checks_combined_image_budget() {

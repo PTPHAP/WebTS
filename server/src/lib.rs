@@ -14,6 +14,7 @@ pub mod password;
 pub mod preferences;
 pub mod probe;
 pub mod profile;
+pub mod quick_login;
 pub mod reports;
 pub mod sessions;
 pub mod settings;
@@ -27,3 +28,5 @@ mod server_banner;
 mod friend_content;
 pub mod friends;
 pub mod storage;
+
+pub mod community;

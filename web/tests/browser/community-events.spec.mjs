@@ -38,7 +38,7 @@ test('notification preferences sync and quiet mode retains unread mail without i
  const dialog=page.getByRole('dialog',{name:'通知与免打扰'});
  await expect(dialog.getByText('正在同步通知偏好')).toHaveCount(0);
  await dialog.getByLabel('免打扰 · 暂停所有非必要提醒').check();await page.clock.fastForward(400);
- await expect.poll(()=>saved.at(-1)?.patch.notifications.quiet).toBe(true);await expect(dialog.getByLabel('聊天与私信')).toBeDisabled();
+ await expect.poll(()=>saved.at(-1)?.patch.notifications.quiet).toBe(true);await expect(dialog.getByLabel('聊天、私信与社区回复')).toBeDisabled();
  await dialog.getByRole('button',{name:'关闭',exact:true}).click();mail=1;await page.clock.fastForward(21000);
  await expect(page.getByRole('button',{name:'站点信箱，1封未读'})).toBeVisible();await expect(page.locator('.activity-alert')).toHaveCount(0);
  await page.getByRole('button',{name:'通知设置 · 免打扰已开启'}).click();await dialog.getByLabel('免打扰 · 暂停所有非必要提醒').uncheck();await page.clock.fastForward(400);await dialog.getByRole('button',{name:'关闭',exact:true}).click();

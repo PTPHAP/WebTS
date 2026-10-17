@@ -58,6 +58,7 @@ jobs:
       - name: Linux release package
         run: |
           cargo build --release --package web-ts --locked
+          python3 scripts/tests/recovery-smoke.py --binary target/release/web-ts
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("server/Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p .cache/package/webts-$version-linux-x64/web
           cp target/release/web-ts .cache/package/webts-$version-linux-x64/
@@ -84,7 +85,7 @@ jobs:
     if: github.event_name != 'release'
     needs: rust
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -104,6 +105,19 @@ jobs:
       - name: Real browser cryptographic lifecycle matrix
         working-directory: web
         run: npm run test:browser
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: webts-release-linux
+          path: .cache
+      - name: Real gateway quick login and public-device matrix
+        run: |
+          set -euo pipefail
+          sha256sum -c .cache/SHA256SUMS_LINUX
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("server/Cargo.toml", "rb"))["package"]["version"])')
+          mkdir -p .cache/quick-login-native web/dist
+          tar -xzf .cache/webts-$version-linux-x64.tar.gz -C .cache/quick-login-native --strip-components=1 webts-$version-linux-x64/web-ts
+          cp -r .cache/browser-frontend/. web/dist/
+          python3 scripts/tests/quick-login-smoke.py --binary .cache/quick-login-native/web-ts --browsers chromium firefox webkit mobile-webkit
   docker:
     if: github.event_name != 'release'
     runs-on: ubuntu-24.04
@@ -185,6 +199,7 @@ jobs:
       - name: Validate Windows setup, session start and package
         run: |
           python scripts/tests/windows-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          python scripts/tests/recovery-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
           python scripts/package-windows.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

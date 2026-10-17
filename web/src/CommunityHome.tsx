@@ -3,6 +3,8 @@ import {api} from './api';
 import type {Home} from './SiteHome';
 import type {Favorite} from './favorites';
 import './community-home.css';
+import {SeasonArt} from './SeasonArt';
+import {CommunityFeed} from './CommunityFeed';
 
 type Friend={id:number;name:string;avatar_hash?:string;online?:boolean;status:number;blocked_by:number};
 type FriendsReply={account:number;friends:Friend[]};
@@ -11,7 +13,7 @@ function Avatar({friend}:{friend:Friend}){
   const[failed,setFailed]=useState(''),hash=friend.avatar_hash??'';
   return <span className="community-avatar">{/^[a-f0-9]{64}$/.test(hash)&&hash!==failed?<img src={`/api/friends/${friend.id}/avatar?v=${hash}`} alt="" loading="lazy" onError={()=>setFailed(hash)}/>:Array.from(friend.name||'友')[0]}</span>;
 }
-export function CommunityHome({account,name,home,servers,favorites,connected,reconnecting,channel,enter,security,friends,join}:{account:number;name:string;home:Home;servers:{id:string;name:string}[];favorites:Favorite[];connected:boolean;reconnecting:boolean;channel:string;enter:()=>void;security:()=>void;friends:()=>void;join:(value:Favorite)=>void}){
+export function CommunityHome({account,name,avatar,home,season,servers,favorites,connected,reconnecting,channel,enter,security,friends,join,community}:{account:number;name:string;avatar?:string;home:Home;season:string;servers:{id:string;name:string}[];favorites:Favorite[];connected:boolean;reconnecting:boolean;channel:string;enter:()=>void;security:()=>void;friends:()=>void;join:(value:Favorite)=>void;community:()=>void}){
   const[data,setData]=useState<Data>({friends:[],friendsError:false,loading:true});
   const[revision,setRevision]=useState(0);
   useEffect(()=>{
@@ -38,8 +40,9 @@ export function CommunityHome({account,name,home,servers,favorites,connected,rec
     <section className={`community-welcome ${home.image?'has-image':''}`}>
       {home.image&&<figure className="community-image-card"><img className="home-display-image" src={home.image} alt="站点展示图片"/></figure>}
       <div className="community-welcome-copy"><span className="eyebrow">YOUR COMMUNITY · {home.site_name}</span><p className="community-greeting">你好，{name}</p><h1>{home.title}</h1><p>{home.subtitle}</p><div className="community-welcome-actions"><button className="primary" onClick={enter}>{connected?'返回语音空间':reconnecting?'查看重连进度':'进入语音空间'} ↗</button><button className="secondary" onClick={security}>账号安全</button></div></div>
-      <aside className="community-now"><span className={`dot ${connected?'online':''}`}/><strong>{connected?'语音连接保持中':reconnecting?'正在恢复连接':'准备好，就一起出发'}</strong><p>{connected?(channel||'点击返回当前频道'):reconnecting?'恢复网络后自动重试，保留断线前频道。':'选择你的身份，加入熟悉的 TeamSpeak 频道。'}</p><small>切换首页不会主动结束通话</small></aside>
+      <aside className="community-now"><SeasonArt value={season} className="season-home-art"/><div className="community-now-status"><span className={`dot ${connected?'online':''}`}/><strong>{connected?'语音连接保持中':reconnecting?'正在恢复连接':'准备好，就一起出发'}</strong><p>{connected?(channel||'点击返回当前频道'):reconnecting?'恢复网络后自动重试，保留断线前频道。':'选择你的身份，加入熟悉的 TeamSpeak 频道。'}</p><small>切换首页不会主动结束通话</small></div></aside>
     </section>
+    <CommunityFeed account={account} self={{name,avatar:avatar??''}} preview explore={community}/>
     <div className="community-home-grid">
       <section className="community-section" aria-label="我的频道收藏"><header><div><span className="eyebrow">FAMILIAR PLACES</span><h2>熟悉的频道</h2></div><button className="text-button" onClick={enter}>语音空间 ↗</button></header>
         {favorites.length?<div className="community-favorites">{favorites.map(value=>{const server=servers.find(server=>server.id===value.server);return <button className="community-favorite" key={`${value.server}:${value.uid}:${value.channel}`} disabled={!server} onClick={()=>join(value)}><span aria-hidden="true">#</span><div><strong>{value.name}</strong><small>{server?.name??'服务器已移除'}</small></div><span aria-hidden="true">↗</span></button>;})}</div>:<div className="community-empty"><h3>常去的地方，一步就到</h3><p>在频道菜单中收藏频道，它会随账号显示在这里。</p><button className="secondary" onClick={enter}>去看看频道</button></div>}

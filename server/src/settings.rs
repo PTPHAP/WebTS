@@ -21,6 +21,12 @@ pub struct Settings {
     #[serde(default)]
     pub storage: crate::storage::Storage,
     #[serde(default)]
+    pub storage_profiles: Vec<crate::storage::Profile>,
+    #[serde(default = "crate::storage::default_store")]
+    pub storage_active: String,
+    #[serde(default)]
+    pub community_enabled: bool,
+    #[serde(default)]
     pub home: crate::site::Home,
     #[serde(default)]
     pub image_limits: ImageLimits,
@@ -145,6 +151,7 @@ impl Settings {
     pub fn validate(&self) -> Result<()> {
         self.image_limits.validate()?;
         self.storage.validate()?;
+        crate::storage::validate_profiles(self)?;
         let mut ids = HashSet::new();
         if self.servers.len() > 32 {
             bail!("最多32个服务器");
@@ -251,6 +258,9 @@ pub async fn save_settings(
         }
         body.settings.home = current.settings.home.clone();
         body.settings.storage = current.settings.storage.clone();
+        body.settings.storage_profiles = current.settings.storage_profiles.clone();
+        body.settings.storage_active = current.settings.storage_active.clone();
+        body.settings.community_enabled = current.settings.community_enabled;
         body.settings
             .image_limits
             .validate()

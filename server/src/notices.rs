@@ -323,11 +323,14 @@ pub async fn list(
     Query(page): Query<Page>,
 ) -> Api<Json<Value>> {
     app.work(move |a| {
-        let owner = a.session(&headers)?.user.id;
+        let session = a.session(&headers)?;
+        let owner = session.user.id;
         if page.before < 0 {
             return Err(Error::bad("分页参数无效"));
         }
-        Ok(Json(a.db.inbox(owner, page.before)?))
+        let mut inbox = a.db.inbox(owner, page.before)?;
+        inbox["community"] = crate::community::reply_summary(a, &session)?;
+        Ok(Json(inbox))
     })
     .await
 }

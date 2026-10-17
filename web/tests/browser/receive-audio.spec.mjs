@@ -3,6 +3,7 @@ import {test,expect} from '@playwright/test';
 test('real RTC renegotiation reuses playback and remains bidirectional through mute and recovery',async({page})=>{
  await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);
  test.skip(!await page.evaluate(()=>typeof AudioContext==='function'),'This local browser build does not provide AudioContext; not a physical mobile acceptance.');
+ await page.locator('body').click();
  const result=await page.evaluate(async()=>{
   const {Voice,defaultAudioSettings}=window.audioFixture,pause=ms=>new Promise(r=>setTimeout(r,ms));
   const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),remote=new RTCPeerConnection({iceServers:[]});
@@ -44,6 +45,7 @@ test('real RTC renegotiation reuses playback and remains bidirectional through m
 test('real audio graph retains output attenuation and mute when element volume is ignored',async({page})=>{
  await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);
  test.skip(!await page.evaluate(()=>typeof AudioContext==='function'),'This local browser build does not provide AudioContext; physical mobile validation remains required.');
+ await page.locator('body').click();
  const result=await page.evaluate(async()=>{
   const {createReceiver}=window.audioFixture,OriginalAudio=window.Audio,audios=[];
   // Reproduce only the ignored element-volume behavior; the graph below is real Web Audio.

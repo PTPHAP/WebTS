@@ -102,6 +102,15 @@ jobs:
       - name: Install locked test dependencies and isolated browsers
         working-directory: web
         run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit
+      - name: Provide a real isolated audio sink for Firefox
+        run: |
+          set -euo pipefail
+          if command -v pactl >/dev/null; then pactl info || true; fi
+          sudo apt-get install -y --no-install-recommends pulseaudio
+          pulseaudio --check || pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=webts_ci
+          pactl set-default-sink webts_ci
+          node web/tests/browser/audio-backend.mjs
       - name: Real browser cryptographic lifecycle matrix
         working-directory: web
         run: npm run test:browser

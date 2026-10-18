@@ -151,6 +151,9 @@ try{
     Invoke-NodeInstall $root $PackageRoot
     Assert ($script:rules.Count -eq 1 -and $script:ruleEnables -eq 1) 'no duplicate firewall rules'
     Assert ($script:rules[0].LocalPort -eq '52000-52099') 'old voice rule replaced without widening'
+    $script:rules[0].LocalPort='50000-50099'
+    Enable-NodeRule $root '52000-52099' '52000-52099'
+    Assert ($script:rules.Count -eq 1 -and $script:rules[0].LocalPort -eq '52000-52099') 'interrupted install can reconcile its own stale rule'
     Assert (@(Get-NodeTasks $root).Count -eq 1) 'managed task recognized on repeat'
 }finally{
     foreach($process in @($oldProcess,$script:started)){

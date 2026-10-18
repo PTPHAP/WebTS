@@ -160,17 +160,19 @@ function Get-NodeRuleName([string]$Root) {
     return 'WebTS-Node-Voice-'+$hash
 }
 
-function Assert-NodeRule([string]$Root,[string]$Ports) {
+function Assert-NodeRule([string]$Root,[string]$Ports,[switch]$AllowPortChange) {
     $rule=Get-NetFirewallRule -Name (Get-NodeRuleName $Root) -ErrorAction SilentlyContinue
     if(!$rule){return}
     $program=@($rule|Get-NetFirewallApplicationFilter);$port=@($rule|Get-NetFirewallPortFilter)
     if($rule.Group -ne 'WebTS Node' -or $rule.Description -ne $Root -or $rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow' -or
        $program.Count -ne 1 -or $program[0].Program -ne (Join-Path $Root 'web-ts.exe') -or $port.Count -ne 1 -or
-       "$($port[0].Protocol)" -notin @('UDP','17') -or "$($port[0].LocalPort)" -ne $Ports){throw '已有节点专用防火墙规则与此目录或端口不符，未扩大或覆盖规则。'}
+       "$($port[0].Protocol)" -notin @('UDP','17') -or (!$AllowPortChange -and "$($port[0].LocalPort)" -ne $Ports)){throw '已有节点专用防火墙规则与此目录或端口不符，未扩大或覆盖规则。'}
 }
 
 function Enable-NodeRule([string]$Root,[string]$Ports,[string]$PreviousPorts=$Ports) {
-    Assert-NodeRule $Root $PreviousPorts
+    # A failed previous install may have saved config before updating its rule.
+    # Ownership and UDP/program scope are mandatory; safely replace only ours.
+    Assert-NodeRule $Root $PreviousPorts -AllowPortChange
     $name=Get-NodeRuleName $Root
     if(Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue){
         Set-NetFirewallRule -Name $name -Protocol UDP -LocalPort $Ports -Enabled True|Out-Null
@@ -246,7 +248,7 @@ function Invoke-NodeInstall([string]$Root,[string]$Source=$Root) {
     $port=[int]($config.bind -replace '^.*:','')
     $ports=if($udpMin -eq $udpMax){[string]$udpMin}else{"$udpMin-$udpMax"}
     $tasks=@(Get-NodeTasks $Root)
-    Assert-NodeRule $Root $oldPorts
+    Assert-NodeRule $Root $oldPorts -AllowPortChange
     Write-Host "`n将自动完成：备份 → 停止此节点 → 配对 → 专用读取权限 → UDP入站 $ports → 低权限开机任务 → 本机检查。"
     Write-Host '重新配置会短暂中断本节点上的网页通话；不重启TS，不公开节点HTTP/HTTPS。'
     Write-Host ('语音公网IP：'+$publicIp+'；TS仅本机端口：'+$tsPort+'；文件端口：'+$filePort)

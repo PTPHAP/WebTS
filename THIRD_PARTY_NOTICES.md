@@ -1,5 +1,9 @@
 # 第三方声明
 
+## 同机语音节点（源码开发预览）
+
+复用固定 tokio-tungstenite 0.29.0（MIT）进行经过TLS证书验证的机器WebSocket连接；新增锁定的 webpki-roots 0.26.11 包声明 CDLA-Permissive-2.0，根证书许可与原文由既有发布许可收集流程处理。节点认证使用现有 hmac/sha2 与随机源，不替换TeamSpeak或WebRTC加密算法。现有MIT项目许可不覆盖第三方各自的许可义务。
+
 ## tsclientlib
 
 原项目ReSpeak/tsclientlib（Flakebi及贡献者），本项目固定使用Moepchi维护分支。
@@ -28,7 +32,7 @@ scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（Ho
 
 ## 页脚 HTML 清理
 
-固定 ammonia 4.2.1（MIT OR Apache-2.0），使用 HTML5 解析器进行白名单清理。依赖及许可表达式见上述锁定清单；发布流程收集原始许可文本。来源：https://github.com/rust-ammonia/ammonia 。
+固定 ammonia 4.2.4（MIT OR Apache-2.0），使用 HTML5 解析器进行白名单清理。依赖及许可表达式见上述锁定清单；发布流程收集原始许可文本。来源：https://github.com/rust-ammonia/ammonia 。
 
 ## 服务器横幅读取
 

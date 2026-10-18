@@ -79,7 +79,7 @@ export class Voice {
     this.dispose();this.failure=undefined; const generation = this.generation;this.restoreChannel=this.lastChannel;this.restoring=false;
     try {
     this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context.resume().catch(()=>{});
-    let response:Response;try{response=await fetch('/api/rtc',{signal:AbortSignal.timeout(10000)});}catch{throw new Retryable('无法连接网关');}if(!response.ok){if(response.status===401||response.status===403)throw new Error('登录已过期，请重新登录');throw new Retryable('网关暂不可用');}
+    let response:Response;try{response=await fetch('/api/rtc'+(typeof request.server==='string'&&request.server?'?server='+encodeURIComponent(request.server):''),{signal:AbortSignal.timeout(10000)});}catch{throw new Retryable('无法连接网关');}if(!response.ok){if(response.status===401||response.status===403)throw new Error('登录已过期，请重新登录');throw new Retryable('网关暂不可用');}
     const config = await response.json();if(generation!==this.generation)return;
     let stream: MediaStream | undefined;
     if (!listenOnly) {

@@ -33,6 +33,7 @@ pub struct App {
     pub vault: Vault,
     pub watch: crate::watch::Watch,
     pub connections: Arc<Connections>,
+    pub(crate) node_links: crate::node::reverse::Links,
     pub sockets: Arc<Semaphore>,
     pub image_bytes: Arc<Semaphore>,
     pub friend_objects: Arc<Semaphore>,
@@ -134,6 +135,9 @@ impl IntoResponse for Error {
 pub type Api<T> = std::result::Result<T, Error>;
 
 impl App {
+    pub fn node_shutdown(&self) {
+        self.node_links.shutdown();
+    }
     pub fn operational_snapshot(&self) -> Value {
         json!({"connections":self.connections.total(),"max_connections":self.config.max_connections,"workers":{"available":self.workers.available_permits(),"queue_available":self.work_queue.available_permits(),"cpu_available":self.cpu_workers.available_permits(),"cpu_queue_available":self.cpu_queue.available_permits(),"object_available":self.friend_objects.available_permits(),"object_queue_available":self.object_queue.available_permits()},"auth_mail_queue":self.mail.max_capacity()-self.mail.capacity()})
     }
@@ -157,6 +161,14 @@ impl App {
             .map_err(|_| anyhow::anyhow!("部署密钥长度无效"))?;
         let db = Db::open(&config.database)?;
         let vault = Vault::new(key);
+        Self::with_storage(config, db, vault)
+    }
+    pub(crate) fn node_runtime(config: Config) -> Result<Arc<Self>> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        getrandom::fill(key.as_mut()).map_err(|_| anyhow::anyhow!("随机源不可用"))?;
+        Self::with_storage(config, Db::open(":memory:")?, Vault::new(*key))
+    }
+    fn with_storage(config: Config, db: Db, vault: Vault) -> Result<Arc<Self>> {
         let watch = crate::watch::Watch::load(&db, &vault)?;
         let settings = if let Some(record) = db.settings()? {
             let plaintext = vault.open(0, "site-settings", "v1", &record)?;
@@ -235,6 +247,7 @@ impl App {
             }
         });
         Ok(Arc::new(Self {
+            node_links: crate::node::reverse::Links::new(&config)?,
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
             image_bytes: Arc::new(Semaphore::new(128 * 1024)),
@@ -657,6 +670,16 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/servers", get(servers))
         .route("/rtc", get(crate::media::ice_config))
         .route("/connect", get(crate::gateway::upgrade))
+        .route("/voice-nodes/tunnel", get(crate::node::reverse::accept))
+        .route("/admin/voice-nodes", get(crate::node::reverse::status))
+        .route(
+            "/admin/voice-nodes/pair",
+            post(crate::node::reverse::issue).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
+            "/voice-nodes/pair",
+            post(crate::node::reverse::redeem).layer(DefaultBodyLimit::max(1024)),
+        )
         .layer(DefaultBodyLimit::max(32 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard));
     Router::new()
@@ -721,8 +744,14 @@ async fn guard(
     // Machine feed has its own HMAC authentication and never accepts cookie authority.
     let watch_feed = *request.method() == Method::POST
         && matches!(request.uri().path(), "/api/watch/feed" | "/watch/feed");
+    let node_pair = *request.method() == Method::POST
+        && matches!(
+            request.uri().path(),
+            "/api/voice-nodes/pair" | "/voice-nodes/pair"
+        );
     if (mutation || request.uri().path().ends_with("/connect"))
         && !watch_feed
+        && !node_pair
         && request
             .headers()
             .get("origin")
@@ -775,6 +804,8 @@ async fn guard(
         }
     }
     let (bucket, window, cap, by_ip) = match path {
+        "/voice-nodes/pair" => ("node-pair", 600, 30, true),
+        "/voice-nodes/tunnel" => ("node-tunnel", 60, 6000, true),
         "/watch/feed" => ("watch-feed", 60, 120, true),
         "/auth/login" => ("login", 600, 300, true),
         "/auth/qr/start" => ("qr-create", 600, 300, true),

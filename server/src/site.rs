@@ -109,6 +109,7 @@ impl Home {
         use sha2::{Digest, Sha256};
         let defaults = Self::default();
         if [
+            "ae0b8fcbdc2cb4386d1aa68b411cbfd74e0f0aff24551c0059b5d2f38e068335",
             "3453a5536a55c0fea3b24a10900e301c17f8845d71b32924e252b6f08be3826f",
             "7a4ce0e27ccdf642a827a345451e635ec5e909e9ff1ccfe44632a4cc2a3c0c13",
             "e4faccd7ce4fb565f4b87d9a499e97b1ab179b0ae01959c671da7212a4e02e19",
@@ -416,8 +417,18 @@ mod tests {
         assert_eq!(home.terms, "自定义协议");
     }
     #[test]
+    fn older_default_privacy_still_upgrades_after_node_disclosure() {
+        let mut home = Home {
+            privacy_policy: include_str!("../tests/fixtures/privacy-20261016.md").to_owned(),
+            ..Default::default()
+        };
+        home.upgrade_default_policies();
+        assert_eq!(home.privacy_policy, Home::default().privacy_policy);
+    }
+    #[test]
     fn previous_default_privacy_upgrades_with_both_line_endings() {
-        let old = include_str!("../tests/fixtures/privacy-20261016.md").replace("\r\n", "\n");
+        let old =
+            include_str!("../tests/fixtures/privacy-20261018-before-node.md").replace("\r\n", "\n");
         for text in [old.clone(), old.replace('\n', "\r\n")] {
             let mut home = Home {
                 privacy_policy: text,

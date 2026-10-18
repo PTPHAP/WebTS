@@ -1,6 +1,38 @@
 import {test,expect} from '@playwright/test';
 import {appFixture} from './app-fixture.mjs';
 
+test('node pairing requires password, masks and expires codes without persisting them',async({page})=>{
+  await appFixture(page,{replies:{
+    '/api/me':{user:{id:1,email:'node-admin@example.invalid',is_admin:true}},
+    '/api/admin/settings':{servers:[],default_server:'',allow_custom:false,smtp:null},
+    '/api/admin/voice-nodes':{nodes:[{id:'community-node',server:'community',idle:2}]},
+  }});
+  const writes=[];const code='a'.repeat(64);
+  await page.route('**/api/admin/voice-nodes/pair',route=>{
+    const body=route.request().postDataJSON();writes.push(body);
+    return route.fulfill(body.password==='synthetic-password'?{json:{code,node:body.id,main_url:'https://example.invalid',expires:Math.floor(Date.now()/1000)+3}}:{status:401,json:{error:'当前密码不正确'}});
+  });
+  await page.goto('/');await page.getByRole('button',{name:'站点管理',exact:true}).click();
+  await page.getByRole('tab',{name:'基础配置',exact:true}).click();
+  const panel=page.locator('section.admin-settings').filter({has:page.getByRole('heading',{name:'同机语音节点 · 反向连接预览'})});
+  await expect(panel).toContainText('控制通道在线');
+  const issue=panel.getByRole('button',{name:'生成5分钟一次性配对码'});
+  await expect(issue).toBeDisabled();
+  await panel.getByLabel('当前管理员密码',{exact:true}).fill('wrong');await issue.click();
+  await expect(panel.getByRole('status')).toContainText('当前密码不正确');
+  await expect(panel.getByLabel('当前管理员密码',{exact:true})).toHaveValue('');
+  await panel.getByLabel('当前管理员密码',{exact:true}).fill('synthetic-password');await issue.click();
+  const field=panel.getByLabel('配对码（领取一次后失效）');
+  await expect(field).toHaveValue(code);await expect(field).toHaveAttribute('type','password');
+  expect(writes).toEqual([{id:'community-node',password:'wrong'},{id:'community-node',password:'synthetic-password'}]);
+  expect(await page.evaluate(()=>JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage)]))).not.toContain(code);
+  await expect(field).toHaveCount(0,{timeout:6000});
+  for(const width of [390,1280]){
+    await page.setViewportSize({width,height:900});
+    expect(await panel.evaluate(n=>n.scrollWidth-n.clientWidth)).toBeLessThanOrEqual(1);
+  }
+});
+
 const session=(id,current=false)=>({id:id.repeat(64),current,browser:'Edge',platform:'Windows',created_at:1780000000,expires:1880000000,remembered:current?false:true});
 async function fixture(page){
   const requests=await appFixture(page);

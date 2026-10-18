@@ -8,6 +8,7 @@ pub mod email;
 pub mod gateway;
 pub mod identity;
 pub mod media;
+pub mod node;
 pub mod notices;
 pub mod operations;
 pub mod password;

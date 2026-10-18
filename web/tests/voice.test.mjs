@@ -46,6 +46,13 @@ function browser(microphoneError) {
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
 
+test('ICE configuration follows the selected configured server and leaves custom targets on the site',async()=>{
+ browser();const urls=[];globalThis.fetch=async url=>{urls.push(url);return {ok:true,json:async()=>({iceServers:[]})};};
+ const voice=new Voice(()=>{});await voice.connect({server:'server &/one',identity:'fixture'},'',true);voice.close();
+ await voice.connect({server:'',address:'public.example:9987',identity:'fixture'},'',true);voice.close();
+ assert.deepEqual(urls,['/api/rtc?server=server%20%26%2Fone','/api/rtc']);
+});
+
 test('stalled statistics are marked unavailable without overlapping queries or reconnecting voice',async()=>{
  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
  let finish,calls=0;voice.peer.getStats=()=>{calls++;return new Promise(r=>finish=r);};

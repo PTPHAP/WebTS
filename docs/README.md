@@ -11,6 +11,8 @@
 | [配置教程](CONFIGURATION.md) | 域名/IP/端口、SMTP、默认 TS、自定义连接、网页后台热加载、TURN |
 | [Docker 安装](DOCKER.md) | 一键中文引导、预构建镜像下载与校验、Compose、站长权限与更新 |
 | [Windows 安装](WINDOWS.md) | 一次粘贴下载并校验运行包、中文初始化、HTTPS、停服备份与更新 |
+| [同机语音节点安装](NODE-INSTALL.md) | Windows双击安装、可选UDP范围、主站配对、Linux原生包；按服务器区分端口 |
+| [语音节点审查](SECURITY-REVIEW-VOICE-NODES.md) | 信任边界、安装回归、系统检查、真实语音与容量待验收范围 |
 | [发布验收门槛](RELEASE-GATES.md) | 发布包检查、E2EE 转正式条件与后续顺序 |
 | [1.1.0登录增量复核](SECURITY-REVIEW-1.1.0.md) | 审查范围、不变量、候选问题修复、测试证据与尚未完成的验收 |
 | [部署与维护](DEPLOYMENT.md) | Docker、systemd、构建、反向代理、备份恢复与 Windows 开发 |

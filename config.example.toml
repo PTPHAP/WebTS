@@ -21,6 +21,14 @@ allow_insecure_localhost = true
 # password_file = "secrets/smtp-password"
 # from = "Web TS <mailer@example.com>"
 
+# 可选同机节点：主动WSS连接主站；节点机器仅开放指定语音UDP，不公开节点HTTPS。
+# 必须先在本文件 [[servers]] 中配置相同 server ID；不要复用 master.key。
+# [[voice_nodes]]
+# id = "community-node"
+# server = "community"
+# reverse = true
+# key_file = "secrets/community-node.key"
+
 [rtc]
 public_ip = ""
 udp_min = 40000

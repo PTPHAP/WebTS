@@ -1,0 +1,19 @@
+# 同机语音节点：必须使用包含 serve-node 的源码构建；不适用于旧发行包。
+id = "community-node"
+bind = "127.0.0.1:8095"
+# 主站地址：节点主动连出，不需要在TS机器申请节点域名或公开HTTPS。
+main_url = "https://web.example.com"
+target = "127.0.0.1:9987"
+# TS3默认文件传输端口；如TS服务端改过此端口，必须在这里明确设置。
+file_transfer_port = 30033
+key_file = "secrets/node-pair.key"
+max_connections = 50
+allow_insecure_localhost = false
+
+[rtc]
+public_ip = "203.0.113.10" # 替换为TS所在服务器的真实公网IP
+udp_min = 50000
+udp_max = 50099
+# 可选：只配置经过认证、靠近节点的TURN，避免语音重新绕回主站。
+# turn_url = "turns:turn.example.com:5349?transport=tcp"
+# turn_secret_file = "secrets/turn-secret"

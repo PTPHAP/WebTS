@@ -12,7 +12,7 @@ use axum::{
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -107,6 +107,15 @@ impl Connections {
             .filter(|e| !e.cancel.is_cancelled())
             .count()
     }
+    pub(crate) async fn wait_closed(&self) -> bool {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while !self.entries.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
     pub fn touch(&self, owner: i64, session: &str) {
         let mut users = self.presence.lock().unwrap();
         if users.len() >= 5000 {
@@ -147,7 +156,7 @@ impl Connections {
         let locations = self.entries.lock().unwrap().iter().filter(|(_, e)| e.owner == owner && !e.cancel.is_cancelled()).filter_map(|(id, e)| e.location.as_ref().map(|location| (e.session.clone(), json!({"connection":id,"server":e.server,"address":e.address,"location":location})))).collect();
         (sessions, locations)
     }
-    fn update_location(&self, id: &str, state: &mut Value) {
+    pub(crate) fn update_location(&self, id: &str, state: &mut Value) {
         let own = state["members"]
             .as_array()
             .and_then(|members| members.iter().find(|m| m["id"] == state["own"]));
@@ -276,6 +285,22 @@ struct Connect {
     #[serde(default)]
     password: String,
 }
+pub(crate) struct BrowserInput {
+    socket: futures::stream::SplitStream<WebSocket>,
+    pending: std::collections::VecDeque<std::result::Result<Message, axum::Error>>,
+}
+impl Stream for BrowserInput {
+    type Item = std::result::Result<Message, axum::Error>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if let Some(value) = self.pending.pop_front() {
+            return std::task::Poll::Ready(Some(value));
+        }
+        std::pin::Pin::new(&mut self.socket).poll_next(cx)
+    }
+}
 pub async fn upgrade(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -333,7 +358,27 @@ async fn websocket_writer<S: futures::Sink<Message> + Unpin>(
     let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
 }
 async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
-    let (sink, mut input) = socket.split();
+    run_socket(app, headers, None, socket).await;
+}
+pub(crate) async fn run_node(
+    app: Arc<App>,
+    target: std::net::SocketAddr,
+    file_port: u16,
+    socket: WebSocket,
+) {
+    run_socket(app, HeaderMap::new(), Some((target, file_port)), socket).await;
+}
+async fn run_socket(
+    app: Arc<App>,
+    headers: HeaderMap,
+    target: Option<(std::net::SocketAddr, u16)>,
+    socket: WebSocket,
+) {
+    let (sink, input) = socket.split();
+    let mut input = BrowserInput {
+        socket: input,
+        pending: Default::default(),
+    };
     let (tx, rx) = mpsc::channel::<Value>(64);
     let done = CancellationToken::new();
     let writer_done = done.clone();
@@ -343,7 +388,7 @@ async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
         writer_done,
         Duration::from_secs(10),
     ));
-    let result = bridge(&app, &headers, &mut input, &tx, &done).await;
+    let result = bridge(&app, &headers, target, &mut input, &tx, &done).await;
     let retry = result
         .as_ref()
         .err()
@@ -375,7 +420,8 @@ async fn run(app: Arc<App>, headers: HeaderMap, socket: WebSocket) {
 async fn bridge(
     app: &Arc<App>,
     headers: &HeaderMap,
-    input: &mut futures::stream::SplitStream<WebSocket>,
+    local_target: Option<(std::net::SocketAddr, u16)>,
+    input: &mut BrowserInput,
     tx: &mpsc::Sender<Value>,
     done: &CancellationToken,
 ) -> Result<()> {
@@ -385,6 +431,9 @@ async fn bridge(
     let Message::Text(first) = first else {
         bail!("连接请求格式无效");
     };
+    if let Some((target, file_port)) = local_target {
+        return node_bridge(app, target, file_port, &first, input, tx, done).await;
+    }
     let request: Connect =
         serde_json::from_str(&first).map_err(|_| anyhow::anyhow!("连接请求格式无效"))?;
     if !valid_nickname(&request.name) {
@@ -461,7 +510,7 @@ async fn bridge(
         app.connections.reserve(
             Entry {
                 owner,
-                session: session.hash,
+                session: session.hash.clone(),
                 identity: request.identity.clone(),
                 uid,
                 target: target.to_string(),
@@ -469,7 +518,7 @@ async fn bridge(
                 location: None,
                 client: None,
                 server: request.server.clone(),
-                page: request.page,
+                page: request.page.clone(),
                 port: 0,
                 cancel: CancellationToken::new(),
             },
@@ -486,8 +535,52 @@ async fn bridge(
     })
     .await
     .map_err(|_| anyhow::anyhow!("登录已失效或身份已删除"))?;
+    if let Some(node) = crate::node::binding(app, &request.server, &source)? {
+        let grant = crate::node::Grant {
+            owner,
+            session: lease.id.clone(),
+            expires: session.expires,
+            identity: crate::identity::canonical(&identity).to_string(),
+            uid: crate::identity::uid(&identity),
+            page: request.page,
+            name: request.name,
+            password: request.password,
+        };
+        return node
+            .relay(
+                app,
+                headers,
+                grant,
+                input,
+                tx,
+                &lease.cancel,
+                done,
+                &lease.id,
+            )
+            .await
+            .map_err(|_| retryable("语音节点连接中断或不可用，正在重试"));
+    }
+    establish(
+        app, headers, None, target, identity, request, lease, owner, input, tx, done,
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+async fn establish(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    delegation: Option<(i64, u16)>,
+    target: std::net::SocketAddr,
+    identity: tsclientlib::Identity,
+    request: Connect,
+    lease: Lease,
+    owner: i64,
+    input: &mut BrowserInput,
+    tx: &mpsc::Sender<Value>,
+    done: &CancellationToken,
+) -> Result<()> {
     emit(tx, json!({"type":"status","message":"正在连接 TeamSpeak…"}))?;
-    let mut conn = Connection::build(target.to_string())
+    let options = Connection::build(target)
         .identity(identity)
         .name(request.name)
         .password(request.password)
@@ -495,13 +588,24 @@ async fn bridge(
         .output_hardware_enabled(true)
         .log_commands(false)
         .log_packets(false)
-        .log_udp_packets(false)
-        .connect()
-        .map_err(report_connection_error)?;
+        .log_udp_packets(false);
+    let options = if let Some((_, port)) = delegation {
+        options.allow_loopback_target(target, port)
+    } else {
+        options
+    };
+    let mut conn = options.connect().map_err(report_connection_error)?;
     let cancel = lease.cancel.clone();
     let mut media = None;
     let result = async {
-    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销")},_ = done.cancelled()=>bail!("网页连接已关闭"),event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
+    tokio::time::timeout(Duration::from_secs(30),async{loop{tokio::select!{_ = cancel.cancelled()=>{if app.connections.shutting_down.load(Ordering::Acquire){return Err(retryable("网关正在重启"));}bail!("连接已撤销")},_ = done.cancelled()=>bail!("网页连接已关闭"),message=input.socket.next()=>{
+        match message {
+            Some(Ok(Message::Text(text))) if text.len()<=8192 && input.pending.len()<16 => input.pending.push_back(Ok(Message::Text(text))),
+            Some(Ok(Message::Ping(_)|Message::Pong(_)))=>{},
+            Some(Ok(Message::Close(_)))|None=>return Err(retryable("网页在TeamSpeak握手期间已关闭")),
+            _=>bail!("握手期间请求过多或格式无效"),
+        }
+    },event=async {conn.events().next().await}=>{match event.context("TeamSpeak连接已关闭")?.map_err(report_connection_error)?{StreamItem::BookEvents(_)=>break,StreamItem::IdentityLevelIncreasing(level)=>bail!("服务器要求身份安全等级至少为 {level}，请在原生客户端提高后重新导入"),_=>{}}}}}Ok::<_,anyhow::Error>(())}).await.map_err(|_|retryable("TeamSpeak握手超时，请检查UDP端口、防火墙和IP封禁"))??;
     enforce(&conn)?;
     command("channelsubscribeall", &[]).send_with_result(&mut conn)?;
     let (audio_tx, mut audio_rx) = mpsc::channel(8);
@@ -518,6 +622,7 @@ async fn bridge(
     connected(
         app,
         headers,
+        delegation.map(|(until,_)|until),
         &mut conn,
         media.as_mut().expect("media initialized"),
         input,
@@ -540,6 +645,86 @@ async fn bridge(
     })
     .await;
     result
+}
+async fn node_bridge(
+    app: &Arc<App>,
+    target: std::net::SocketAddr,
+    file_port: u16,
+    text: &str,
+    input: &mut BrowserInput,
+    tx: &mpsc::Sender<Value>,
+    done: &CancellationToken,
+) -> Result<()> {
+    if !target.ip().is_loopback() || text.len() > 24576 {
+        bail!("节点连接参数无效");
+    }
+    let mut grant: crate::node::Grant =
+        serde_json::from_str(text).map_err(|_| anyhow::anyhow!("节点授权格式无效"))?;
+    let now = crate::db::now();
+    if grant.owner <= 0
+        || grant.expires <= now
+        || grant.expires > now + 31 * 86400
+        || grant.session.len() != 64
+        || !grant.session.bytes().all(|b| b.is_ascii_hexdigit())
+        || grant.page.is_empty()
+        || grant.page.len() > 64
+        || grant.password.len() > 256
+        || !valid_nickname(&grant.name)
+    {
+        bail!("节点授权参数无效");
+    }
+    let text = zeroize::Zeroizing::new(std::mem::take(&mut grant.identity));
+    let (identity, uid) = app
+        .expensive(move |_| {
+            let identity = crate::identity::parse(&text)?;
+            let uid = crate::identity::uid(&identity);
+            Ok((identity, uid))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("节点身份无效"))?;
+    if uid != grant.uid {
+        bail!("节点身份UID不一致");
+    }
+    let lease = app.connections.reserve(
+        Entry {
+            owner: grant.owner,
+            session: grant.session.clone(),
+            identity: uid.clone(),
+            uid,
+            target: target.to_string(),
+            address: target.to_string(),
+            location: None,
+            client: None,
+            server: String::new(),
+            page: grant.page.clone(),
+            port: 0,
+            cancel: CancellationToken::new(),
+        },
+        app.config.rtc.udp_min,
+        app.config.rtc.udp_max,
+    )?;
+    let request = Connect {
+        server: String::new(),
+        address: String::new(),
+        identity: String::new(),
+        page: grant.page.clone(),
+        name: std::mem::take(&mut grant.name),
+        password: std::mem::take(&mut grant.password),
+    };
+    establish(
+        app,
+        &HeaderMap::new(),
+        Some((grant.expires, file_port)),
+        target,
+        identity,
+        request,
+        lease,
+        grant.owner,
+        input,
+        tx,
+        done,
+    )
+    .await
 }
 fn valid_nickname(name: &str) -> bool {
     name.trim().chars().count() >= 3
@@ -676,15 +861,41 @@ fn snapshot(conn: &Connection) -> Result<Value> {
         json!({"type":"state","server":state.server.name,"serverInfo":{"uid":state.server.public_key.get_uid(),"welcome":state.server.welcome_message,"message":state.server.hostmessage,"platform":state.server.platform,"version":state.server.version,"maxClients":state.server.max_clients,"icon":state.server.icon.0,"banner":state.server.hostbanner_gfx_url,"bannerLink":state.server.hostbanner_url,"buttonImage":state.server.hostbutton_gfx_url,"buttonLabel":state.server.hostbutton_tooltip,"buttonLink":state.server.hostbutton_url},"own":state.own_client.0,"canSpeak":conn.can_send_audio(),"channels":state.channels.values().map(|c|json!({"id":c.id.0,"parent":c.parent.0,"order":c.order.0,"name":c.name,"topic":c.topic,"codec":c.codec as u8,"quality":c.codec_quality,"kind":match c.channel_type {tsproto_types::ChannelType::Temporary=>"temporary",tsproto_types::ChannelType::SemiPermanent=>"semi",tsproto_types::ChannelType::Permanent=>"permanent"},"maxClients":channel_limit(c.max_clients.as_ref()),"maxFamilyClients":channel_limit(c.max_family_clients.as_ref()),"neededTalkPower":c.needed_talk_power,"password":c.has_password.unwrap_or(false),"description":c.optional_data.as_ref().map(|d|&d.description)})).collect::<Vec<_>>(),"members":state.clients.values().map(|c|json!({"id":c.id.0,"channel":c.channel.0,"name":c.name,"uid":c.uid.as_ref().map(|u|u.as_ref().to_string()),"avatarHash":if c.avatar_hash.len()==32&&c.avatar_hash.bytes().all(|b|b.is_ascii_hexdigit()){c.avatar_hash.as_str()}else{""},"away":c.away_message.is_some(),"awayMessage":c.away_message,"muted":c.input_muted,"deafened":c.output_muted,"description":c.description,"talkPower":c.talk_power,"serverGroups":c.server_groups.iter().map(|g|g.0).collect::<Vec<_>>(),"channelGroup":c.channel_group.0})).collect::<Vec<_>>() }),
     )
 }
+pub(crate) async fn session_check(app: &Arc<App>, headers: &HeaderMap) -> Result<()> {
+    let session = app
+        .session_async(headers)
+        .await
+        .map_err(|_| anyhow::anyhow!("登录已失效"))?;
+    let session_deadline = tokio::time::Instant::now()
+        + Duration::from_secs(session.expires.saturating_sub(crate::db::now()).max(0) as u64);
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        if tokio::time::Instant::now() >= session_deadline {
+            return Err(anyhow::anyhow!("登录已过期"));
+        }
+        match tokio::time::timeout_at(session_deadline, app.session_async(headers))
+            .await
+            .map_err(|_| anyhow::anyhow!("登录已过期"))?
+        {
+            Ok(_) => {}
+            Err(error) if error.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE => {}
+            Err(_) => return Err::<(), _>(anyhow::anyhow!("登录已失效")),
+        }
+    }
+}
+
 // These borrows belong to a single connection actor; keeping ownership together
 // avoids independent tasks that can outlive revocation.
 #[allow(clippy::too_many_arguments)]
 async fn connected(
     app: &Arc<App>,
     headers: &HeaderMap,
+    delegated_until: Option<i64>,
     conn: &mut Connection,
     media: &mut Media,
-    input: &mut futures::stream::SplitStream<WebSocket>,
+    input: &mut BrowserInput,
     tx: &mpsc::Sender<Value>,
     cancel: &CancellationToken,
     media_cancel: &CancellationToken,
@@ -692,29 +903,15 @@ async fn connected(
     audio: &mut mpsc::Receiver<crate::media::InboundAudio>,
     connection_id: &str,
 ) -> Result<()> {
-    let session = app
-        .session_async(headers)
-        .await
-        .map_err(|_| anyhow::anyhow!("登录已失效"))?;
-    let session_deadline = tokio::time::Instant::now()
-        + Duration::from_secs(session.expires.saturating_sub(crate::db::now()).max(0) as u64);
     let session_check = async {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if tokio::time::Instant::now() >= session_deadline {
-                return Err(anyhow::anyhow!("登录已过期"));
-            }
-            match tokio::time::timeout_at(session_deadline, app.session_async(headers))
-                .await
-                .map_err(|_| anyhow::anyhow!("登录已过期"))?
-            {
-                Ok(_) => {}
-                Err(error) if error.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE => {}
-                Err(_) => return Err::<(), _>(anyhow::anyhow!("登录已失效")),
-            }
+        if let Some(until) = delegated_until {
+            tokio::time::sleep(Duration::from_secs(
+                until.saturating_sub(crate::db::now()).max(0) as u64,
+            ))
+            .await;
+            bail!("节点授权已过期");
         }
+        session_check(app, headers).await
     };
     tokio::pin!(session_check);
     let mut timer = tokio::time::interval(Duration::from_millis(100));

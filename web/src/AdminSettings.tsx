@@ -9,6 +9,7 @@ import {AdminAccounts} from './AdminAccounts';
 import {AdminNotices} from './AdminNotices';
 import {AdminStorage} from './AdminStorage';
 import {AdminWatch} from './AdminWatch';
+import {AdminVoiceNodes} from './AdminVoiceNodes';
 import {CommunityFeed} from './CommunityFeed';
 import {defaultImageLimits,imageLimitFields,readImageLimits} from './image-limits';
 import type {ImageLimits} from './image-limits';
@@ -28,7 +29,7 @@ export function AdminSettings({onSaved}:{onSaved:()=>Promise<void>}){
   async function save(e:FormEvent){e.preventDefault();if(!settings)return;setBusy(true);setMessage('');try{const mail=enabled?{host:smtp.host,port:smtp.port,username:smtp.username,from:smtp.from,password:secret}:null;const result=await api<{message:string}>('/admin/settings',{password,settings:{...settings,smtp:mail}});setMessage(result.message);setFailed(false);setSmtp({...smtp,password_set:enabled});setSecret('');await onSaved();}catch(e){setFailed(true);setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);setPassword('');}}
   if(!settings)return <p role="status">{message||'正在读取站点设置…'}</p>;
   function target(index:number,field:'name'|'address',value:string){setSettings(s=>s&&({...s,servers:s.servers.map((row,i)=>i===index?{...row,[field]:value}:row)}));}
-  return <form className="admin-settings" onSubmit={save}>
+  return <><AdminVoiceNodes/><form className="admin-settings" onSubmit={save}>
     <p className="muted">保存后立即生效，无需重启。网站管理员不会获得额外的 TeamSpeak 权限。</p>
     {message&&<p className={failed?'auth-error':'auth-help'} role="status">{message}</p>}
     <fieldset disabled={busy}><legend>服务器与连接</legend>
@@ -50,5 +51,5 @@ export function AdminSettings({onSaved}:{onSaved:()=>Promise<void>}){
     </fieldset>
     <label>验证当前管理员密码<input type="password" value={password} required autoComplete="current-password" onChange={e=>setPassword(e.target.value)} maxLength={128}/></label>
     <button className="primary full" disabled={busy}>{busy?'正在保存…':'保存并立即生效'}</button>
-  </form>;
+  </form></>;
 }

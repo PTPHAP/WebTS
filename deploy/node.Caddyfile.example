@@ -1,0 +1,10 @@
+# Replace this domain; keep any existing Caddy sites intact.
+voice.example.com {
+    @node path /health /node/connect /node/rtc
+    handle @node {
+        reverse_proxy 127.0.0.1:8095
+    }
+    handle {
+        respond 404
+    }
+}

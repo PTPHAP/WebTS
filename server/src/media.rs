@@ -1,6 +1,10 @@
 use crate::app::{Api, App};
 use anyhow::{Result, bail};
-use axum::{Json, extract::State, http::HeaderMap};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::HeaderMap,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
@@ -119,8 +123,36 @@ pub fn ice_servers(app: &App, owner: i64) -> Result<Vec<RTCIceServer>> {
         Ok(vec![])
     }
 }
-pub async fn ice_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
+#[derive(serde::Deserialize)]
+pub struct VoiceRoute {
+    pub server: Option<String>,
+}
+pub async fn ice_config(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(route): Query<VoiceRoute>,
+) -> Api<Json<Value>> {
     let owner = app.session_async(&headers).await?.user.id;
+    if let Some(id) = route.server {
+        let source = app
+            .runtime
+            .read()
+            .unwrap()
+            .settings
+            .servers
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.address.clone());
+        let source = source.ok_or_else(|| crate::app::Error::bad("服务器不在配置列表中"))?;
+        if let Some(node) = crate::node::binding(&app, &id, &source)? {
+            return Ok(Json(node.ice(&app, owner).await.map_err(|_| {
+                crate::app::Error(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "语音节点暂不可用",
+                )
+            })?));
+        }
+    }
     Ok(Json(
         json!({"iceServers":ice_servers(&app,owner)?.iter().map(|s|json!({"urls":s.urls,"username":s.username,"credential":s.credential})).collect::<Vec<_>>()}),
     ))

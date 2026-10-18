@@ -12,15 +12,44 @@ spec.loader.exec_module(release)
 package_spec = importlib.util.spec_from_file_location('windows_package', Path(__file__).parents[1] / 'package-windows.py')
 windows = importlib.util.module_from_spec(package_spec)
 package_spec.loader.exec_module(windows)
+node_spec = importlib.util.spec_from_file_location('node_package_test', Path(__file__).parents[1] / 'package-node.py')
+node = importlib.util.module_from_spec(node_spec)
+node_spec.loader.exec_module(node)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_node_package_records_the_actual_compiler_target_and_excludes_local_config(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            for name in node.PUBLIC:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('public fixture',encoding='utf-8')
+            for name in ['webts-node.cmd','开始安装.cmd','scripts/node.ps1','scripts/node-install.ps1']:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('public helper',encoding='utf-8')
+            (root/'server').mkdir();(root/'server/Cargo.toml').write_text('[package]\nversion="1.2.3"\n',encoding='utf-8')
+            (root/'Cargo.lock').write_text('package=[]\n',encoding='utf-8')
+            (root/'node.local.toml').write_text('private fixture',encoding='utf-8')
+            pe=bytearray(128);pe[:2]=b'MZ';pe[60:64]=(64).to_bytes(4,'little');pe[64:70]=b'PE\0\0\x64\x86'
+            binary=root/'binary.exe';binary.write_bytes(pe)
+            with patch.object(node,'ROOT',root),patch.object(node,'source_manifest',return_value={}),patch.object(node.subprocess,'check_output',return_value='0'*40):
+                node.package(binary,root/'output','windows-x64','x86_64-pc-windows-msvc','isolated test')
+            archive=next((root/'output').glob('*.zip'))
+            with zipfile.ZipFile(archive) as z:
+                self.assertFalse(any(n.endswith('node.local.toml') for n in z.namelist()))
+                metadata=json.loads(z.read('webts-node-1.2.3-preview.4-windows-x64/BUILD-INFO.json'))
+                self.assertEqual(metadata['target'],'x86_64-pc-windows-msvc')
+                self.assertEqual(metadata['build_runtime'],'isolated test')
+
     def prepare(self, root):
         for kind, name in {'SOURCE': 'source.zip', 'LINUX': 'linux-x64.tar.gz', 'WINDOWS': 'windows-x64.zip', 'DOCKER': 'docker-linux-x64.tar.gz'}.items():
             path = root / ('webts-1.2.3-' + name)
             path.write_bytes(b'isolated artifact fixture')
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             (root / ('SHA256SUMS_' + kind)).write_text(f'{digest}  {path.name}\n')
+        for platform, suffix in [('windows-x64','.zip'),('linux-x64','.tar.gz')]:
+            path=root/f'webts-node-1.2.3-preview.4-{platform}{suffix}'
+            path.write_bytes(b'isolated node preview fixture')
+            (root/(path.name+'.sha256')).write_text(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n',encoding='utf-8')
 
     def test_complete_matching_release_and_no_private_extra_files(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -44,6 +73,13 @@ class ReleaseTests(unittest.TestCase):
             path.unlink()
             with self.assertRaises(ValueError):
                 release.verify(root, 'v1.2.3', '1.2.3')
+
+    def test_node_preview_must_be_complete_and_match_its_checksum(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);self.prepare(root)
+            path=root/'webts-node-1.2.3-preview.4-windows-x64.zip'
+            path.write_bytes(b'tampered node')
+            with self.assertRaises(ValueError):release.verify(root,'v1.2.3','1.2.3')
 
     def test_windows_package_uses_public_allowlist_and_refuses_private_frontend(self):
         with tempfile.TemporaryDirectory() as folder:

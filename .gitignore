@@ -8,6 +8,7 @@ web/public/crypto/
 data/
 secrets/
 config.local.toml
+node.local.toml
 .env
 .env.*
 *.key

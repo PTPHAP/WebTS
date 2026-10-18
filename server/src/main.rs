@@ -12,6 +12,19 @@ async fn main() -> Result<()> {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("configure-node") if args.len() == 2 => {
+            web_ts::node::setup::configure(&args[1]).await?;
+        }
+        Some("inspect-node") if args.len() == 2 => {
+            web_ts::node::setup::inspect(&args[1])?;
+        }
+        Some("check-node") if args.len() == 2 => {
+            web_ts::node::check(&args[1])?;
+            println!("节点配置和配对密钥格式有效；尚未检查主站连接、媒体路径和实际通话。");
+        }
+        Some("serve-node") if args.len() == 2 => {
+            web_ts::node::serve(web_ts::node::NodeConfig::load(&args[1])?).await?;
+        }
         Some("get-settings") if args.len() == 2 => {
             let app = web_ts::app::App::new(web_ts::config::Config::load(&args[1])?)?;
             let text = zeroize::Zeroizing::new(serde_json::to_string(
@@ -56,6 +69,7 @@ async fn main() -> Result<()> {
             .with_graceful_shutdown(async move {
                 shutdown_signal().await;
                 shutdown.connections.shutdown();
+                shutdown.node_shutdown();
             })
             .await?;
         }
@@ -91,7 +105,7 @@ async fn main() -> Result<()> {
             println!("协议探针报告已保存。此报告不代表原生客户端双向语音已验收。");
         }
         _ => bail!(
-            "用法：web-ts grant-admin <配置.toml> <已验证邮箱> | serve <配置.toml> | init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
+            "用法：web-ts grant-admin <配置.toml> <已验证邮箱> | serve <配置.toml> | serve-node <节点.toml> | configure-node <节点.toml>（JSON从标准输入读取） | check-node <节点.toml> | init-key <密钥路径> | create-identity <身份.ini> | probe <地址:UDP端口> <身份.ini> <报告.json> [秒数]"
         ),
     }
     Ok(())

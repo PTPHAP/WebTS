@@ -16,6 +16,8 @@ pub struct Config {
     pub allow_insecure_localhost: bool,
     #[serde(default)]
     pub servers: Vec<Server>,
+    #[serde(default)]
+    pub voice_nodes: Vec<crate::node::RemoteNode>,
     pub smtp: Option<Smtp>,
     #[serde(default)]
     pub rtc: Rtc,
@@ -77,6 +79,11 @@ impl Config {
     pub fn load(path: &str) -> Result<Self> {
         let text = std::fs::read_to_string(path).context("无法读取配置文件")?;
         let config: Self = toml::from_str(&text).context("配置格式错误")?;
+        config.validate()?;
+        Ok(config)
+    }
+    pub fn validate(&self) -> Result<()> {
+        let config = self;
         let url = url::Url::parse(&config.public_url).context("网站URL无效")?;
         let bind: std::net::SocketAddr = config.bind.parse().context("监听地址必须为IP:端口")?;
         let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
@@ -114,7 +121,8 @@ impl Config {
         {
             bail!("WebRTC UDP端口范围必须能够容纳配置的连接数");
         }
-        Ok(config)
+        crate::node::validate_bindings(config)?;
+        Ok(())
     }
     pub fn origin(&self) -> String {
         self.public_url.trim_end_matches('/').to_string()

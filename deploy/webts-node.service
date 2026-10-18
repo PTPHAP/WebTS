@@ -1,0 +1,24 @@
+[Unit]
+Description=WebTS colocated TeamSpeak voice node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webts-node
+Group=webts-node
+WorkingDirectory=/opt/webts-node
+ExecStart=/opt/webts-node/web-ts serve-node /opt/webts-node/node.local.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=8
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

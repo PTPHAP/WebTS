@@ -21,6 +21,9 @@ def archive(path,items):
 
 
 class NodeMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        (ROOT/'.cache').mkdir(exist_ok=True)
+
     def test_official_downloads_reject_plaintext_credentials_and_external_redirects(self):
         for url in ['http://github.com/x','https://github.com.evil.invalid/x','https://example.invalid/x','https://user:secret@github.com/x','https://github.com:444/x']:
             with self.assertRaises(ValueError):node.check_url(url)

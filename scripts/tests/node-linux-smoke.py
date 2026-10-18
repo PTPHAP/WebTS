@@ -43,6 +43,17 @@ def smoke(package):
                 assert (Path('/proc')/str(pid)/'status').read_text().split('Uid:')[1].split()[0]==str(account.pw_uid)
                 assert not list(node.ROOT.glob('*.db*'))
             assert len(list((node.ROOT/'backups').iterdir()))==2
+            def invalid_ports(label,default=''):
+                if label.startswith('自定义'):return 'Y'
+                if label.startswith('网页语音UDP起始'):return '1000'
+                if label.startswith('网页语音UDP结束'):return '1099'
+                return str(default)
+            with patch.object(node,'ask',side_effect=invalid_ports),patch.object(getpass,'getpass',return_value=''):
+                try:node.install(source)
+                except ValueError as error:assert '1024' in str(error)
+                else:raise AssertionError('Privileged UDP must be rejected before stopping the running service')
+            assert int(node.run('systemctl','show','webts-node.service','--property=MainPID','--value',cwd='/'))==pid
+            assert len(list((node.ROOT/'backups').iterdir()))==2
             subprocess.run(['webts-node','check'],check=True)
             print('NATIVE LINUX PASS: systemd, dedicated user, read-only keys, real process/HTTP, repeat upgrade and preserved key. No real TS voice or cloud firewall acceptance.')
         finally:

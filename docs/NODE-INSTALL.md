@@ -127,7 +127,7 @@ sudo webts-node check
 sudo webts-node update
 ```
 
-中文安装需要 Python 3.11+、systemd、root维护权限；不自动安装依赖。固定安装到`/opt/webts-node`，管理专用`webts-node.service`及`/usr/local/bin/webts-node`。按提示填写主站、真实公网IPv4、节点标识、配对码，可选端口；检查并确认后才停止旧节点、备份和更新。运行使用专用无登录系统账号，配置和密钥root持有、服务组只读，备份root独占；不公开控制HTTP。不覆盖未知同名服务、额外systemd覆盖项、其他所有者目录或链接。
+中文安装需要 Python 3.11+、systemd、root维护权限；不自动安装依赖。固定安装到`/opt/webts-node`，管理专用`webts-node.service`及`/usr/local/bin/webts-node`。按提示填写主站、真实公网IPv4、节点标识、配对码，可选端口；检查并确认后才停止旧节点、备份和更新。运行使用专用无登录系统账号，配置和密钥root持有、服务组只读，备份root独占；不公开控制HTTP。低权限服务的控制监听及网页语音UDP须使用1024以上端口，TS目标端口不受此限制；不会为低端口授予额外权限。不覆盖未知同名服务、额外systemd覆盖项、其他所有者目录或链接。
 
 Linux主机防火墙和云安全组由部署者放行安装摘要中的**入站UDP范围**；本安装器不会猜测并改动ufw、firewalld或nftables。普通用户前台维护仍可用`sh scripts/node.sh init | configure | check | start`，但不要与systemd同时运行。不用`sh -x`运行向导。
 

@@ -117,6 +117,7 @@ def install(source):
     if (ROOT / 'node.local.toml').exists():
         old = json.loads(run(str(binary), 'inspect-node', str(ROOT / 'node.local.toml')))
         if (ROOT/old['key_file']).absolute()!=ROOT/'secrets/node-pair.key':raise ValueError('自动安装只支持原目录secrets/node-pair.key，未改动其他密钥')
+        if int(old['bind'].rsplit(':',1)[1])<1024:raise ValueError('低权限节点控制监听须使用1024以上端口；不会为此授予额外系统权限')
     try:
         existing=pwd.getpwnam('webts-node')
         if existing.pw_uid==0 or existing.pw_uid>=1000 or existing.pw_dir!=str(ROOT) or existing.pw_shell not in {'/usr/sbin/nologin','/sbin/nologin','/bin/false'}:raise ValueError('已有webts-node账号不是专用系统账号，未停止节点')
@@ -144,6 +145,7 @@ def install(source):
         low, high = port('网页语音UDP起始端口', low), port('网页语音UDP结束端口', high)
     if high < low or high - low + 1 < old.get('max_connections', 50):
         raise ValueError('UDP范围不足以容纳连接上限')
+    if low<1024:raise ValueError('低权限节点的网页语音UDP须从1024以上开始；TS目标端口不受此限制')
     code = getpass.getpass('④ 主站生成的一次性配对码（已有配对且未换主站/标识可留空）：')
     if not code and (not old or not (ROOT/'secrets/node-pair.key').is_file() or old.get('id') != node_id or (old.get('main_url') or '').rstrip('/') != main.rstrip('/')):
         raise ValueError('首次安装或更换主站/节点标识必须配对')

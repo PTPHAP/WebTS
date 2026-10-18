@@ -31,7 +31,10 @@ function Invoke-NodeCli([string]$Root,[string]$Action,[string]$Json,[string]$Bin
     $info.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
     $process=[Diagnostics.Process]::new();$process.StartInfo=$info
     try{
-        [void]$process.Start()
+        # PS5.1/.NET Framework inherits Console.InputEncoding for child stdin.
+        $inputEncoding=[Console]::InputEncoding
+        try{[Console]::InputEncoding=[Text.UTF8Encoding]::new($false);[void]$process.Start()}
+        finally{[Console]::InputEncoding=$inputEncoding}
         $out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync()
         if($Json){$process.StandardInput.WriteLine($Json)}
         $process.StandardInput.Close()

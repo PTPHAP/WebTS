@@ -217,12 +217,17 @@ jobs:
       - name: Validate Windows setup, session start and package
         run: |
           python scripts/tests/windows-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/tests/recovery-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/package-windows.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Windows node preview, installation regression and real isolated OS acceptance
         run: |
           python scripts/tests/node-smoke.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/package-node.py --binary target/x86_64-pc-windows-msvc/release/web-ts.exe --platform windows-x64 --target x86_64-pc-windows-msvc --runtime 'Windows Server 2025 / static MSVC CRT' --output .cache/node-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $package = (Get-ChildItem .cache/node-release/*windows-x64.zip).FullName
           python scripts/tests/node-windows-smoke.py --package $package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

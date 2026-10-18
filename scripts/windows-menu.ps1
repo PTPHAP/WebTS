@@ -68,12 +68,17 @@ function Invoke-Settings {
     $info.RedirectStandardError = $true
     $info.StandardOutputEncoding = $utf8
     $info.StandardErrorEncoding = $utf8
-    $process = [Diagnostics.Process]::Start($info)
+    # .NET Framework 4.x has no ProcessStartInfo.StandardInputEncoding.
+    # Set only this process's console default while constructing its stdin writer.
+    $inputEncoding = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = $utf8
+        $process = [Diagnostics.Process]::Start($info)
+    } finally { [Console]::InputEncoding = $inputEncoding }
     try {
         $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
-        $bytes = $utf8.GetBytes($InputText)
-        $process.StandardInput.BaseStream.Write($bytes,0,$bytes.Length)
+        $process.StandardInput.Write($InputText)
         $process.StandardInput.Close()
         if (!$process.WaitForExit(30000)) { $process.Kill(); throw '配置操作超时。' }
         if ($process.ExitCode -ne 0) { throw '配置校验失败；请检查基础配置，不要重建密钥。' }

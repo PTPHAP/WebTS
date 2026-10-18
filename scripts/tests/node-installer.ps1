@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$PackageRoot,[Parameter(Mandatory=$true)][string]$Scratch)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding=[Text.UTF8Encoding]::new($true)
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1')
 . (Join-Path $PackageRoot 'scripts\node-install.ps1')
 function Assert($Condition,[string]$Name){if(!$Condition){throw ('FAIL: '+$Name)}}

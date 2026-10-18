@@ -38,7 +38,9 @@ def smoke(binary):
         (root / 'fixture.json').write_text(json.dumps(values, ensure_ascii=False), encoding='utf-8-sig')
         executable = 'powershell.exe'
         environment = {name: value for name, value in os.environ.items() if name.lower() != 'psmodulepath'}
-        prefix = f"$c=ConvertFrom-Json ([IO.File]::ReadAllText({ps_string(root / 'fixture.json')}));$h=@{{}};$c.PSObject.Properties|ForEach-Object{{$h[$_.Name]=$_.Value}};& {ps_string(root / 'scripts/windows-menu.ps1')} -Root {ps_string(root)} "
+        # CI/desktop consoles can supply a BOM-bearing UTF-8 default. Child JSON
+        # must use its explicit UTF-8 without inheriting that console preamble.
+        prefix = f"[Console]::InputEncoding=[Text.UTF8Encoding]::new($true);$c=ConvertFrom-Json ([IO.File]::ReadAllText({ps_string(root / 'fixture.json')}));$h=@{{}};$c.PSObject.Properties|ForEach-Object{{$h[$_.Name]=$_.Value}};& {ps_string(root / 'scripts/windows-menu.ps1')} -Root {ps_string(root)} "
         def run(arguments):
             return subprocess.run([executable, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', prefix + arguments], cwd=root, env=environment, capture_output=True, timeout=45)
         setup = run("-Action setup -Configuration $h -SmtpPassword (ConvertTo-SecureString 'test-only-fake-password' -AsPlainText -Force)")

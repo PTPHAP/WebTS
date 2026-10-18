@@ -81,6 +81,8 @@ def package(binary, output, platform, build_target=None, runtime=None):
     lock = tomllib.loads((ROOT / 'Cargo.lock').read_text(encoding='utf-8'))
     crates = {f"{p['name']}-{p['version']}" for p in lock['package'] if p.get('source', '').startswith('registry+')}
     cargo = Path(os.environ.get('CARGO_HOME', ROOT / '.tools/cargo'))
+    if 'CARGO_HOME' not in os.environ and not (cargo / 'registry/src').is_dir():
+        cargo = Path.home() / '.cargo'
     for registry in (cargo / 'registry/src').glob('*'):
         for crate in registry.iterdir():
             if crate.name not in crates or not crate.is_dir():
@@ -92,6 +94,8 @@ def package(binary, output, platform, build_target=None, runtime=None):
             for file in candidates:
                 if file.is_file() and file.name.upper().startswith(('LICENSE', 'NOTICE', 'COPYING')):
                     files[f'licenses/rust/{crate.name}/{file.relative_to(crate).as_posix()}'] = read_file(file)
+    if crates and not any(name.startswith('licenses/rust/') for name in files):
+        raise ValueError('Rust dependency license cache is missing; refuse an incomplete node package')
     for folder, prefix in ((ROOT / 'licenses', 'licenses'), (ROOT / 'vendor/tsclientlib', 'licenses/tsclientlib')):
         candidates = folder.rglob('*') if folder.name == 'licenses' else folder.glob('*/LICENSE*')
         for file in candidates:

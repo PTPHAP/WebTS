@@ -1,4 +1,5 @@
 import hashlib
+import os
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -27,11 +28,13 @@ class ReleaseTests(unittest.TestCase):
             for name in ['webts-node.cmd','开始安装.cmd','scripts/node.ps1','scripts/node-install.ps1','scripts/node-update.ps1']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('public helper',encoding='utf-8')
             (root/'server').mkdir();(root/'server/Cargo.toml').write_text('[package]\nversion="1.2.3"\n',encoding='utf-8')
-            (root/'Cargo.lock').write_text('package=[]\n',encoding='utf-8')
+            (root/'Cargo.lock').write_text('[[package]]\nname="rustls"\nversion="0.0.1"\nsource="registry+https://example.invalid"\n',encoding='utf-8')
+            home=root/'home';license=home/'.cargo/registry/src/fixture/rustls-0.0.1/LICENSE';license.parent.mkdir(parents=True);license.write_text('synthetic license',encoding='utf-8')
             (root/'node.local.toml').write_text('private fixture',encoding='utf-8')
             pe=bytearray(128);pe[:2]=b'MZ';pe[60:64]=(64).to_bytes(4,'little');pe[64:70]=b'PE\0\0\x64\x86'
             binary=root/'binary.exe';binary.write_bytes(pe)
-            with patch.object(node,'ROOT',root),patch.object(node,'source_manifest',return_value={}),patch.object(node.subprocess,'check_output',return_value='0'*40):
+            with patch.dict(os.environ),patch.object(node.Path,'home',return_value=home),patch.object(node,'ROOT',root),patch.object(node,'source_manifest',return_value={}),patch.object(node.subprocess,'check_output',return_value='0'*40):
+                os.environ.pop('CARGO_HOME',None)
                 node.package(binary,root/'output','windows-x64','x86_64-pc-windows-msvc','isolated test')
             archive=next((root/'output').glob('*.zip'))
             with zipfile.ZipFile(archive) as z:
@@ -39,6 +42,7 @@ class ReleaseTests(unittest.TestCase):
                 metadata=json.loads(z.read(f'webts-node-1.2.3-preview.{node.PREVIEW}-windows-x64/BUILD-INFO.json'))
                 self.assertEqual(metadata['target'],'x86_64-pc-windows-msvc')
                 self.assertEqual(metadata['build_runtime'],'isolated test')
+                self.assertEqual(z.read(f'webts-node-1.2.3-preview.{node.PREVIEW}-windows-x64/licenses/rust/rustls-0.0.1/LICENSE'),b'synthetic license')
 
     def prepare(self, root):
         for kind, name in {'SOURCE': 'source.zip', 'LINUX': 'linux-x64.tar.gz', 'WINDOWS': 'windows-x64.zip', 'DOCKER': 'docker-linux-x64.tar.gz'}.items():

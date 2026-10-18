@@ -1,4 +1,6 @@
-# Replace this domain; keep any existing Caddy sites intact.
+# Legacy preview.1 public-HTTPS mode ONLY. Current reverse-WSS nodes do not use
+# this file and must not open public node HTTP/HTTPS. See docs/NODE-INSTALL.md.
+# If explicitly maintaining a legacy deployment, preserve all other Caddy sites.
 voice.example.com {
     @node path /health /node/connect /node/rtc
     handle @node {

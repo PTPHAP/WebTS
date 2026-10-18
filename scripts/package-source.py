@@ -14,7 +14,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE = {'PROGRESS.md', 'PROJECT_STATE.md', 'ROADMAP.md', 'REQUIREMENTS.md',
            'docs/HANDOFF.md', 'docs/ACCEPTANCE.md', 'docs/DECISIONS.md',
-           'docs/GITHUB.md', 'docs/PRIVACY-AUDIT.md', 'config.local.toml', '.env'}
+           'docs/GITHUB.md', 'docs/PRIVACY-AUDIT.md', 'config.local.toml', 'node.local.toml', '.env'}
 
 
 def git(folder, *args):

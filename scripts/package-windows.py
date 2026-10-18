@@ -66,7 +66,7 @@ def package(binary, output, root=ROOT):
     unique = {name: file for file, name in inputs}
     for name, file in unique.items():
         path = Path(name)
-        if path.name in {'config.local.toml', '.env', 'PROGRESS.md', 'PROJECT_STATE.md', 'ROADMAP.md', 'REQUIREMENTS.md'} or path.suffix in {'.key', '.pem', '.db', '.log'} or name.startswith(('secrets/', 'data/', '.cache/', '.tools/')):
+        if path.name in {'config.local.toml', 'node.local.toml', '.env', 'PROGRESS.md', 'PROJECT_STATE.md', 'ROADMAP.md', 'REQUIREMENTS.md'} or path.suffix in {'.key', '.pem', '.db', '.db-shm', '.db-wal', '.log'} or name.startswith(('secrets/', 'data/', 'backups/', '.cache/', '.tools/')):
             raise ValueError('Private file in runtime inputs')
         if file.is_symlink() or not file.is_file():
             raise ValueError(f'Invalid package input: {name}')

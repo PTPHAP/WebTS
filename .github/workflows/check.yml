@@ -72,6 +72,9 @@ jobs:
         run: |
           python3 scripts/tests/node-smoke.py --binary target/release/web-ts
           python3 scripts/package-node.py --binary target/release/web-ts --platform linux-x64 --target x86_64-unknown-linux-gnu --runtime 'Ubuntu 24.04 / glibc 2.39' --output .cache/node-release
+      - name: Real isolated Linux node installation and upgrade
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 scripts/tests/node-linux-smoke.py --package .cache/node-release/*linux-x64.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: webts-release-linux

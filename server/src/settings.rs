@@ -19,6 +19,8 @@ use zeroize::{Zeroize, Zeroizing};
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
+    pub voice_nodes: Vec<crate::node::ManagedNode>,
+    #[serde(default)]
     pub storage: crate::storage::Storage,
     #[serde(default)]
     pub storage_profiles: Vec<crate::storage::Profile>,
@@ -149,6 +151,7 @@ impl Runtime {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        crate::node::validate_managed(self)?;
         self.image_limits.validate()?;
         self.storage.validate()?;
         crate::storage::validate_profiles(self)?;
@@ -218,7 +221,19 @@ pub fn normalize_target(value: &str) -> Result<String> {
 #[serde(deny_unknown_fields)]
 pub struct Update {
     password: String,
+    #[serde(deserialize_with = "editable_settings")]
     settings: Settings,
+}
+fn editable_settings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Settings, D::Error> {
+    let mut value = Value::deserialize(deserializer)?;
+    // GET adds read-only metadata; older open editors may send it back.
+    // It must never become an editable or persisted node binding.
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("voice_routes");
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 pub(crate) fn admin(app: &App, headers: &HeaderMap) -> Api<Session> {
     let session = app.session(headers)?;
@@ -233,7 +248,21 @@ pub async fn get_settings(
 ) -> Api<Json<Value>> {
     app.work(move |a| {
         admin(a, &headers)?;
-        Ok(Json(a.runtime.read().unwrap().settings.admin_view()))
+        let current = a.runtime.read().unwrap();
+        let mut view = current.settings.admin_view();
+        view["voice_routes"] = current
+            .settings
+            .servers
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    crate::node::route_view(&a.config, &current.settings, &s.id),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        Ok(Json(view))
     })
     .await
 }
@@ -261,12 +290,33 @@ pub async fn save_settings(
         body.settings.storage_profiles = current.settings.storage_profiles.clone();
         body.settings.storage_active = current.settings.storage_active.clone();
         body.settings.community_enabled = current.settings.community_enabled;
+        body.settings.voice_nodes = current.settings.voice_nodes.clone();
+        for node in &mut body.settings.voice_nodes {
+            let server = body.settings.servers.iter().find(|s| s.id == node.server);
+            if server.is_none_or(|s| s.address != node.address) {
+                if !node.use_gateway {
+                    return Err(Error::bad(
+                        "修改或删除已绑定节点的服务器前，请先将它的语音路线切换为主站网关并保存",
+                    ));
+                }
+                if let Some(server) = server {
+                    node.address = server.address.clone();
+                }
+            }
+        }
+        body.settings
+            .voice_nodes
+            .retain(|n| body.settings.servers.iter().any(|s| s.id == n.server));
         body.settings
             .image_limits
             .validate()
             .map_err(|_| Error::bad("图片限制超出安全范围，请检查标注的最小值和最大值"))?;
         let updated = Runtime::new(body.settings)
             .map_err(|_| Error::bad("配置无效，请检查服务器、默认项和邮箱参数"))?;
+        let nodes = a
+            .node_links
+            .prepare(&a.config, &updated.settings)
+            .map_err(|_| Error::bad("节点路线配置冲突"))?;
         let plaintext =
             Zeroizing::new(serde_json::to_vec(&updated.settings).map_err(anyhow::Error::from)?);
         let ciphertext = a.vault.seal(0, "site-settings", "v1", &plaintext)?;
@@ -274,6 +324,7 @@ pub async fn save_settings(
             .map_err(|_| Error(StatusCode::FORBIDDEN, "管理员登录已失效，请重新登录"))?;
         a.connections
             .cancel_disallowed(&current.settings, &updated.settings);
+        a.node_links.replace(nodes);
         *current = updated;
         Ok(Json(
             json!({"message":"设置已保存并立即生效；正在发送的邮件会使用原配置完成。"}),

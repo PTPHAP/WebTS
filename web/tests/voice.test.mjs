@@ -53,6 +53,19 @@ test('ICE configuration follows the selected configured server and leaves custom
  assert.deepEqual(urls,['/api/rtc?server=server%20%26%2Fone','/api/rtc']);
 });
 
+test('speech control takes the authenticated direct channel, fences stale callbacks and falls back on close',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.configure({...voice.settings,noise:'off'});await voice.connect({identity:'fixture'},'',false);voice.setMode('ptt');
+ await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1}]});
+ const direct=[];const channel={label:'webts-audio-control-v1',readyState:'open',bufferedAmount:0,send:raw=>direct.push(JSON.parse(raw)),close(){this.readyState='closed';}};
+ assert.equal(typeof voice.peer.ondatachannel,'function');voice.peer.ondatachannel({channel});
+ const before=env.sent.length;voice.press(true);assert.equal(env.sent.length,before+1,'channel must be acknowledged before use');
+ channel.onmessage({data:'{"type":"audio_control_ready"}'});const start=env.sent.length;
+ voice.press(false);voice.press(true);assert.equal(env.sent.length,start,'live speech controls must not take the main-site WSS detour');
+ assert.deepEqual(direct.slice(-2).map(v=>v.enabled),[false,true]);assert.ok(direct.at(-1).sequence>direct.at(-2).sequence);
+ const stale=channel.onmessage;channel.readyState='closed';channel.onclose();assert.equal(env.sent.at(-1).type,'transmit');assert.equal(env.sent.at(-1).enabled,true,'closing direct control resynchronizes the WSS fallback');
+ voice.close();const count=env.sent.length;stale({data:'{"type":"audio_control_ready"}'});assert.equal(env.sent.length,count);assert.equal(channel.onmessage,null);
+});
+
 test('stalled statistics are marked unavailable without overlapping queries or reconnecting voice',async()=>{
  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
  let finish,calls=0;voice.peer.getStats=()=>{calls++;return new Promise(r=>finish=r);};

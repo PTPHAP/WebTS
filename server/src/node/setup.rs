@@ -11,6 +11,8 @@ use std::{
 struct Input {
     main_url: String,
     #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
     public_ip: Option<String>,
     #[serde(default)]
     code: String,
@@ -69,12 +71,25 @@ async fn configure_json(path: &str, raw: &str) -> Result<()> {
     let old: NodeConfig = toml::from_str(&old_text)?;
     old.validate()?;
     let main = endpoint(&input.main_url, old.allow_insecure_localhost)?;
+    let id = input.id.as_deref().unwrap_or(&old.id);
+    if !valid_id(id) {
+        bail!("节点标识只允许字母、数字、短横线或下划线，最多64字节");
+    }
+    if code.is_empty()
+        && (id != old.id
+            || old.main_url.as_deref().is_none_or(|url| {
+                endpoint(url, old.allow_insecure_localhost).ok().as_ref() != Some(&main)
+            }))
+    {
+        bail!("首次配对、更换主站或节点标识时必须输入新的配对码");
+    }
     let _reserved = tokio::net::TcpListener::bind(old.bind)
         .await
         .context("节点正在运行或端口被占用，请先停止节点再配置；尚未领取配对码")?;
     let mut document: toml::Value = toml::from_str(&old_text)?;
     let table = document.as_table_mut().context("节点配置无效")?;
     table.remove("public_url");
+    table.insert("id".into(), toml::Value::String(id.into()));
     table.insert(
         "main_url".into(),
         toml::Value::String(main.as_str().trim_end_matches('/').into()),
@@ -264,6 +279,22 @@ mod tests {
         assert!(configure_json(name, &body).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         drop(local);
+        for id in ["", "../wrong", "two nodes", &"x".repeat(65)] {
+            assert!(
+                configure_json(
+                    name,
+                    &json!({"id":id,"main_url":main,"code":"a".repeat(64)}).to_string()
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert!(
+            configure_json(name, &json!({"id":"new-node","main_url":main}).to_string())
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(
             configure_json(
                 name,

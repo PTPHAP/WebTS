@@ -63,11 +63,14 @@ export class Voice {
   private restoring=false;
   private speech=false;
   private speechTimer?:number;
+  private control?:{channel:RTCDataChannel;ready:boolean};
+  private controlSequence=0;
   private gated=false;
   private heartbeat?:number;
   private lastMessage=0;
   private failure?:string;
   constructor(private event: (event: Event) => void) {}
+  controlPath(){return !this.ready?'inactive':this.control?.ready&&this.control.channel.readyState==='open'?'direct':'signalling';}
   diagnostics(){return {context:this.context?.state??'inactive',processing:!this.context?'inactive':this.intent?.listenOnly?'listen':this.processingBlocked?'blocked':this.noiseNode?.mode??'off',receivers:this.receivers.size,players:this.elements.size,pausedPlayers:[...this.elements.values()].filter(audio=>audio.paused).length};}
   send(event: Event) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event)); }
   async connect(request: Event, device: string, listenOnly: boolean) {
@@ -108,6 +111,14 @@ export class Voice {
     if(generation!==this.generation){sendStream?.getTracks().forEach(t=>t.stop());return;}
     this.event({type:'audio_processing',noise:listenOnly?'listen':this.processingBlocked?'blocked':this.noiseNode?.mode??this.settings.noise,voice_only:this.settings.noise==='rnnoise'&&this.settings.voiceOnly&&!this.processingBlocked,actual:this.stream?.getAudioTracks()[0].getSettings?.()});
     this.peer = new RTCPeerConnection({...config,bundlePolicy:'max-bundle'});
+    this.peer.ondatachannel=event=>{
+      const channel=event.channel;
+      if(generation!==this.generation||channel.label!=='webts-audio-control-v1'||this.control){channel.close();return;}
+      this.control={channel,ready:false};
+      channel.onmessage=e=>{if(generation!==this.generation||this.control?.channel!==channel||this.control.ready||e.data!=='{"type":"audio_control_ready"}')return;this.control.ready=true;this.sendTransmit();this.event({type:'audio_control',state:this.control?.ready?'direct':'signalling'});};
+      channel.onclose=()=>{channel.onmessage=null;channel.onclose=null;channel.onerror=null;if(generation!==this.generation||this.control?.channel!==channel)return;this.control=undefined;this.sendTransmit();this.event({type:'audio_control',state:'signalling'});};
+      channel.onerror=()=>channel.close();
+    };
     const qualityPeer=this.peer;let reading=false;
     const qualityHistory=new QualityHistory();
     this.qualityTimer=window.setInterval(async()=>{
@@ -224,7 +235,14 @@ export class Voice {
     this.microphoneTask=task;void task.finally(()=>{if(this.microphoneTask===task){this.microphoneTask=undefined;if(generation===this.generation&&revision!==this.microphoneRevision)void this.recoverMicrophone();}});return task;
   }
   inputDevice(device:string){if(!this.intent||this.intent.listenOnly)return;this.intent.device=device;this.microphoneRevision++;void this.recoverMicrophone();}
-  private sendTransmit(){this.send({type:'transmit',enabled:this.active,pre_roll:this.mode==='open'&&this.gated&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&!this.away});}
+  private sendTransmit(){
+    const event={type:'transmit',enabled:this.active,pre_roll:this.mode==='open'&&this.gated&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&!this.away,sequence:++this.controlSequence};
+    const control=this.control;
+    if(control?.ready&&(control.channel.readyState!=='open'||control.channel.bufferedAmount>4096)){control.ready=false;control.channel.close();}
+    if(control?.ready&&control.channel.readyState==='open'&&control.channel.bufferedAmount<=4096){try{control.channel.send(JSON.stringify(event));return;}catch{control.ready=false;control.channel.close();}}
+    this.send(event);
+  }
+  private releaseControl(){const control=this.control;this.control=undefined;if(control){control.channel.onmessage=null;control.channel.onclose=null;control.channel.onerror=null;control.channel.close();}if(this.peer)this.peer.ondatachannel=null;}
   private update() {const capture=!!this.sendTrack&&!this.processingBlocked&&!this.captureBlocked&&!this.muted&&!this.away&&(this.mode==='open'||(this.pressed&&document.hasFocus()));if(this.sendTrack)this.sendTrack.enabled=capture;const active=capture&&(this.mode==='ptt'||!this.gated||this.speech);if(active!==this.active){this.active=active;if(this.ready)this.sendTransmit();this.event({type:'transmit',enabled:active});this.applyAudio();}}
   private sendAway(){const id=`away:${this.generation}:${Date.now()}:${Math.random()}`;this.pendingAway=id;this.send({type:'command',action:'away',id,enabled:this.away,text:this.awayMessage});}
   setAway(enabled:boolean,text=''){if(this.pendingAway)return;this.away=enabled;this.awayMessage=enabled?text:'';this.pressed=false;this.update();if(this.ready){this.sendTransmit();this.sendAway();}this.event({type:'away',enabled,text:this.awayMessage});}
@@ -291,5 +309,5 @@ export class Voice {
     this.retryTimer=window.setTimeout(async()=>{this.retryTimer=undefined;try{await this.open();}catch(error){this.event({type:'error',message:error instanceof Error?error.message:'重连失败'});this.event({type:'reconnecting',active:false});}},delay);
   }
   close(){this.away=false;this.awayMessage="";this.confirmedAway={enabled:false,text:""};this.event({type:"away",enabled:false,text:""});window.clearTimeout(this.retryTimer);this.retryTimer=undefined;this.intent=undefined;this.retryCount=0;this.lastChannel=undefined;this.currentChannel=undefined;this.restoreChannel=undefined;this.dispose();}
-  private dispose(){this.processingRevision++;this.processingTask=undefined;this.captureGain=undefined;window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;window.clearTimeout(this.qualityDeadline);this.qualityDeadline=undefined;window.clearTimeout(this.transportDeadline);this.transportDeadline=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.playbackFailed.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
+  private dispose(){this.releaseControl();this.processingRevision++;this.processingTask=undefined;this.captureGain=undefined;window.clearTimeout(this.microphoneRetry);this.microphoneRetry=undefined;this.microphoneRevision++;this.microphoneTask=undefined;this.microphoneAttempts=0;this.clearMeters();this.captureSource?.disconnect();this.captureSource=undefined;this.captureInput=undefined;this.sender=undefined;if(this.typingClick)window.removeEventListener?.('pointerdown',this.typingClick);this.typingClick=undefined;if(this.typingKey)window.removeEventListener?.('keydown',this.typingKey);this.typingKey=undefined;if(this.receiveTimer)clearInterval(this.receiveTimer);this.receiveTimer=undefined;for(const receiver of this.receivers.values())receiver.destroy();this.receivers.clear();if(this.wake){window.removeEventListener?.('pointerdown',this.wake);window.removeEventListener?.('keydown',this.wake);document.removeEventListener?.('visibilitychange',this.wake);this.wake=undefined;}if(this.context)this.context.onstatechange=null;for(const track of this.stream?.getTracks()??[]){track.onmute=null;track.onunmute=null;track.onended=null;}this.pendingAway=undefined;this.captureBlocked=false;this.captureStatus='';window.clearTimeout(this.speechTimer);this.speechTimer=undefined;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=undefined;this.gated=false;this.speech=false;this.generation++;if(this.qualityTimer)clearInterval(this.qualityTimer);this.qualityTimer=undefined;window.clearTimeout(this.qualityDeadline);this.qualityDeadline=undefined;window.clearTimeout(this.transportDeadline);this.transportDeadline=undefined;this.handling=Promise.resolve();this.pressed=false;this.active=false;this.ready=false;this.processingBlocked=false;this.send({type:'disconnect'});const socket=this.socket;this.socket=undefined;if(socket){socket.onclose=null;socket.close();}this.peer?.close();this.peer=undefined;this.sendTrack?.stop();this.sendTrack=undefined;this.processed?.getTracks().forEach(t=>t.stop());this.processed=undefined;this.stream?.getTracks().forEach(t=>t.stop());this.stream=undefined;if(this.timer)clearInterval(this.timer);this.timer=undefined;this.noiseNode?.destroy();this.noiseNode=undefined;this.context?.close();this.context=undefined;for(const audio of this.elements.values()){audio.pause();audio.srcObject=null;}this.elements.clear();this.playbackFailed.clear();this.tracks.clear();this.volumes.clear();this.candidates=[];}
 }

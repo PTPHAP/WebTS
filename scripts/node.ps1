@@ -1,4 +1,4 @@
-param([ValidateSet('init','configure','check','start','help')][string]$Action='help')
+param([ValidateSet('init','configure','check','start','update','help')][string]$Action='help')
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $nodeRoot=Split-Path -Parent $PSScriptRoot
@@ -40,12 +40,14 @@ switch($Action){
         if(!(Test-Path -LiteralPath $nodeConfig)){throw '请先运行 webts-node.cmd init。'}
         $nodeMain=Read-Host 'WebTS主站HTTPS地址（例如 https://web.timemirror.top）'
         $nodePublic=Read-Host '语音公网IPv4（回车保留原配置；中继策略请按文档配置）'
+        $nodeId=Read-Host '节点标识（与主站路线一致；回车保留原配置）'
         $nodeSecure=Read-Host '后台5分钟一次性配对码（回车保留已有配对密钥）' -AsSecureString
         $nodePointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($nodeSecure)
         $nodePlain=$null
         try{
             $nodePlain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($nodePointer)
             $nodePayload=@{main_url=$nodeMain;code=$nodePlain}
+            if($nodeId){$nodePayload.id=$nodeId}
             if($nodePublic){$nodePayload.public_ip=$nodePublic}
             $nodeInfo=[Diagnostics.ProcessStartInfo]::new()
             $nodeInfo.FileName=$nodeBinary
@@ -72,6 +74,7 @@ switch($Action){
             $nodePlain=$null;$nodePayload=$null;$nodeSecure.Dispose()
         }
     }
+    'update' { & (Join-Path $PSScriptRoot 'node-update.ps1'); exit $LASTEXITCODE }
     'check' {
         & $nodeBinary check-node $nodeConfig
         exit $LASTEXITCODE

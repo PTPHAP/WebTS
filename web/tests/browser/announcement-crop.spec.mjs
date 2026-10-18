@@ -78,7 +78,7 @@ test('homepage showcase offers display-frame and free crops with a matching save
 test('community homepage displays a clear separate image without overlapping welcome text',async({page})=>{
  const image=await picture(page);await appFixture(page,{replies:{'/api/site':{...home,image}}});await page.goto('/');
  const img=page.getByAltText('站点展示图片');await expect(img).toBeVisible();
- expect(await img.evaluate(n=>Number(getComputedStyle(n).opacity))).toBe(1);
+ await expect(img).toHaveCSS('opacity','1');
  const imageBox=await img.boundingBox(),copyBox=await page.locator('.community-welcome-copy').boundingBox();
  expect(imageBox.x>=copyBox.x+copyBox.width-1||imageBox.y>=copyBox.y+copyBox.height-1).toBe(true);
  await page.locator('.community-welcome').screenshot({path:test.info().outputPath('community-image-card.png')});

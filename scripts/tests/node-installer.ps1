@@ -115,17 +115,21 @@ $config=Join-Path $root 'node.local.toml';$key=Join-Path $root 'secrets\node-pai
 $text=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8).Replace('127.0.0.1:8095',('127.0.0.1:'+$port)).Replace('https://web.example.com',$main).Replace('203.0.113.10','203.0.113.20')
 [IO.File]::WriteAllText($config,$text,[Text.UTF8Encoding]::new($false))
 $oldKey=[IO.File]::ReadAllText($key);$oldConfig=[IO.File]::ReadAllText($config)
+$savedTasks=$script:tasks
+$script:tasks=@([pscustomobject]@{TaskName='WebTS-Node';TaskPath='\';Actions=@([pscustomobject]@{Execute=(Join-Path $root 'web-ts.exe');Arguments=('serve-node "'+$config+'"');WorkingDirectory=$root})})
+Assert ((Find-InstalledNodeRoot 'C:\WebTS-Node') -eq $root) 'existing installation is the default upgrade directory'
+$script:tasks=$savedTasks
 $oldProcess=Start-Process -FilePath (Join-Path $root 'web-ts.exe') -ArgumentList ('serve-node "'+$config+'"') -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $Scratch 'old-out.log') -RedirectStandardError (Join-Path $Scratch 'old-error.log')
 try{
     WaitHealth $port
     # Cancellation preserves an actual running node and creates no backups.
-    Answers @('','','N','N')
+    Answers @('','','','N','N')
     Invoke-NodeInstall $root $PackageRoot
     $oldProcess.Refresh();Assert (!$oldProcess.HasExited) 'cancel leaves old process running'
     Assert (!(Test-Path (Join-Path $root 'backups'))) 'cancel creates no backup'
     # Upgrade into an existing folder, stop its real native process, change both
     # TS ports through the actual JSON/stdin CLI, retain the key and restart.
-    Answers @('','','Y','19987','30034','51000','51099','Y','')
+    Answers @('','','','Y','19987','30034','51000','51099','Y','')
     Invoke-NodeInstall $root $PackageRoot
     Assert ($script:answerIndex -eq $script:answers.Count) 'all documented questions consumed'
     $oldProcess.Refresh();Assert $oldProcess.HasExited 'own running node automatically stopped'
@@ -148,7 +152,7 @@ try{
         Assert ($backupRules.Count -eq 0) 'backup denies runtime account'
     }
     # Re-run is idempotent for the firewall and keeps its own task recognizable.
-    Answers @('','','Y','','','52000','52099','Y','')
+    Answers @('','','','Y','','','52000','52099','Y','')
     Invoke-NodeInstall $root $PackageRoot
     Assert ($script:rules.Count -eq 1 -and $script:ruleEnables -eq 1) 'no duplicate firewall rules'
     Assert ($script:rules[0].LocalPort -eq '52000-52099') 'old voice rule replaced without widening'
@@ -162,7 +166,7 @@ try{
     }
 }
 $script:tasks=@();$script:rules=@();$fresh=Join-Path $Scratch '首次安装'
-Answers @($main,'203.0.113.20','N','Y','')
+Answers @($main,'203.0.113.20','','N','Y','')
 MustFail {Invoke-NodeInstall $fresh $PackageRoot} 'fresh empty pairing refused'
 Assert ($script:rules.Count -eq 0) 'no firewall change after failed pairing'
 $tampered=Join-Path $Scratch '篡改包';[void][IO.Directory]::CreateDirectory($tampered)

@@ -5,7 +5,7 @@ test('node pairing requires password, masks and expires codes without persisting
   await appFixture(page,{replies:{
     '/api/me':{user:{id:1,email:'node-admin@example.invalid',is_admin:true}},
     '/api/admin/settings':{servers:[],default_server:'',allow_custom:false,smtp:null},
-    '/api/admin/voice-nodes':{nodes:[{id:'community-node',server:'community',idle:2}]},
+    '/api/admin/voice-nodes':{servers:[{id:'community',name:'社区语音',address:'ts.example.invalid:9987'}],nodes:[{id:'community-node',server:'community',idle:2,enabled:true,revision:0}]},
   }});
   const writes=[];const code='a'.repeat(64);
   await page.route('**/api/admin/voice-nodes/pair',route=>{
@@ -14,15 +14,15 @@ test('node pairing requires password, masks and expires codes without persisting
   });
   await page.goto('/');await page.getByRole('button',{name:'站点管理',exact:true}).click();
   await page.getByRole('tab',{name:'基础配置',exact:true}).click();
-  const panel=page.locator('section.admin-settings').filter({has:page.getByRole('heading',{name:'同机语音节点 · 反向连接预览'})});
-  await expect(panel).toContainText('控制通道在线');
-  const issue=panel.getByRole('button',{name:'生成5分钟一次性配对码'});
+  const panel=page.locator('section.admin-settings').filter({has:page.getByRole('heading',{name:'服务器走哪条路线'})});
+  await expect(panel).toContainText('在线');
+  const issue=panel.getByRole('button',{name:'生成安装配对码'});
   await expect(issue).toBeDisabled();
-  await panel.getByLabel('当前管理员密码',{exact:true}).fill('wrong');await issue.click();
+  await panel.getByLabel('验证管理员密码',{exact:true}).fill('wrong');await issue.click();
   await expect(panel.getByRole('status')).toContainText('当前密码不正确');
-  await expect(panel.getByLabel('当前管理员密码',{exact:true})).toHaveValue('');
-  await panel.getByLabel('当前管理员密码',{exact:true}).fill('synthetic-password');await issue.click();
-  const field=panel.getByLabel('配对码（领取一次后失效）');
+  await expect(panel.getByLabel('验证管理员密码',{exact:true})).toHaveValue('');
+  await panel.getByLabel('验证管理员密码',{exact:true}).fill('synthetic-password');await issue.click();
+  const field=panel.getByLabel('一次性配对码');
   await expect(field).toHaveValue(code);await expect(field).toHaveAttribute('type','password');
   expect(writes).toEqual([{id:'community-node',password:'wrong'},{id:'community-node',password:'synthetic-password'}]);
   expect(await page.evaluate(()=>JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage)]))).not.toContain(code);
@@ -34,6 +34,26 @@ test('node pairing requires password, masks and expires codes without persisting
 });
 
 const session=(id,current=false)=>({id:id.repeat(64),current,browser:'Edge',platform:'Windows',created_at:1780000000,expires:1880000000,remembered:current?false:true});
+
+test('administrator binds an individual server, sees offline and paused routes, and must explicitly select the main gateway',async({page})=>{
+ const servers=[{id:'community',name:'社区语音',address:'ts.example.invalid:9987'}];let nodes=[];const writes=[];
+ await appFixture(page,{replies:{'/api/me':{user:{id:1,email:'admin@example.invalid',is_admin:true}},'/api/admin/settings':{servers,default_server:'community',allow_custom:false,smtp:null}}});
+ await page.route('**/api/admin/voice-nodes',async route=>{
+  if(route.request().method()==='POST'){const body=route.request().postDataJSON();writes.push(body);nodes=[{...body,idle:0,revision:body.revision+1}];delete nodes[0].password;await route.fulfill({json:{message:body.use_gateway?'已明确切换到主站网关':'节点路线已保存'}});}
+  else await route.fulfill({json:{servers,nodes}});
+ });
+ await page.goto('/');await page.getByRole('button',{name:'站点管理',exact:true}).click();await page.getByRole('tab',{name:'基础配置',exact:true}).click();
+ const panel=page.locator('section.admin-settings').filter({has:page.getByRole('heading',{name:'服务器走哪条路线'})});
+ await expect(panel).toContainText('当前：主站网关转发');await panel.getByLabel('语音连接路线').selectOption('node');
+ const id=await panel.getByLabel('节点标识（已自动生成，安装时填写）').inputValue();expect(id).toMatch(/^node-[a-f0-9]{8}$/);
+ await panel.getByLabel('验证管理员密码').fill('synthetic-password');await panel.getByRole('button',{name:'保存路线',exact:true}).click();
+ await expect(panel).toContainText('离线，不能连接');await expect(panel.getByLabel('验证管理员密码')).toHaveValue('');
+ page.on('dialog',d=>d.accept());await panel.getByLabel('验证管理员密码').fill('synthetic-password');await panel.getByRole('button',{name:'停用节点',exact:true}).click();await expect(panel).toContainText('节点已停用');
+ await panel.getByLabel('语音连接路线').selectOption('site');await panel.getByLabel('验证管理员密码').fill('synthetic-password');await panel.getByRole('button',{name:'保存路线',exact:true}).click();await expect(panel).toContainText('当前：主站网关转发');
+ expect(writes.map(w=>[w.id,w.enabled,w.use_gateway,w.revision])).toEqual([[id,true,false,0],[id,false,false,1],[id,true,true,2]]);
+ expect(await page.evaluate(()=>JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage)]))).not.toContain('synthetic-password');
+ for(const width of [390,1280]){await page.setViewportSize({width,height:900});expect(await panel.evaluate(n=>n.scrollWidth-n.clientWidth)).toBeLessThanOrEqual(1);}
+});
 async function fixture(page){
   const requests=await appFixture(page);
   let items=[session('a',true),session('b')];const writes=[];

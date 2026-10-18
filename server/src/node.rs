@@ -44,6 +44,47 @@ pub struct RemoteNode {
     pub key_file: String,
 }
 
+/// Saved only inside the site's authenticated encrypted settings envelope.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedNode {
+    pub id: String,
+    pub server: String,
+    pub address: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub use_gateway: bool,
+    pub revision: u64,
+    pub key: String,
+}
+impl Drop for ManagedNode {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+pub(crate) fn validate_managed(settings: &crate::settings::Settings) -> Result<()> {
+    if settings.voice_nodes.len() > 32 {
+        bail!("最多配置32个语音节点");
+    }
+    let mut ids = HashSet::new();
+    let mut servers = HashSet::new();
+    for node in &settings.voice_nodes {
+        if !valid_id(&node.id)
+            || !ids.insert(&node.id)
+            || !servers.insert(&node.server)
+            || node.revision == 0
+            || !settings
+                .servers
+                .iter()
+                .any(|s| s.id == node.server && s.address == node.address)
+        {
+            bail!("节点绑定无效；修改服务器地址前请先更新节点绑定");
+        }
+        key_from_text(&node.key)?;
+    }
+    Ok(())
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -110,11 +151,33 @@ pub(crate) fn validate_bindings(config: &Config) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn binding<'a>(
-    app: &'a App,
-    server: &str,
-    source: &str,
-) -> Result<Option<&'a RemoteNode>> {
+pub(crate) fn binding(app: &App, server: &str, source: &str) -> Result<Option<RemoteNode>> {
+    if let Some(node) = app
+        .runtime
+        .read()
+        .unwrap()
+        .settings
+        .voice_nodes
+        .iter()
+        .find(|n| n.server == server)
+    {
+        if node.use_gateway {
+            return Ok(None);
+        }
+        if !node.enabled {
+            bail!("管理员已停用此服务器的语音节点；不会改走主站网关");
+        }
+        if node.address != source {
+            bail!("节点绑定地址已变化，未切换链路");
+        }
+        return Ok(Some(RemoteNode {
+            id: node.id.clone(),
+            server: node.server.clone(),
+            url: String::new(),
+            reverse: true,
+            key_file: String::new(),
+        }));
+    }
     let node = app.config.voice_nodes.iter().find(|n| n.server == server);
     if node.is_some()
         && !app
@@ -125,7 +188,27 @@ pub(crate) fn binding<'a>(
     {
         bail!("节点绑定地址已变化，请管理员重新配置；不会自动改走其他网关");
     }
-    Ok(node)
+    Ok(node.cloned())
+}
+
+pub(crate) fn route_view(
+    config: &Config,
+    settings: &crate::settings::Settings,
+    server: &str,
+) -> Value {
+    if let Some(node) = settings.voice_nodes.iter().find(|n| n.server == server) {
+        return if node.use_gateway {
+            json!({"kind":"site"})
+        } else {
+            json!({"kind":"node","node":node.id,"enabled":node.enabled})
+        };
+    }
+    config
+        .voice_nodes
+        .iter()
+        .find(|n| n.server == server)
+        .map(|n| json!({"kind":"node","node":n.id,"enabled":true}))
+        .unwrap_or(json!({"kind":"site"}))
 }
 
 fn signature(key: &[u8], id: &str, path: &str, time: i64, nonce: &str) -> Hmac<sha2::Sha256> {
@@ -450,7 +533,10 @@ impl Drop for Grant {
     }
 }
 impl RemoteNode {
-    async fn key(&self) -> Result<Zeroizing<[u8; 32]>> {
+    async fn key(&self, app: &App) -> Result<Zeroizing<[u8; 32]>> {
+        if self.reverse {
+            return app.node_links.key(&self.id);
+        }
         key_from_text(&Zeroizing::new(
             tokio::fs::read_to_string(&self.key_file).await?,
         ))
@@ -483,7 +569,11 @@ impl RemoteNode {
             .timeout(Duration::from_secs(5))
             .build()?
             .get(url)
-            .headers(signed_headers(self.key().await?.as_ref(), &self.id, &path)?)
+            .headers(signed_headers(
+                self.key(app).await?.as_ref(),
+                &self.id,
+                &path,
+            )?)
             .send()
             .await?
             .error_for_status()?;
@@ -524,9 +614,11 @@ impl RemoteNode {
         url.set_path(route);
         url.set_query(query);
         let mut request = url.as_str().into_client_request()?;
-        request
-            .headers_mut()
-            .extend(signed_headers(self.key().await?.as_ref(), &self.id, path)?);
+        request.headers_mut().extend(signed_headers(
+            self.key(app).await?.as_ref(),
+            &self.id,
+            path,
+        )?);
         if self.reverse {
             let stream = app.node_links.open(&self.id).await?;
             let (socket, _) = tokio::time::timeout(

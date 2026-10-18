@@ -80,7 +80,7 @@ test('loaded build identifies the same-origin entry without leaking URLs',()=>{
  assert.equal(build.loadedBundle(doc('https://other.example/assets/index-remote.js','/assets/index-loaded_123.js'),origin),'/assets/index-loaded_123.js');
  for(const invalid of ['https://user:pass@other.example/assets/index-secret.js','/assets/index-a.js?token=secret','/assets/index-a.js#secret','/src/main.tsx','data:text/javascript,secret','/assets/index-'+ 'a'.repeat(101)+'.js'])assert.equal(build.loadedBundle(doc(invalid),origin),undefined);
  assert.equal(build.loadedBundle(doc(),origin),undefined);
- const report=diagnostics.diagnosticReport(input,'/assets/index-loaded_123.js');assert.equal(report.frontendBundle,'/assets/index-loaded_123.js');assert.equal(report.format,'webts-diagnostic-v4');
+ const report=diagnostics.diagnosticReport(input,'/assets/index-loaded_123.js');assert.equal(report.frontendBundle,'/assets/index-loaded_123.js');assert.equal(report.format,'webts-diagnostic-v5');
  for(const invalid of ['https://fixture.example/assets/index-loaded.js','/assets/index-a.js?token=secret','/assets/index-../a.js'])assert.equal(diagnostics.diagnosticReport(input,invalid).frontendBundle,null);
 });
 

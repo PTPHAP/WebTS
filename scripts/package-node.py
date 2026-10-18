@@ -13,7 +13,7 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PREVIEW = 4
+PREVIEW = 5
 PUBLIC = ('node.example.toml', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/NODE-INSTALL.md',
           'docs/VOICE-NODES.md',
           'docs/SECURITY-REVIEW-VOICE-NODES.md')
@@ -64,13 +64,13 @@ def package(binary, output, platform, build_target=None, runtime=None):
     quick = ('Windows：解压到临时专用文件夹，双击 **开始安装.cmd**，按中文说明填写安装位置、主站网址、公网地址和配对码。'
              '自动备份、停启本节点、设置专用防火墙和开机任务；可选自定义端口，无需手写配置。\n\n'
              if platform == 'windows-x64' else
-             'Linux：按中文安装教程初始化和配对；包内 scripts/node.sh 与 systemd 示例用于维护，不会自动修改防火墙。\n\n')
+             'Linux（Ubuntu 24.04 x64 / Python 3.11+ / systemd）：解压后运行 `sudo sh webts-node install`，按中文向导安装；之后 `sudo webts-node update` 检查升级。不会自动修改未知防火墙。\n\n')
     files['README.md'] = ('# WebTS 同机语音节点 · 开发预览\n\n' + quick +
                           '完整说明：[中文安装教程](docs/NODE-INSTALL.md)。\n\n'
                           '此包不是独立网站；主站也需包含节点支持并完成配对。'
                           '真实 TS 通话、Windows Server 和 Linux 真机验收仍待完成。\n').encode()
     files['web-ts.exe' if platform == 'windows-x64' else 'web-ts'] = data
-    helpers = ('webts-node.cmd', '开始安装.cmd', 'scripts/node.ps1', 'scripts/node-install.ps1') if platform == 'windows-x64' else ('scripts/node.sh', 'deploy/webts-node.service')
+    helpers = ('webts-node.cmd', '开始安装.cmd', 'scripts/node.ps1', 'scripts/node-install.ps1', 'scripts/node-update.ps1') if platform == 'windows-x64' else ('webts-node', 'scripts/node.sh', 'scripts/node-linux.py', 'deploy/webts-node.service')
     for name in helpers:
         value = read_file(ROOT / name)
         if name.endswith('.ps1'):
@@ -136,7 +136,7 @@ def package(binary, output, platform, build_target=None, runtime=None):
             for name in names:
                 item = tarfile.TarInfo(f'{stem}/{name}')
                 item.size = len(files[name])
-                item.mode = 0o755 if name in {'web-ts', 'scripts/node.sh'} else 0o644
+                item.mode = 0o755 if name in {'web-ts', 'webts-node', 'scripts/node.sh'} else 0o644
                 archive.addfile(item, io.BytesIO(files[name]))
     with target.open('rb') as stream:
         checksum.write_text(f'{hashlib.file_digest(stream, "sha256").hexdigest()}  {target.name}\n', encoding='utf-8')

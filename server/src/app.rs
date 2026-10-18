@@ -175,6 +175,7 @@ impl App {
             serde_json::from_slice(&plaintext)?
         } else {
             crate::settings::Settings {
+                voice_nodes: Vec::new(),
                 storage: Default::default(),
                 storage_profiles: Vec::new(),
                 storage_active: crate::storage::default_store(),
@@ -246,8 +247,10 @@ impl App {
                 }
             }
         });
+        let node_links =
+            crate::node::reverse::Links::new(&config, &runtime.read().unwrap().settings)?;
         Ok(Arc::new(Self {
-            node_links: crate::node::reverse::Links::new(&config)?,
+            node_links,
             connections: Arc::new(Connections::new(config.max_connections)),
             sockets: Arc::new(Semaphore::new(config.max_connections)),
             image_bytes: Arc::new(Semaphore::new(128 * 1024)),
@@ -671,7 +674,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/rtc", get(crate::media::ice_config))
         .route("/connect", get(crate::gateway::upgrade))
         .route("/voice-nodes/tunnel", get(crate::node::reverse::accept))
-        .route("/admin/voice-nodes", get(crate::node::reverse::status))
+        .route(
+            "/admin/voice-nodes",
+            get(crate::node::reverse::status).post(crate::node::reverse::manage),
+        )
         .route(
             "/admin/voice-nodes/pair",
             post(crate::node::reverse::issue).layer(DefaultBodyLimit::max(4096)),
@@ -1205,7 +1211,18 @@ async fn export_identity(
 
 async fn servers(State(app): State<Arc<App>>, headers: HeaderMap) -> Api<Json<Value>> {
     app.session_async(&headers).await?;
-    Ok(Json(app.runtime.read().unwrap().settings.public()))
+    let current = app.runtime.read().unwrap();
+    let mut value = current.settings.public();
+    if let Some(servers) = value["servers"].as_array_mut() {
+        for server in servers {
+            server["route"] = crate::node::route_view(
+                &app.config,
+                &current.settings,
+                server["id"].as_str().unwrap_or(""),
+            );
+        }
+    }
+    Ok(Json(value))
 }
 #[cfg(test)]
 pub(crate) mod tests {

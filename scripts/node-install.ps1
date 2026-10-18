@@ -106,10 +106,24 @@ function Get-NodeTasks([string]$Root) {
         $execute=[string]$action.Execute
         if($execute -match '^"([^"\r\n]+)"$'){$execute=$Matches[1]}
         $isOwn=($execute.Replace('/','\') -eq (Join-Path $Root 'web-ts.exe')) -and (Test-NodeServeArguments $action.Arguments $Root $action.WorkingDirectory)
-        if($task.TaskName -eq 'WebTS-Node' -and $task.TaskPath -eq '\' -and !$isOwn){throw '已有 WebTS-Node 任务指向其他程序或配置，未覆盖。'}
+        if($task.TaskName -eq 'WebTS-Node' -and $task.TaskPath -eq '\' -and !$isOwn){throw ('已有 WebTS-Node 任务属于其他安装位置，未覆盖。任务程序：'+$execute+'；本次目录：'+$Root+'。请返回原节点目录更新，或在任务计划程序核对旧任务归属后手动处理。')}
         if($isOwn){$own+=$task}
     }
     return $own
+}
+
+function Find-InstalledNodeRoot([string]$Fallback) {
+    foreach($task in @(Get-ScheduledTask)){
+        if($task.TaskName -ne 'WebTS-Node' -or $task.TaskPath -ne '\' -or @($task.Actions).Count -ne 1){continue}
+        $action=$task.Actions[0];$execute=[string]$action.Execute
+        if($execute -match '^"([^"\r\n]+)"$'){$execute=$Matches[1]}
+        try{
+            if(![IO.Path]::IsPathRooted($execute) -or [IO.Path]::GetFileName($execute) -ne 'web-ts.exe'){continue}
+            $candidate=Get-NodeFullPath (Split-Path -Parent $execute) $Fallback
+            if((Test-NodeServeArguments $action.Arguments $candidate $action.WorkingDirectory) -and (Test-Path -LiteralPath (Join-Path $candidate 'node.local.toml') -PathType Leaf)){return $candidate}
+        }catch{}
+    }
+    return $Fallback
 }
 
 function Stop-OwnNode([string]$Root,$Tasks,[int]$Port) {
@@ -229,6 +243,7 @@ function Invoke-NodeInstall([string]$Root,[string]$Source=$Root) {
         }
     }
     if($key -ne (Join-Path $Root 'secrets\node-pair.key')){throw '自动安装仅管理 secrets\node-pair.key，不修改其他密钥。'}
+    $hadPairKey=Test-Path -LiteralPath $key -PathType Leaf
     $mainDefault=if($config.main_url -and $config.main_url -notmatch 'example\.(com|org|net)'){$config.main_url}else{''}
     $main=Read-NodeValue '① WebTS主站网址（浏览器登录的HTTPS网址，例如 https://web.example.com）' $mainDefault
     $uri=$null
@@ -239,6 +254,8 @@ function Invoke-NodeInstall([string]$Root,[string]$Source=$Root) {
     # These socket strings have already passed the native TOML validation.
     $tsPort=[int]($config.target -replace '^.*:','');$filePort=[int]$config.file_transfer_port
     Write-Host ('当前TS：'+$config.target+'；头像/图片文件端口：'+$filePort+'；节点ID：'+$config.id)
+    $nodeId=Read-NodeValue '③ 节点标识（必须与主站此服务器的节点标识一致）' $config.id
+    if($nodeId -notmatch '^[A-Za-z0-9_-]{1,64}$'){throw '节点标识只允许字母、数字、短横线和下划线，最多64字节。'}
     $udpMin=[int]$config.udp_min;$udpMax=[int]$config.udp_max
     $oldPorts=if($udpMin -eq $udpMax){[string]$udpMin}else{"$udpMin-$udpMax"}
     if((Read-NodeValue '是否自定义TS及网页语音端口？默认沿用；要换端口选Y（Y/N）' 'N') -match '^(y|yes|是)$'){
@@ -265,7 +282,10 @@ function Invoke-NodeInstall([string]$Root,[string]$Source=$Root) {
     [void](New-Item -ItemType Directory -Path $backup)
     Set-NodeAcl (Join-Path $Root 'backups') -Directory
     Set-NodeAcl $backup -Directory
-    foreach($name in @('node.local.toml','secrets\node-pair.key','web-ts.exe','webts-node.cmd','scripts\node.ps1','scripts\node-install.ps1')){
+    $backupFiles=@('node.local.toml','secrets\node-pair.key')
+    if(Test-Path -LiteralPath (Join-Path $Root 'SHA256SUMS')){Assert-NodeManifest $Root;Copy-NodePayload $Root $backup}
+    else{$backupFiles+=@('web-ts.exe','webts-node.cmd','开始安装.cmd','scripts\node.ps1','scripts\node-install.ps1','scripts\node-update.ps1')}
+    foreach($name in $backupFiles){
         $path=Join-Path $Root $name
         if(Test-Path -LiteralPath $path -PathType Leaf){
             $destination=Join-Path $backup $name
@@ -277,15 +297,15 @@ function Invoke-NodeInstall([string]$Root,[string]$Source=$Root) {
     Stop-OwnNode $Root $tasks $port
     Copy-NodePayload $Source $Root
     & (Join-Path $Root 'scripts\node.ps1') init | Out-Null
-    Write-Host "`n③ 请在主站：站点管理 → 基础配置 → 同机语音节点 → 验证网站管理员密码 → 生成5分钟配对码。"
+    Write-Host "`n④ 请在主站：站点管理 → 基础配置 → 服务器走哪条路线 → 对应服务器 → 生成安装配对码。"
     Write-Host '配对码只在此输入，不发聊天、不写文件。已经成功配对且主站没换密钥时，回车保留。'
     $secure=Read-Host '一次性配对码（输入时隐藏）' -AsSecureString
     $pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     $payload=$null;$plain=$null
     try{
         $plain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
-        if(!$plain -and (!$hadConfig -or !$mainDefault -or $main.TrimEnd('/') -ne $mainDefault.TrimEnd('/'))){throw '首次安装或更换主站必须输入配对码；旧密钥不能自动视为已配对。'}
-        $payload=@{main_url=$main;public_ip=$publicIp;code=$plain;ts_port=$tsPort;file_transfer_port=$filePort;udp_min=$udpMin;udp_max=$udpMax}|ConvertTo-Json -Compress
+        if(!$plain -and (!$hadConfig -or !$hadPairKey -or !$mainDefault -or $main.TrimEnd('/') -ne $mainDefault.TrimEnd('/') -or $nodeId -ne $config.id)){throw '首次安装、缺少原密钥、更换主站或节点标识必须输入配对码；新随机密钥不能视为已配对。'}
+        $payload=@{id=$nodeId;main_url=$main;public_ip=$publicIp;code=$plain;ts_port=$tsPort;file_transfer_port=$filePort;udp_min=$udpMin;udp_max=$udpMax}|ConvertTo-Json -Compress
         [void](Invoke-NodeCli $Root 'configure-node' $payload)
     }catch{
         Write-Host ('配对失败，节点保持停止；旧配置/密钥备份在 '+$backup+'。可重新双击安装，不用修改配置文件。') -ForegroundColor Yellow
@@ -344,7 +364,8 @@ if($MyInvocation.InvocationName -ne '.'){
             $child=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$script+'"') -Verb RunAs -Wait -PassThru
             exit $child.ExitCode
         }
-        $root=Read-NodeValue '安装目录（已有节点请使用原目录；会保留原配置和密钥）' $(if(Test-Path -LiteralPath (Join-Path $source 'node.local.toml')){$source}else{Join-Path $env:SystemDrive 'WebTS-Node'})
+        $defaultRoot=Find-InstalledNodeRoot $(if(Test-Path -LiteralPath (Join-Path $source 'node.local.toml')){$source}else{Join-Path $env:SystemDrive 'WebTS-Node'})
+        $root=Read-NodeValue '安装目录（自动沿用已识别的开机任务目录；已有节点请保留原目录）' $defaultRoot
         $root=Get-NodeFullPath $root $source
         $mutex=[Threading.Mutex]::new($false,'Global\WebTS-Node-Install')
         try{$locked=$mutex.WaitOne(0)}catch [Threading.AbandonedMutexException]{$locked=$true}

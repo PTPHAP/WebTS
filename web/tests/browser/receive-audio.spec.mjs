@@ -1,5 +1,35 @@
 import {test,expect} from '@playwright/test';
 
+test('real RTC speech control bypasses delayed signalling and falls back when its channel closes',async({page})=>{
+ await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
+ const result=await page.evaluate(async()=>{
+  const {Voice,defaultAudioSettings}=window.audioFixture,pause=ms=>new Promise(r=>setTimeout(r,ms));
+  const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),remote=new RTCPeerConnection({iceServers:[]});
+  const original={fetch:window.fetch,WebSocket:window.WebSocket,getUserMedia:navigator.mediaDevices.getUserMedia};
+  let voice,socket,answer,error;const pending=[],direct=[],signalled=[],events=[];
+  const deliver=m=>socket.onmessage?.({data:JSON.stringify(m)});
+  const wait=async(check)=>{const end=Date.now()+8000;while(!check()&&Date.now()<end){if(error)throw Error(error);await pause(20);}if(!check())throw Error('RTC control timed out');};
+  const channel=remote.createDataChannel('webts-audio-control-v1');
+  channel.onopen=()=>channel.send('{"type":"audio_control_ready"}');channel.onmessage=e=>direct.push(JSON.parse(e.data));
+  try{
+   source.connect(input);source.start();await context.resume();navigator.mediaDevices.getUserMedia=async()=>input.stream.clone();
+   window.fetch=(url,options)=>String(url).split('?')[0]==='/api/rtc'?Promise.resolve(new Response('{"iceServers":[]}')):original.fetch(url,options);
+   // Negotiation is real; transmit signalling is deliberately never delivered to the peer.
+   window.WebSocket=class{static OPEN=1;readyState=1;constructor(){socket=this;queueMicrotask(()=>this.onopen?.());}send(raw){const m=JSON.parse(raw);if(m.type==='transmit')signalled.push(m);if(m.type==='answer'){answer=remote.setRemoteDescription(m.description).then(async()=>{for(const c of pending)await remote.addIceCandidate(c);});answer.catch(e=>error=e.message);}if(m.type==='ice'){if(answer)answer.then(()=>remote.addIceCandidate(m.candidate)).catch(e=>error=e.message);else pending.push(m.candidate);}}close(){this.readyState=3;}};
+   remote.onicecandidate=e=>{if(e.candidate)deliver({type:'ice',candidate:e.candidate.toJSON()});};remote.addTransceiver('audio',{direction:'recvonly'});
+   voice=new Voice(e=>events.push(e));await voice.configure({...defaultAudioSettings,noise:'off',volume:0});await voice.connect({identity:'synthetic-only'},'',false);
+   deliver({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1}]});const offer=await remote.createOffer();await remote.setLocalDescription(offer);deliver({type:'offer',description:offer});
+   await wait(()=>events.some(e=>e.type==='audio_control'&&e.state==='direct'));await wait(()=>direct.length>0);
+   const start=direct.length,wsStart=signalled.length;voice.setMute(true,false);await wait(()=>direct.length>start);voice.setMute(false,false);await wait(()=>direct.length>start+1);
+   const toggles=direct.slice(start),bypassed=signalled.length===wsStart;
+   channel.close();await wait(()=>events.some(e=>e.type==='audio_control'&&e.state==='signalling'));await wait(()=>signalled.length>wsStart);
+   const fallback=signalled.at(-1);return {toggles,bypassed,fallback};
+  }finally{voice?.close();remote.close();source.stop();input.stream.getTracks().forEach(t=>t.stop());await context.close();window.fetch=original.fetch;window.WebSocket=original.WebSocket;navigator.mediaDevices.getUserMedia=original.getUserMedia;}
+ });
+ expect(result.bypassed).toBe(true);expect(result.toggles.map(m=>m.enabled)).toEqual([false,true]);expect(result.toggles.every(m=>m.type==='transmit')).toBe(true);
+ expect(result.fallback.enabled).toBe(true);expect(result.fallback.sequence).toBeGreaterThan(result.toggles.at(-1).sequence);
+});
+
 test('real RTC renegotiation reuses playback and remains bidirectional through mute and recovery',async({page})=>{
  await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);
  test.skip(!await page.evaluate(()=>typeof AudioContext==='function'),'This local browser build does not provide AudioContext; not a physical mobile acceptance.');
@@ -52,7 +82,7 @@ test('real audio graph retains output attenuation and mute when element volume i
   window.Audio=class{constructor(){audios.push(this);}get volume(){return 1;}set volume(_){}get muted(){return false;}set muted(_){}play(){this.plays=(this.plays??0)+1;return Promise.resolve();}pause(){}};
   const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),silent=context.createGain();silent.gain.value=0;
   let receiver,meterSource;const analyser=context.createAnalyser();analyser.fftSize=2048;
-  const read=async()=>{await new Promise(r=>setTimeout(r,160));const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);return Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);};
+  const read=async()=>{const rendered=context.currentTime+.16,deadline=Date.now()+3000;while(context.currentTime<rendered&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));if(context.currentTime<rendered)throw Error('Audio render clock did not advance');const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);return Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);};
   try{
    source.frequency.value=440;source.connect(input);source.start();await context.resume();receiver=createReceiver(context,input.stream.getAudioTracks()[0]);await receiver.play();
    meterSource=context.createMediaStreamSource(receiver.stream);meterSource.connect(analyser);analyser.connect(silent);silent.connect(context.destination);

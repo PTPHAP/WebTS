@@ -1,10 +1,10 @@
 # WebTS 同机语音节点 · 反向连接安装
 
-**Windows 1.1.0-node-preview.4 开发预览**，增加双击中文安装、自定义语音端口和升级检查。兼容已部署的preview.2反向主站；旧preview.1公网节点HTTPS模式不适用。真实TS通话、Windows Server和长期容量仍须验收，不是稳定发行认证。
+**Windows / Linux 1.1.0-node-preview.5 开发预览**，提供中文安装、显式服务器路线、保留配置更新和加密直达发言控制。旧反向节点仍可连接，但要启用直达发言控制须更新节点程序；TS、已配对密钥、公网IP和端口不必随之修改。真实TS通话、目标主机和长期容量仍须验收，不是稳定发行认证。
 
 节点装在TS同一台机器，主动WSS连接现有主站；浏览器加密语音直达节点，再经本机连接TS。用户无需安装插件。节点能接触当前TS身份私钥和声音，须由可信运营者管理。
 
-下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.4-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.4-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.4-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
+下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
 
 ## 地址和端口
 
@@ -36,7 +36,22 @@
 
 ## 1. 主站管理员准备
 
-先更新自有主站至同批源码，备份配置，为每节点生成独立随机密钥，不复用master.key：
+普通部署无需编辑主站TOML：
+
+1. 更新并备份主站，进入 **站点管理 → 基础配置**。在服务器列表添加TS地址并保存。
+2. 在上方 **服务器走哪条路线** 找到该服务器：选“主站网关转发”，或“同机节点”。后者会自动生成节点标识，核对后验证管理员密码并保存。
+3. 点击此服务器的“生成安装配对码”，把节点标识、主站网址和一次性码填到可信TS机器的中文安装向导。码5分钟有效、领取一次失效，不写命令行、日志、聊天或Git。
+4. 等待显示“在线”，网页选择这台服务器。其他服务器仍保持自己的路线；用户填写自定义地址时明确走主站网关。
+
+节点离线或停用时拒绝连接，不会自动改走主站。停用、轮换或显式切回主站会撤销该节点旧通道，中断其网页通话；轮换后须重新配对。已成功配对不依赖管理员持续登录。管理员退出、撤销会话、封禁或降权会使未领取的码失效。设置热生效，保存后无需重启主站。普通设备账号不能进行这些管理操作。
+
+主站自动生成独立节点密钥，加密保存在站点设置中；后台不回显密钥。与数据库分开的部署主密钥必须同时安全备份。修改或删除绑定服务器地址前，先显式切回主站路线并保存，再编辑地址，防止静默改绑。旧静态绑定仍兼容：初次在后台保存保留原密钥。
+
+**回退注意：** 新版站点设置包含`voice_nodes`，旧程序可能无法读取。使用节点管理后若必须降级，应停止写入、保存当前完整现场，并恢复相匹配的程序、数据库和密钥备份；不能只替换程序。恢复旧数据库会丢失备份后的变更，先评估影响。
+
+### 旧静态绑定（高级兼容方式）
+
+已有静态配置可以保留；新安装优先使用上面的后台向导。手动方式为每节点生成独立密钥：
 
 ```sh
 ./web-ts init-key secrets/community-node.key
@@ -57,9 +72,7 @@ reverse = true
 key_file = "secrets/community-node.key"
 ```
 
-后台服务器ID和地址须与绑定一致，变化时明确拒绝，不自动改回香港。绑定属于启动配置，安排维护重启自有WebTS生效；未绑定服务器保持原路线。
-
-后台“基础配置 → 同机语音节点”重验管理员密码，生成5分钟一次性配对码。不要放进参数、聊天、截图、日志或Git。重新生成使该节点旧码失效；退出、撤销会话、封禁或取消管理员权限使未领取码失效。已成功配对不依赖管理员后续登录；撤销节点信任须停止节点、轮换两侧密钥并重启主站。
+仅手动修改启动TOML需要维护重启主站；后台管理的绑定覆盖同ID、同服务器的旧反向绑定。不要复用部署主密钥，不要覆盖整份现有配置。
 
 ## 2. Windows Server / Windows x64
 
@@ -67,7 +80,7 @@ key_file = "secrets/community-node.key"
 
 1. 核对ZIP与旁边.sha256，把**整个包**解压到本地专用临时目录。不要直接在ZIP里运行，不要与网站源码或其他服务混放。
 2. 双击 **`开始安装.cmd`**（双击 `webts-node.cmd` 也一样），在Windows提权提示中由维护者确认。这是中文问答窗口，不需要输入命令。
-3. 安装位置默认 `C:\WebTS-Node`，升级时选择原节点目录。填写主站网址、公网IPv4或解析到本机的域名。已有正确配置会作为默认值，回车沿用。TS默认UDP9987、文件TCP30033，网页语音默认UDP50000–50099；可选自定义TS端口及网页语音UDP起止范围，界面分别说明用途。范围至少容纳节点配置的连接上限，修改后云安全组也须同步。节点ID沿用包内或已有配置，必须与主站绑定一致。
+3. 安装位置自动沿用可确认归属的已有开机任务目录，否则默认 `C:\WebTS-Node`，升级时选择原节点目录。填写主站网址、公网IPv4或解析到本机的域名。已有正确配置会作为默认值，回车沿用。TS默认UDP9987、文件TCP30033，网页语音默认UDP50000–50099；可选自定义TS端口及网页语音UDP起止范围，界面分别说明用途。范围至少容纳节点配置的连接上限，修改后云安全组也须同步。节点标识可在向导中填写，默认沿用已有值，必须与主站绑定一致。
 4. 确认安装摘要。向导自动核对包内文件、备份配置和密钥、识别并停止**本目录的节点**，然后提示去主站后台生成配对码并隐藏输入。不会让你先手动停止节点，不会按名称批量杀进程。
 5. 自动检查配置、设置专用读取权限、放行**此节点程序对应的语音UDP入站范围**、创建低权限开机任务并启动节点。窗口显示本机检查结果及仍需在云安全组放行的准确规则。
 
@@ -88,6 +101,7 @@ key_file = "secrets/community-node.key"
 .\webts-node.cmd init       # 初始化，不覆盖配置/密钥
 .\webts-node.cmd configure  # 旧手动配对；先自行停止节点
 .\webts-node.cmd check
+.\webts-node.cmd update     # 官方发布下载、核验、确认后进入原目录升级向导
 .\webts-node.cmd start      # 手动前台运行；不要与开机任务同时启动
 ```
 
@@ -100,18 +114,34 @@ key_file = "secrets/community-node.key"
 本轮GitHub节点包在Ubuntu24.04构建，按glibc2.39及以上部署；不适用于Alpine/musl或未经验证的旧glibc。BUILD-INFO记录具体构建环境。旧本地Zig预览的glibc2.36基线不适用于新的CI包；Debian12等环境可从源码构建或使用经过验证的容器，不能仅换标签冒充兼容。Linux真实TS通话仍须现场验收。
 
 ```sh
-sha256sum webts-node-1.1.0-preview.4-linux-x64.tar.gz
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
+sha256sum -c webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
 # 核对后解压到新目录，不覆盖旧密钥
-tar -xzf webts-node-1.1.0-preview.4-linux-x64.tar.gz
-cd webts-node-1.1.0-preview.4-linux-x64
-sh scripts/node.sh init
-# 编辑node.local.toml，核对节点ID、TS/文件端口与UDP范围
-sh scripts/node.sh configure
-sh scripts/node.sh check
-sh scripts/node.sh start
+tar -xzf webts-node-1.1.0-preview.5-linux-x64.tar.gz
+cd webts-node-1.1.0-preview.5-linux-x64
+sudo sh webts-node install
+# 安装后维护：
+sudo webts-node status
+sudo webts-node check
+sudo webts-node update
 ```
 
-不使用sh -x运行向导。初始化umask077，普通用户可前台运行。systemd先创建webts-node专用用户/组，目录root:webts-node/750、配置与密钥root:webts-node/640、密钥父目录750、程序750。核对deploy/webts-node.service再安装服务，不同时运行前台和服务。向导由维护账号执行，运行账号不需写权限。
+中文安装需要 Python 3.11+、systemd、root维护权限；不自动安装依赖。固定安装到`/opt/webts-node`，管理专用`webts-node.service`及`/usr/local/bin/webts-node`。按提示填写主站、真实公网IPv4、节点标识、配对码，可选端口；检查并确认后才停止旧节点、备份和更新。运行使用专用无登录系统账号，配置和密钥root持有、服务组只读，备份root独占；不公开控制HTTP。不覆盖未知同名服务、额外systemd覆盖项、其他所有者目录或链接。
+
+Linux主机防火墙和云安全组由部署者放行安装摘要中的**入站UDP范围**；本安装器不会猜测并改动ufw、firewalld或nftables。普通用户前台维护仍可用`sh scripts/node.sh init | configure | check | start`，但不要与systemd同时运行。不用`sh -x`运行向导。
+
+### 节点更新的范围与恢复
+
+Windows运行原目录的`webts-node.cmd update`，Linux运行`sudo webts-node update`。更新仅取`PTPHAP/WebTS`最新正式Release里的相应平台节点包，验证独立归档摘要、包内清单、平台和构建来源后，询问是否升级；没有对应附件或下载/校验失败时不停止现有节点。预览组件仍明确标记预览，不把更新成功视为语音验收。TLS与同源下载的SHA校验不能抵抗发布账号本身被接管，仍须保护GitHub发布权限。
+
+安装阶段会备份原公开文件、配置及密钥，不覆盖`secrets`与`backups`。升级/配对/健康检查失败会报告并保留现场，**不自动启动不确定的旧程序，也不自动降级**。维护者应核对备份与失败原因，再使用匹配旧版本的完整程序和配置/密钥恢复；停用本节点任务/服务后操作。备份可能含旧密钥，只交给可信维护者；按自己的恢复策略清理旧备份和下载暂存，不发布它们。
+
+### 延迟与路线确认
+
+新版主站和节点同时更新后，语音设置中的“语音处理位置”显示同机节点，“发言开关路径”显示WebRTC直达。它把发言开关从网站WSS链路移到同一条DTLS加密的WebRTC数据通道；不改Opus、AI降噪、AEC、SRTP或TS加密。旧节点或通道失败走明确显示的兼容信令路径，序号防止迟到开关覆盖新状态。
+
+“浏览器↔网关RTT”来自ICE统计；“网关↔TS RTT”包含TS ACK/Pong处理、任务调度并经过平滑。两者都不是嘴到耳延迟，不能相加作为完整延迟。刚连接的峰值如实保留；优化效果应在同设备、同网络下对比语音首字、近期缓冲/丢包及原生客户端，不能靠降低显示数字或削弱加密宣称达标。
 
 Docker普通bridge内127.0.0.1是容器自身。Linux用本批镜像时须核对host网络、最小权限和配置/密钥只读挂载；Windows Docker Desktop不在本批验收范围。
 

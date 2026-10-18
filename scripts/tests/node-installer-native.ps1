@@ -16,7 +16,7 @@ $port=$listener.LocalEndpoint.Port;$listener.Stop()
 $config=Join-Path $root 'node.local.toml'
 $text=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8).Replace('127.0.0.1:8095',('127.0.0.1:'+$port)).Replace('https://web.example.com','https://127.0.0.1:1').Replace('203.0.113.10','203.0.113.20')
 [IO.File]::WriteAllText($config,$text,[Text.UTF8Encoding]::new($false))
-$script:answers=@('','','N','Y','');$script:index=0
+$script:answers=@('','','','N','Y','');$script:index=0
 function Read-Host {
     param($Prompt,[switch]$AsSecureString)
     if($script:index -ge $script:answers.Count){throw 'Unexpected native installer question'}
@@ -36,7 +36,7 @@ try{
     $owner=Invoke-CimMethod -InputObject $processes[0] -MethodName GetOwnerSid
     if($owner.ReturnValue -ne 0 -or $owner.Sid -ne 'S-1-5-19'){throw 'Native node is not running as LOCAL SERVICE'}
     # Change only our own rule on a real reinstallation; do not accumulate ranges.
-    $script:answers=@('','','Y','','','51000','51099','Y','');$script:index=0
+    $script:answers=@('','','','Y','','','51000','51099','Y','');$script:index=0
     Invoke-NodeInstall $root $PackageRoot
     Assert-NodeRule $root '51000-51099'
     if(@(Get-NetFirewallRule -Name $ruleName).Count -ne 1){throw 'Duplicate native firewall rule'}

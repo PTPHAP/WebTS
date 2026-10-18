@@ -24,7 +24,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -67,6 +67,40 @@ impl SpeechLead {
     }
 }
 use tokio::sync::mpsc;
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TransmitControl {
+    #[serde(rename = "type")]
+    kind: String,
+    pub enabled: bool,
+    pub pre_roll: bool,
+    pub sequence: u64,
+}
+impl TransmitControl {
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > 128 {
+            return None;
+        }
+        let value: Self = serde_json::from_slice(bytes).ok()?;
+        (value.kind == "transmit" && value.sequence > 0 && value.sequence <= 9_007_199_254_740_991)
+            .then_some(value)
+    }
+}
+#[derive(Clone)]
+pub(crate) enum AudioControl {
+    Transmit(TransmitControl),
+    Closed(u64),
+}
+pub(crate) fn control_sequence(last: &mut u64, sequence: Option<u64>) -> bool {
+    match sequence {
+        Some(next) if next > *last && next <= 9_007_199_254_740_991 => {
+            *last = next;
+            true
+        }
+        None => *last == 0,
+        _ => false,
+    }
+}
 use tokio_util::sync::CancellationToken;
 use webrtc::{
     media_stream::{
@@ -162,9 +196,17 @@ struct Handler {
     audio: mpsc::Sender<InboundAudio>,
     secure: Arc<AtomicBool>,
     cancel: CancellationToken,
+    unexpected_channels: AtomicUsize,
 }
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
+    async fn on_data_channel(&self, channel: Arc<dyn webrtc::data_channel::DataChannel>) {
+        if self.unexpected_channels.fetch_add(1, Ordering::Relaxed) >= 4 {
+            self.secure.store(false, Ordering::Release);
+            self.cancel.cancel();
+        }
+        let _ = channel.close().await;
+    }
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
         if let Ok(candidate) = event.candidate.to_json() {
             let _ = self
@@ -267,6 +309,8 @@ struct Speaker {
     pending: VecDeque<(Instant, u16, Bytes)>,
 }
 pub struct Media {
+    pub(crate) control: tokio::sync::watch::Receiver<Option<AudioControl>>,
+    control_task: tokio::task::JoinHandle<()>,
     pub peer: Arc<dyn PeerConnection>,
     pub secure: Arc<AtomicBool>,
     cancel: CancellationToken,
@@ -299,10 +343,17 @@ impl Media {
             webrtc::peer_connection::Registry::new(),
             &mut engine,
         )?;
-        let mut settings = SettingEngineBuilder::new().with_srtp_protection_profiles(vec![
-            SrtpProtectionProfile::Srtp_Aead_Aes_256_Gcm,
-            SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm,
-        ]);
+        let mut settings = SettingEngineBuilder::new()
+            .with_sctp_max_message_size(
+                rtc::peer_connection::configuration::setting_engine::SctpMaxMessageSize::Bounded(
+                    1024,
+                ),
+            )
+            .with_sctp_max_receive_buffer_size(8192)
+            .with_srtp_protection_profiles(vec![
+                SrtpProtectionProfile::Srtp_Aead_Aes_256_Gcm,
+                SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm,
+            ]);
         if !app.config.rtc.public_ip.is_empty() {
             settings = settings.with_nat_1to1_ips(
                 vec![app.config.rtc.public_ip.clone()],
@@ -311,6 +362,7 @@ impl Media {
         }
         let secure = Arc::new(AtomicBool::new(false));
         let peer = PeerConnectionBuilder::new()
+            .with_data_channel_send_buffer_limit(4096)
             .with_media_engine(engine)
             .with_interceptor_registry(registry)
             .with_configuration(
@@ -326,6 +378,7 @@ impl Media {
                 audio,
                 secure: secure.clone(),
                 cancel: cancel.clone(),
+                unexpected_channels: AtomicUsize::new(0),
             }))
             .with_udp_addrs(vec![format!("0.0.0.0:{port}")])
             .build()
@@ -338,7 +391,59 @@ impl Media {
             }),
         )
         .await?;
+        let channel = peer
+            .create_data_channel("webts-audio-control-v1", None)
+            .await?;
+        let (control_tx, control) = tokio::sync::watch::channel(None);
+        let stop = cancel.clone();
+        let control_task = tokio::spawn(async move {
+            use webrtc::data_channel::DataChannelEvent;
+            let mut rate = (Instant::now(), 0u32);
+            let mut sequence = 0;
+            loop {
+                let event = tokio::select! {_=stop.cancelled()=>break,event=channel.poll()=>event};
+                match event {
+                    Some(DataChannelEvent::OnOpen) => {
+                        if !matches!(
+                            tokio::time::timeout(
+                                Duration::from_secs(1),
+                                channel.send_text("{\"type\":\"audio_control_ready\"}")
+                            )
+                            .await,
+                            Ok(Ok(_))
+                        ) {
+                            break;
+                        }
+                    }
+                    Some(DataChannelEvent::OnMessage(message)) => {
+                        if rate.0.elapsed() >= Duration::from_secs(1) {
+                            rate = (Instant::now(), 0);
+                        }
+                        rate.1 += 1;
+                        let Some(value) = TransmitControl::parse(&message.data) else {
+                            break;
+                        };
+                        if rate.1 > 40 {
+                            break;
+                        }
+                        sequence = sequence.max(value.sequence);
+                        control_tx.send_replace(Some(AudioControl::Transmit(value)));
+                    }
+                    Some(
+                        DataChannelEvent::OnError
+                        | DataChannelEvent::OnClosing
+                        | DataChannelEvent::OnClose,
+                    )
+                    | None => break,
+                    _ => {}
+                }
+            }
+            control_tx.send_replace(Some(AudioControl::Closed(sequence)));
+            let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
+        });
         Ok(Self {
+            control,
+            control_task,
             peer: Arc::new(peer),
             secure,
             cancel,
@@ -577,9 +682,17 @@ impl Media {
         Ok(true)
     }
     pub async fn close(&self) {
+        self.control_task.abort();
         self.secure.store(false, Ordering::Release);
         self.cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(2), self.peer.close()).await;
+    }
+}
+impl Drop for Media {
+    fn drop(&mut self) {
+        self.secure.store(false, Ordering::Release);
+        self.cancel.cancel();
+        self.control_task.abort();
     }
 }
 fn opus_codec() -> RTCRtpCodec {
@@ -629,6 +742,141 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn direct_control_runs_over_real_dtls_sctp_and_closes_without_stopping_audio() {
+        use webrtc::data_channel::{DataChannel, DataChannelEvent};
+        struct Client {
+            ice: mpsc::Sender<RTCPeerConnectionIceEvent>,
+            channels: mpsc::Sender<Arc<dyn DataChannel>>,
+        }
+        #[async_trait::async_trait]
+        impl PeerConnectionEventHandler for Client {
+            async fn on_ice_candidate(&self, c: RTCPeerConnectionIceEvent) {
+                let _ = self.ice.try_send(c);
+            }
+            async fn on_data_channel(&self, c: Arc<dyn DataChannel>) {
+                let _ = self.channels.try_send(c);
+            }
+        }
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, mut events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let mut media = Media::new(&app, 1, 0, signals.clone(), audio, cancel.clone())
+            .await
+            .unwrap();
+        let (ice, mut candidates) = mpsc::channel(32);
+        let (channels, mut opened) = mpsc::channel(2);
+        let peer = Arc::new(
+            PeerConnectionBuilder::new()
+                .with_runtime(Arc::new(TokioRuntime))
+                .with_handler(Arc::new(Client { ice, channels }))
+                .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
+                .build()
+                .await
+                .unwrap(),
+        );
+        media.offer(&signals).await.unwrap();
+        let offer = loop {
+            let e = events.recv().await.unwrap();
+            if e["type"] == "offer" {
+                break serde_json::from_value(e["description"].clone()).unwrap();
+            }
+        };
+        peer.set_remote_description(offer).await.unwrap();
+        let answer = peer.create_answer(None).await.unwrap();
+        peer.set_local_description(answer.clone()).await.unwrap();
+        media.answer(answer).await.unwrap();
+        let relay = tokio::spawn({
+            let remote = peer.clone();
+            let local = media.peer.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        Some(e)=events.recv()=>{if e["type"]=="ice"{remote.add_ice_candidate(serde_json::from_value(e["candidate"].clone()).unwrap()).await.unwrap();}},
+                        Some(e)=candidates.recv()=>{local.add_ice_candidate(e.candidate.to_json().unwrap()).await.unwrap();},
+                        else=>break,
+                    }
+                }
+            }
+        });
+        let channel = tokio::time::timeout(Duration::from_secs(10), opened.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(DataChannelEvent::OnMessage(m)) = channel.poll().await {
+                    assert_eq!(m.data.as_ref(), b"{\"type\":\"audio_control_ready\"}");
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        channel
+            .send_text("{\"type\":\"transmit\",\"enabled\":true,\"pre_roll\":true,\"sequence\":1}")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), media.control.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            media.control.borrow_and_update().as_ref(),
+            Some(AudioControl::Transmit(TransmitControl {
+                enabled: true,
+                sequence: 1,
+                ..
+            }))
+        ));
+        // Unknown commands revoke only this small control channel; audio and the TS actor survive.
+        channel.send_text("{\"type\":\"admin\"}").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), media.control.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            media.control.borrow_and_update().as_ref(),
+            Some(AudioControl::Closed(1))
+        ));
+        assert!(!cancel.is_cancelled());
+        for n in 0..5 {
+            peer.create_data_channel(&format!("unexpected-{n}"), None)
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(3),cancel.cancelled()).await.expect("repeated unsolicited channels must revoke this peer instead of accumulating streams");
+        media.close().await;
+        peer.close().await.unwrap();
+        relay.abort();
+        assert!(cancel.is_cancelled());
+    }
+    #[test]
+    fn direct_control_accepts_only_bounded_transmit_and_fences_old_signals() {
+        let value = br#"{"type":"transmit","enabled":true,"pre_roll":true,"sequence":1}"#;
+        assert!(TransmitControl::parse(value).is_some());
+        for raw in [
+            br#"{"type":"mute","enabled":true,"pre_roll":true,"sequence":1}"#.as_slice(),
+            br#"{"type":"transmit","enabled":true,"pre_roll":true,"sequence":0}"#,
+            br#"{"type":"transmit","enabled":true,"pre_roll":true,"sequence":9007199254740992}"#,
+            br#"{"type":"transmit","enabled":true,"pre_roll":true,"sequence":1,"admin":true}"#,
+            br#"{"type":"transmit","enabled":1,"pre_roll":true,"sequence":1}"#,
+            br#"{"type":"transmit","enabled":true,"sequence":1}"#,
+            &[b' '; 129],
+        ] {
+            assert!(TransmitControl::parse(raw).is_none());
+        }
+        let mut last = 0;
+        assert!(control_sequence(&mut last, None)); // Older nodes/clients keep the existing WSS path.
+        assert!(!control_sequence(&mut last, Some(0)));
+        assert!(control_sequence(&mut last, Some(2)));
+        for sequence in [None, Some(1), Some(2), Some(9_007_199_254_740_992)] {
+            assert!(!control_sequence(&mut last, sequence));
+        }
+        assert!(control_sequence(&mut last, Some(3)));
+        assert_eq!(last, 3);
+    }
     #[test]
     fn queue_age_is_bounded_and_metrics_reset_without_fabricating_silence() {
         let now = Instant::now();
@@ -733,6 +981,7 @@ mod tests {
             audio,
             secure: Arc::new(AtomicBool::new(true)),
             cancel: cancel.clone(),
+            unexpected_channels: AtomicUsize::new(0),
         };
         handler
             .on_connection_state_change(RTCPeerConnectionState::Disconnected)

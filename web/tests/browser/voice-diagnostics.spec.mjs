@@ -12,7 +12,7 @@ test('diagnostic panel and download identify the loaded page despite a newer ser
  const panel=page.locator('.voice-diagnostics');await expect(panel).toContainText(current.slice(8));
  await expect(panel).not.toContainText('newer-on-server');await expect(panel).toContainText('未启动');await expect(panel).toContainText('0 / 0 / 0');
  const [download]=await Promise.all([page.waitForEvent('download'),panel.getByRole('button',{name:'下载脱敏诊断报告'}).click()]);
- const report=JSON.parse(await readFile(await download.path(),'utf8'));expect(report.format).toBe('webts-diagnostic-v4');expect(report.frontendBundle).toBe(current);
+ const report=JSON.parse(await readFile(await download.path(),'utf8'));expect(report.format).toBe('webts-diagnostic-v5');expect(report.frontendBundle).toBe(current);
  expect(report.runtime).toEqual({context:'inactive',processing:'inactive',receivers:0,players:0,pausedPlayers:0});
  expect(JSON.stringify(report)).not.toMatch(/navigation@example|页面切换验收|fixture|127\.0\.0\.1|newer-on-server/);
  for(const width of [320,390,1280]){

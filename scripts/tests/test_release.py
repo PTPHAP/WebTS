@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
             root=Path(folder)
             for name in node.PUBLIC:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('public fixture',encoding='utf-8')
-            for name in ['webts-node.cmd','开始安装.cmd','scripts/node.ps1','scripts/node-install.ps1']:
+            for name in ['webts-node.cmd','开始安装.cmd','scripts/node.ps1','scripts/node-install.ps1','scripts/node-update.ps1']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('public helper',encoding='utf-8')
             (root/'server').mkdir();(root/'server/Cargo.toml').write_text('[package]\nversion="1.2.3"\n',encoding='utf-8')
             (root/'Cargo.lock').write_text('package=[]\n',encoding='utf-8')
@@ -36,7 +36,7 @@ class ReleaseTests(unittest.TestCase):
             archive=next((root/'output').glob('*.zip'))
             with zipfile.ZipFile(archive) as z:
                 self.assertFalse(any(n.endswith('node.local.toml') for n in z.namelist()))
-                metadata=json.loads(z.read('webts-node-1.2.3-preview.4-windows-x64/BUILD-INFO.json'))
+                metadata=json.loads(z.read(f'webts-node-1.2.3-preview.{node.PREVIEW}-windows-x64/BUILD-INFO.json'))
                 self.assertEqual(metadata['target'],'x86_64-pc-windows-msvc')
                 self.assertEqual(metadata['build_runtime'],'isolated test')
 
@@ -47,7 +47,7 @@ class ReleaseTests(unittest.TestCase):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             (root / ('SHA256SUMS_' + kind)).write_text(f'{digest}  {path.name}\n')
         for platform, suffix in [('windows-x64','.zip'),('linux-x64','.tar.gz')]:
-            path=root/f'webts-node-1.2.3-preview.4-{platform}{suffix}'
+            path=root/f'webts-node-1.2.3-preview.{node.PREVIEW}-{platform}{suffix}'
             path.write_bytes(b'isolated node preview fixture')
             (root/(path.name+'.sha256')).write_text(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n',encoding='utf-8')
 
@@ -77,7 +77,7 @@ class ReleaseTests(unittest.TestCase):
     def test_node_preview_must_be_complete_and_match_its_checksum(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);self.prepare(root)
-            path=root/'webts-node-1.2.3-preview.4-windows-x64.zip'
+            path=root/f'webts-node-1.2.3-preview.{node.PREVIEW}-windows-x64.zip'
             path.write_bytes(b'tampered node')
             with self.assertRaises(ValueError):release.verify(root,'v1.2.3','1.2.3')
 

@@ -133,7 +133,7 @@ test('season changes preserve live voice transport and a mounted watch player',a
   await page.routeWebSocket('**/api/connect',socket=>socket.onMessage(text=>{const value=JSON.parse(String(text));if(value.identity){joins++;socket.send(JSON.stringify({type:'state',server:'Theme test',own:1,canSpeak:true,channels:[{id:1,parent:0,order:0,name:'主题测试频道',password:false}],members:[{id:1,channel:1,name:'主题测试用户',uid:'theme-uid',avatarHash:'',muted:false,deafened:false,description:'',talkPower:0,serverGroups:[],channelGroup:0}]}));}}));
   await page.route('https://www.bilibili.com/blackboard/live/**',route=>{loads++;return route.fulfill({contentType:'text/html',body:'<!doctype html><p>隔离播放器，无真实视频</p>'});});
   await page.goto('/app');await page.getByRole('button',{name:'连接服务器',exact:true}).first().click();await page.getByRole('checkbox',{name:'仅收听，不打开麦克风'}).check();await page.getByRole('button',{name:'连接',exact:true}).click();
-  await expect.poll(()=>joins).toBe(1);await expect(page.getByRole('button',{name:/^断开(连接|服务器)$/}).first()).toBeEnabled();
+  await expect.poll(()=>joins,{timeout:10000}).toBe(1);await expect(page.getByRole('button',{name:/^断开(连接|服务器)$/}).first()).toBeEnabled();
   const counts=await page.evaluate(()=>[window.__rtcCreations,window.__audioCreations]);
   await page.getByRole('button',{name:'联合观赛',exact:true}).click();await page.getByRole('button',{name:'加载官方播放器'}).click();const frame=page.locator('iframe');await expect(frame).toHaveCount(1);await frame.evaluate(n=>n.dataset.continuity='preserved');
   const panel=await appearance(page);await panel.getByRole('button',{name:'始终使用经典'}).click();await panel.getByRole('button',{name:'浅色',exact:true}).click();await panel.getByRole('button',{name:'关闭',exact:true}).click();

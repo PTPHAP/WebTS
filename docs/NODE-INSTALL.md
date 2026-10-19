@@ -28,6 +28,41 @@ Linux在修改节点前检查运行环境，不自动升级系统库或安装其
 
 Windows向导管理本节点专用防火墙规则；**云安全组、Linux防火墙仍需放行摘要中给出的入站UDP范围**，默认50000–50099。该操作需要云平台权限，不能仅凭安装命令替代。节点TCP8095保持本机回环；不开放新的公网管理入口。完整地址、主站绑定与验收见下文。
 
+### GitHub raw 无法访问时
+
+若命令提示连接重置、超时或无法访问`raw.githubusercontent.com`，可使用下列**GitHub官方API**入口，不依赖raw域名；仍从官方Release下载并验证完整节点包。API也可能限流，失败时不要关闭证书验证或换不可信镜像。两种入口安装的是相同的发布程序，不需要重新创建身份或密钥。
+
+Linux：仍需上面的运行环境，在**TS机器的root交互终端**复制整行；配对码会由随后启动的中文向导隐藏询问：
+
+```bash
+umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.0' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
+```
+
+Windows：以管理员身份打开 **Windows PowerShell**，整段复制运行，不需要编辑内容。暂存脚本目录仅当前维护者、SYSTEM及管理员可写；脚本按UTF-8保存，避免旧版PowerShell的中文解码问题。
+
+```powershell
+$ErrorActionPreference='Stop'
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+foreach($module in @('Microsoft.PowerShell.Security','Microsoft.PowerShell.Utility')){Import-Module "$PSHOME\Modules\$module\$module.psd1"}
+$nodeTmp=Join-Path $env:TEMP ('WebTS-Node-API-'+[Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($nodeTmp)
+$acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetAccessRuleProtection($true,$false)
+foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')){
+    [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+}
+[IO.Directory]::SetAccessControl($nodeTmp,$acl)
+[void][IO.Directory]::CreateDirectory((Join-Path $nodeTmp 'scripts'))
+foreach($name in @('node-install.ps1','node-update.ps1')){
+    $file=Join-Path $nodeTmp ('scripts\'+$name)
+    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.0') -OutFile $file
+    if((Get-Item -LiteralPath $file).Length -gt 1048576){throw '安装器下载大小超限。'}
+    [IO.File]::WriteAllText($file,[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8),[Text.UTF8Encoding]::new($true))
+}
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $nodeTmp 'scripts\node-update.ps1') -Bootstrap
+```
+
+暂存目录只含公开脚本和核验后的公开包；安装配置、密钥及备份在正式节点目录，不能把它们作为公开文件发送。若整个GitHub网络均不可达，用上方发布页的ZIP/归档离线传到TS机器，按对应系统章节启动中文向导。
+
 ## 地址和端口
 
 **先分清两台机器：WebTS主站负责网站；TS节点机器负责语音。** 新增公网语音规则加在**TS节点机器**，不是主站。

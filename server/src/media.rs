@@ -1,5 +1,5 @@
 use crate::app::{Api, App};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json,
     extract::{Query, State},
@@ -22,6 +22,7 @@ use rtc::{
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -109,9 +110,9 @@ use webrtc::{
     },
     peer_connection::{
         PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCBundlePolicy,
-        RTCConfigurationBuilder, RTCIceCandidateType, RTCIceServer, RTCPeerConnectionIceEvent,
-        RTCPeerConnectionState, RTCSessionDescription, RTCStatsReportEntry, SettingEngineBuilder,
-        SrtpProtectionProfile, StatsSelector,
+        RTCConfigurationBuilder, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+        RTCSessionDescription, RTCStatsReportEntry, SettingEngineBuilder, SrtpProtectionProfile,
+        StatsSelector,
     },
     rtp_transceiver::RtpSender,
     runtime::TokioRuntime,
@@ -137,6 +138,40 @@ fn public_sdp(sdp: &str) -> String {
                     !attribute.starts_with("candidate:") || public_candidate(attribute)
                 })
         })
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        + "\r\n"
+}
+
+// webrtc 0.21 gathers interface addresses without applying nat_1to1_ips.
+// Map only the advertised address; ICE must keep its actual bound socket address.
+fn advertised_candidate(candidate: &str, public_ip: Option<IpAddr>) -> String {
+    let Some(ip) = public_ip else {
+        return candidate.to_owned();
+    };
+    let mut fields: Vec<_> = candidate.split_ascii_whitespace().collect();
+    if fields.len() >= 8
+        && fields[0].trim_start_matches("a=").starts_with("candidate:")
+        && fields[2].eq_ignore_ascii_case("udp")
+        && fields[6] == "typ"
+        && fields[7] == "host"
+        && fields[4]
+            .parse::<IpAddr>()
+            .is_ok_and(|local| local.is_ipv4() == ip.is_ipv4())
+    {
+        let address = ip.to_string();
+        fields[4] = &address;
+        return fields.join(" ");
+    }
+    candidate.to_owned()
+}
+
+fn advertised_sdp(sdp: &str, public_ip: Option<IpAddr>) -> String {
+    if public_ip.is_none() {
+        return sdp.to_owned();
+    }
+    sdp.lines()
+        .map(|line| advertised_candidate(line, public_ip))
         .collect::<Vec<_>>()
         .join("\r\n")
         + "\r\n"
@@ -197,6 +232,7 @@ struct Handler {
     secure: Arc<AtomicBool>,
     cancel: CancellationToken,
     unexpected_channels: AtomicUsize,
+    public_ip: Option<IpAddr>,
 }
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
@@ -208,7 +244,8 @@ impl PeerConnectionEventHandler for Handler {
         let _ = channel.close().await;
     }
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
-        if let Ok(candidate) = event.candidate.to_json() {
+        if let Ok(mut candidate) = event.candidate.to_json() {
+            candidate.candidate = advertised_candidate(&candidate.candidate, self.public_ip);
             let _ = self
                 .signals
                 .try_send(json!({"type":"ice","candidate":candidate}));
@@ -318,6 +355,7 @@ pub struct Media {
     pub negotiating: bool,
     pub dirty: bool,
     local_ice: bool,
+    public_ip: Option<IpAddr>,
     signals: mpsc::Sender<Value>,
     offered_speakers: Vec<u16>,
     invalid_audio_notice: Instant,
@@ -343,7 +381,11 @@ impl Media {
             webrtc::peer_connection::Registry::new(),
             &mut engine,
         )?;
-        let mut settings = SettingEngineBuilder::new()
+        let public_ip = (!app.config.rtc.public_ip.is_empty())
+            .then(|| app.config.rtc.public_ip.parse::<IpAddr>())
+            .transpose()
+            .context("WebRTC公布地址必须为有效IP")?;
+        let settings = SettingEngineBuilder::new()
             .with_sctp_max_message_size(
                 rtc::peer_connection::configuration::setting_engine::SctpMaxMessageSize::Bounded(
                     1024,
@@ -354,12 +396,6 @@ impl Media {
                 SrtpProtectionProfile::Srtp_Aead_Aes_256_Gcm,
                 SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm,
             ]);
-        if !app.config.rtc.public_ip.is_empty() {
-            settings = settings.with_nat_1to1_ips(
-                vec![app.config.rtc.public_ip.clone()],
-                RTCIceCandidateType::Host,
-            );
-        }
         let secure = Arc::new(AtomicBool::new(false));
         let peer = PeerConnectionBuilder::new()
             .with_data_channel_send_buffer_limit(4096)
@@ -379,6 +415,7 @@ impl Media {
                 secure: secure.clone(),
                 cancel: cancel.clone(),
                 unexpected_channels: AtomicUsize::new(0),
+                public_ip,
             }))
             .with_udp_addrs(vec![format!("0.0.0.0:{port}")])
             .build()
@@ -452,6 +489,7 @@ impl Media {
             dirty: true,
             local_ice: app.config.allow_insecure_localhost
                 && app.config.public_url.starts_with("http://localhost:"),
+            public_ip,
             signals,
             offered_speakers: Vec::new(),
             invalid_audio_notice: Instant::now() - Duration::from_secs(5),
@@ -529,8 +567,9 @@ impl Media {
         if self.negotiating || !self.dirty {
             return Ok(());
         }
-        let offer = self.peer.create_offer(None).await?;
+        let mut offer = self.peer.create_offer(None).await?;
         self.peer.set_local_description(offer.clone()).await?;
+        offer.sdp = advertised_sdp(&offer.sdp, self.public_ip);
         signals
             .try_send(json!({"type":"offer","description":offer}))
             .map_err(|_| anyhow::anyhow!("信令队列已满"))?;
@@ -742,6 +781,202 @@ pub fn opus_samples(data: &[u8]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn configured_public_ip_is_advertised_by_real_media_gathering() {
+        let (_dir, source, _) = crate::app::tests::fixture();
+        let mut config = source.config.clone();
+        config.rtc.public_ip = "8.8.4.4".into();
+        let app = App::node_runtime(config).unwrap();
+        let (signals, mut events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals.clone(), audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media.offer(&signals).await.unwrap();
+        let candidate = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event["type"] == "ice" {
+                    break event["candidate"]["candidate"].as_str().unwrap().to_owned();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        media.close().await;
+        assert_eq!(
+            candidate.split_ascii_whitespace().nth(4),
+            Some("8.8.4.4"),
+            "configured public IP must replace the private interface in browser signalling: {candidate}"
+        );
+    }
+    #[test]
+    fn public_mapping_preserves_ports_extensions_other_candidates_and_sdp_security() {
+        let ip = Some("8.8.4.4".parse().unwrap());
+        let host = "candidate:abc 1 udp 2130706431 10.0.0.2 50003 typ host generation 0 ufrag test";
+        let mapped = host.replace("10.0.0.2", "8.8.4.4");
+        assert_eq!(advertised_candidate(host, ip), mapped);
+        assert_eq!(advertised_candidate(&mapped, ip), mapped);
+        assert_eq!(advertised_candidate(host, None), host);
+        for value in [
+            "candidate:a 1 udp 1 1.1.1.1 3478 typ srflx raddr 10.0.0.2 rport 50003",
+            "candidate:a 1 udp 1 1.1.1.1 3478 typ relay raddr 10.0.0.2 rport 50003",
+            "candidate:a 1 tcp 1 10.0.0.2 50003 typ host tcptype passive",
+            "candidate:a 1 udp 1 ::1 50003 typ host",
+            "candidate:a 1 udp 1 bogus 50003 typ host",
+            "",
+            "candidate:incomplete",
+        ] {
+            assert_eq!(advertised_candidate(value, ip), value);
+        }
+        let sdp = format!("v=0\r\na=fingerprint:sha-256 test\r\na=ice-ufrag:test\r\na={host}\r\n");
+        assert_eq!(advertised_sdp(&sdp, ip), sdp.replace(host, &mapped));
+        assert_eq!(advertised_sdp(&sdp, None), sdp);
+    }
+    #[tokio::test]
+    async fn public_mapping_connects_through_udp_nat_with_encrypted_control() {
+        use tokio::net::UdpSocket;
+        use webrtc::data_channel::{DataChannel, DataChannelEvent};
+        struct Client(mpsc::Sender<Arc<dyn DataChannel>>);
+        #[async_trait::async_trait]
+        impl PeerConnectionEventHandler for Client {
+            async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
+                let _ = self.0.try_send(channel);
+            }
+        }
+        // Only the proxy is reachable by the client. Never give the gateway the
+        // client's host candidates, so a direct private-address path cannot pass.
+        let front = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = front.local_addr().unwrap().port();
+        let back = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let (_dir, source, _) = crate::app::tests::fixture();
+        let mut config = source.config.clone();
+        config.rtc.public_ip = "127.0.0.1".into();
+        let app = App::node_runtime(config).unwrap();
+        let (signals, mut events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(
+            &app,
+            1,
+            port,
+            signals.clone(),
+            audio,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        media.offer(&signals).await.unwrap();
+        let (offer, candidate) = tokio::time::timeout(Duration::from_secs(3), async {
+            let (mut offer, mut candidate) = (None, None);
+            loop {
+                let event = events.recv().await.unwrap();
+                if event["type"] == "offer" {
+                    offer = Some(event["description"].clone());
+                }
+                if event["type"] == "ice" {
+                    candidate = Some(event["candidate"].clone());
+                }
+                if let (Some(offer), Some(candidate)) = (&offer, &candidate) {
+                    break (offer.clone(), candidate.clone());
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let local = media
+            .peer
+            .local_description()
+            .await
+            .unwrap()
+            .sdp
+            .lines()
+            .find(|line| line.starts_with("a=candidate:"))
+            .unwrap()
+            .split_ascii_whitespace()
+            .nth(4)
+            .unwrap()
+            .to_owned();
+        assert_ne!(
+            local, "127.0.0.1",
+            "the proxy must be separate from the real bound interface"
+        );
+        let target: std::net::SocketAddr = format!("{local}:{port}").parse().unwrap();
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let count = forwarded.clone();
+        let proxy = tokio::spawn(async move {
+            let (mut incoming, mut outgoing) = ([0u8; 4096], [0u8; 4096]);
+            let mut client = None;
+            loop {
+                tokio::select! {
+                    packet = front.recv_from(&mut incoming) => {
+                        let (n, address) = packet.unwrap();
+                        client = Some(address);
+                        back.send_to(&incoming[..n], target).await.unwrap();
+                        count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    packet = back.recv_from(&mut outgoing) => {
+                        let (n, address) = packet.unwrap();
+                        assert_eq!(address, target);
+                        if let Some(client) = client { front.send_to(&outgoing[..n], client).await.unwrap(); }
+                    }
+                }
+            }
+        });
+        let (channels, mut opened) = mpsc::channel(2);
+        let peer = PeerConnectionBuilder::new()
+            .with_runtime(Arc::new(TokioRuntime))
+            .with_handler(Arc::new(Client(channels)))
+            .with_udp_addrs(vec!["127.0.0.1:0"])
+            .build()
+            .await
+            .unwrap();
+        peer.set_remote_description(serde_json::from_value(offer).unwrap())
+            .await
+            .unwrap();
+        let mut answer = peer.create_answer(None).await.unwrap();
+        peer.set_local_description(answer.clone()).await.unwrap();
+        answer.sdp = answer
+            .sdp
+            .lines()
+            .filter(|line| !line.starts_with("a=candidate:"))
+            .collect::<Vec<_>>()
+            .join("\r\n")
+            + "\r\n";
+        media.answer(answer).await.unwrap();
+        peer.add_ice_candidate(serde_json::from_value(candidate).unwrap())
+            .await
+            .unwrap();
+        let ready = tokio::time::timeout(Duration::from_secs(10), async {
+            let channel = opened.recv().await.unwrap();
+            loop {
+                if let Some(DataChannelEvent::OnMessage(message)) = channel.poll().await {
+                    assert_eq!(message.data.as_ref(), b"{\"type\":\"audio_control_ready\"}");
+                    break;
+                }
+            }
+            channel
+                .send_text(
+                    "{\"type\":\"transmit\",\"enabled\":true,\"pre_roll\":true,\"sequence\":1}",
+                )
+                .await
+                .unwrap();
+            media.control.changed().await.unwrap();
+            assert!(matches!(
+                media.control.borrow().as_ref(),
+                Some(AudioControl::Transmit(_))
+            ));
+            assert!(media.check_cipher().await.unwrap().is_some());
+        })
+        .await;
+        media.close().await;
+        peer.close().await.unwrap();
+        proxy.abort();
+        let _ = proxy.await;
+        ready.expect(
+            "mapped host candidate must carry real bidirectional DTLS/SCTP over the NAT proxy",
+        );
+        assert!(forwarded.load(Ordering::Relaxed) > 0);
+    }
     #[tokio::test]
     async fn direct_control_runs_over_real_dtls_sctp_and_closes_without_stopping_audio() {
         use webrtc::data_channel::{DataChannel, DataChannelEvent};
@@ -982,6 +1217,7 @@ mod tests {
             secure: Arc::new(AtomicBool::new(true)),
             cancel: cancel.clone(),
             unexpected_channels: AtomicUsize::new(0),
+            public_ip: None,
         };
         handler
             .on_connection_state_change(RTCPeerConnectionState::Disconnected)

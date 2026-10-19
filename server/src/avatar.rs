@@ -107,7 +107,7 @@ impl Avatars {
             bail!("头像超过站点限制（{}KiB）", limits.avatar_upload_kib);
         }
         self.tasks.spawn(async move {
-            Completed::UploadReady(request, normalize(&app, bytes, limits, false).await)
+            Completed::UploadReady(request, normalize(&app, bytes, limits).await)
         });
         Ok(())
     }
@@ -136,13 +136,23 @@ impl Avatars {
                     {
                         bail!("服务器头像过大或为空");
                     }
+                    let permit = app
+                        .image_bytes
+                        .clone()
+                        .try_acquire_many_owned(result.size.div_ceil(1024) as u32)
+                        .map_err(|_| anyhow::anyhow!("图片读取内存预算正忙，请稍后重试"))?;
                     let mut stream = result.stream;
                     let mut bytes = vec![0; result.size as usize];
                     stream.read_exact(&mut bytes).await?;
                     if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(&target.hash) {
                         bail!("头像版本已变化，请重新加载");
                     }
-                    normalize(&app, bytes, limits, true).await
+                    app.expensive(move |_| {
+                        let _permit = permit;
+                        Ok(sanitize_image(&bytes, limits, true))
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.1))?
                 };
                 let result = tokio::time::timeout(Duration::from_secs(5), data)
                     .await
@@ -201,13 +211,8 @@ fn failure(pending: Pending, message: &'static str) -> Completed {
         }
     }
 }
-async fn normalize(
-    app: &Arc<App>,
-    bytes: Vec<u8>,
-    limits: ImageLimits,
-    native: bool,
-) -> Result<Vec<u8>> {
-    app.expensive(move |_| Ok(sanitize_image(&bytes, limits, native)))
+async fn normalize(app: &Arc<App>, bytes: Vec<u8>, limits: ImageLimits) -> Result<Vec<u8>> {
+    app.expensive(move |_| Ok(sanitize_image(&bytes, limits, false)))
         .await
         .map_err(|e| anyhow::anyhow!(e.1))?
 }
@@ -291,6 +296,58 @@ fn avatar_decode_error(error: image::ImageError) -> anyhow::Error {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn full_global_image_budget_rejects_avatar_before_reading_the_stream() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let reserved = app
+            .image_bytes
+            .clone()
+            .acquire_many_owned(128 * 1024)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _silent_peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut avatars = Avatars::default();
+        avatars.pending.insert(
+            1,
+            (
+                Pending::Download {
+                    target: Target {
+                        client: 1,
+                        uid: "fixture".into(),
+                        hash: "0".repeat(32),
+                    },
+                    limits: ImageLimits::default(),
+                },
+                Instant::now(),
+            ),
+        );
+        avatars.downloaded(
+            1,
+            FileDownloadResult {
+                size: 2048 * 1024,
+                stream,
+            },
+            app.clone(),
+        );
+        let completed = tokio::time::timeout(Duration::from_secs(1), avatars.tasks.join_next())
+            .await
+            .expect("budget must be checked before waiting for source bytes")
+            .unwrap()
+            .unwrap();
+        match completed {
+            Completed::Download(_, result) => {
+                assert!(result.unwrap_err().to_string().contains("内存预算"))
+            }
+            _ => panic!("expected download result"),
+        }
+        assert_eq!(app.image_bytes.available_permits(), 0);
+        drop(reserved);
+        assert_eq!(app.image_bytes.available_permits(), 128 * 1024);
+    }
+    #[tokio::test]
     async fn in_flight_avatar_uses_request_policy_after_hot_reload() {
         for limits in [
             ImageLimits {
@@ -350,7 +407,7 @@ mod tests {
                     size,
                     stream: receiver,
                 },
-                app,
+                app.clone(),
             );
             match avatars.tasks.join_next().await.unwrap().unwrap() {
                 Completed::Download(_, result) => {
@@ -363,6 +420,7 @@ mod tests {
                 }
                 _ => panic!("expected avatar download"),
             }
+            assert_eq!(app.image_bytes.available_permits(), 128 * 1024);
             writer.await.unwrap();
         }
     }

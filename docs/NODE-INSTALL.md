@@ -6,6 +6,28 @@
 
 下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
 
+## 一条命令，进入中文配置
+
+**在运行TeamSpeak的机器执行，不是在WebTS主站执行。** 安装器下载官方最新正式Release中经过校验的节点包，首次安装和保留配置升级使用相同入口。不需要下载源码、编译或手写TOML。
+
+Linux：推荐 **Ubuntu 24.04 x64**，需要Python 3.11+、glibc 2.39+、systemd和curl。在root交互终端复制：
+
+```bash
+bash <(curl -fsS --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.0/install-node.sh)
+```
+
+Windows x64 / Windows Server：以管理员身份打开 **Windows PowerShell**，复制：
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.0/install-node.ps1 | iex
+```
+
+按顺序准备四项：**主站HTTPS网址 → 本机公网IPv4 → 主站后台显示的节点标识 → 一次性配对码**。TS和语音端口默认值会直接显示，可选择修改；升级时使用原安装目录，原来正确的配对、TS、公网IP和端口可以沿用。配对码只在隐藏输入框填写，不拼进命令。
+
+Linux在修改节点前检查运行环境，不自动升级系统库或安装其他服务。ARM、Alpine/musl、旧glibc和macOS没有本批可验证的节点包，**不承诺所有操作系统均可安装**；Windows与Linux使用各自的命令。命令入口依赖GitHub可访问及发布附件齐全；失败不会跳过校验或改用第三方镜像。
+
+Windows向导管理本节点专用防火墙规则；**云安全组、Linux防火墙仍需放行摘要中给出的入站UDP范围**，默认50000–50099。该操作需要云平台权限，不能仅凭安装命令替代。节点TCP8095保持本机回环；不开放新的公网管理入口。完整地址、主站绑定与验收见下文。
+
 ## 地址和端口
 
 **先分清两台机器：WebTS主站负责网站；TS节点机器负责语音。** 新增公网语音规则加在**TS节点机器**，不是主站。

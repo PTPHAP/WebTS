@@ -1,3 +1,4 @@
+param([switch]$Bootstrap)
 # Windows PowerShell 5.1; download and verify before invoking the existing installer.
 $ErrorActionPreference='Stop'
 function Get-OfficialNodeFile([string]$Url,[string]$Path,[long]$Limit) {
@@ -18,8 +19,8 @@ function Get-OfficialNodeFile([string]$Url,[string]$Path,[long]$Limit) {
             }
             [void]$response.EnsureSuccessStatusCode()
             if($response.Content.Headers.ContentLength -gt $Limit){throw '更新文件超过大小限制。'}
-            $stream=$response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();$file=[IO.File]::Open($Path,[IO.FileMode]::CreateNew)
-            try{$buffer=[byte[]]::new(65536);$size=0L;while(($n=$stream.Read($buffer,0,$buffer.Length)) -gt 0){$size+=$n;if($size -gt $Limit){throw '更新文件超过大小限制。'};$file.Write($buffer,0,$n)}}finally{$file.Dispose();$stream.Dispose()}
+            $stream=$response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();$file=[IO.File]::Open($Path,[IO.FileMode]::CreateNew);$cancel=[Threading.CancellationTokenSource]::new(300000)
+            try{$buffer=[byte[]]::new(65536);$size=0L;while(($n=$stream.ReadAsync($buffer,0,$buffer.Length,$cancel.Token).GetAwaiter().GetResult()) -gt 0){$size+=$n;if($size -gt $Limit){throw '更新文件超过大小限制。'};$file.Write($buffer,0,$n)}}finally{$file.Dispose();$stream.Dispose();$cancel.Dispose()}
             return
         }
         throw '更新下载重定向次数超限。'
@@ -44,10 +45,12 @@ function Expand-NodeUpdate([string]$Archive,[string]$Destination,[string]$Stem) 
     }finally{$zip.Dispose()}
 }
 
-function Invoke-NodeUpdate([string]$Root) {
+function Invoke-NodeUpdate([string]$Root,[switch]$FirstInstall) {
     . (Join-Path $PSScriptRoot 'node-install.ps1')
-    Assert-NodeDirectory $Root
-    if(!(Test-Path -LiteralPath (Join-Path $Root 'node.local.toml'))){throw '未找到原节点配置；请从已安装节点目录执行 webts-node.cmd update。'}
+    if(!$FirstInstall){
+        Assert-NodeDirectory $Root
+        if(!(Test-Path -LiteralPath (Join-Path $Root 'node.local.toml'))){throw '未找到原节点配置；请从已安装节点目录执行 webts-node.cmd update。'}
+    }
     $stage=Join-Path $env:TEMP ('WebTS-Node-Update-'+[Guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($stage);Set-NodeAcl $stage -Directory
     Write-Host '正在检查 PTPHAP/WebTS 的最新正式发布；尚未停止节点。'
@@ -76,6 +79,10 @@ function Invoke-NodeUpdate([string]$Root) {
     if((Read-NodeValue '继续进入升级向导？（Y/N）' 'N') -notmatch '^(y|yes|是)$'){Write-Host ('已取消。下载暂存于 '+$stage);return}
     # Use the newly verified installer, with the original directory fixed explicitly.
     . (Join-Path $source 'scripts\node-install.ps1')
+    if($FirstInstall){
+        $defaultRoot=Find-InstalledNodeRoot (Join-Path $env:SystemDrive 'WebTS-Node')
+        $Root=Get-NodeFullPath (Read-NodeValue '安装目录（已有节点请使用原目录）' $defaultRoot) $source
+    }
     Invoke-NodeInstall $Root $source
     Write-Host ('升级完成。下载缓存：'+$stage+'；旧配置备份在原节点 backups 中。')
 }
@@ -85,13 +92,13 @@ if($MyInvocation.InvocationName -ne '.'){
     try{
         $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
         if(!([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
-            $child=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'"') -Verb RunAs -Wait -PassThru
+            $child=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'"'+$(if($Bootstrap){' -Bootstrap'}else{''})) -Verb RunAs -Wait -PassThru
             exit $child.ExitCode
         }
         foreach($module in @('Microsoft.PowerShell.Security','Microsoft.PowerShell.Utility','ScheduledTasks','NetSecurity','NetTCPIP','CimCmdlets')){Import-Module (Join-Path $PSHOME ('Modules\'+$module+'\'+$module+'.psd1')) -ErrorAction Stop}
         $mutex=[Threading.Mutex]::new($false,'Global\WebTS-Node-Install');try{$locked=$mutex.WaitOne(0)}catch [Threading.AbandonedMutexException]{$locked=$true}
         if(!$locked){throw '已有安装或更新向导运行，请先完成原窗口操作。'}
-        Invoke-NodeUpdate (Split-Path -Parent $PSScriptRoot)
+        Invoke-NodeUpdate (Split-Path -Parent $PSScriptRoot) -FirstInstall:$Bootstrap
     }catch{Write-Host ('节点更新未完成：'+$_.Exception.Message) -ForegroundColor Red;Write-Host '没有操作TeamSpeak。若进入安装阶段，请保留原目录/backups；下载或校验阶段失败则当前节点继续运行。';exit 1}
     finally{if($locked){$mutex.ReleaseMutex()};if($mutex){$mutex.Dispose()}}
 }

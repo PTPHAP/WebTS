@@ -151,6 +151,7 @@ jobs:
       - name: Validate deployment and build container
         run: |
           bash -n install.sh
+          bash -n install-node.sh
           python3 -m unittest discover -s scripts/tests -v
           WEBTS_DOMAIN=voice.example.com docker compose config --quiet
           docker build -t webts:ci .

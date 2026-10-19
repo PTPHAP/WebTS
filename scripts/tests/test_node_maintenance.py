@@ -2,7 +2,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -23,6 +25,13 @@ def archive(path,items):
 class NodeMaintenanceTests(unittest.TestCase):
     def setUp(self):
         (ROOT/'.cache').mkdir(exist_ok=True)
+
+    @unittest.skipUnless(os.name == 'posix', 'Linux shell preflight')
+    def test_bootstrap_refuses_noninteractive_execution_before_downloading(self):
+        result = subprocess.run(['bash', str(ROOT/'install-node.sh')], input=b'', capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('正在下载'.encode(), result.stdout)
+        self.assertNotIn(b'Traceback', result.stderr)
 
     def test_official_downloads_reject_plaintext_credentials_and_external_redirects(self):
         for url in ['http://github.com/x','https://github.com.evil.invalid/x','https://example.invalid/x','https://user:secret@github.com/x','https://github.com:444/x']:

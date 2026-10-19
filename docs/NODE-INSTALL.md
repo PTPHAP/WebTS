@@ -32,10 +32,12 @@ umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --ma
 以管理员身份打开 **Windows PowerShell**，复制这一行，进入中文安装窗口：
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.2/install-node.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $webtsScript=irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.2/install-node.ps1; iex ($webtsScript.TrimStart([char]0xFEFF))
 ```
 
 也可下载[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip)，按旁边的[校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip.sha256)核对，解压后双击 **开始安装.cmd**。更新已有节点时，安装位置选原目录。
+
+若旧版入口报 `﻿#`，这是脚本开头的编码标记被当作命令，上面的入口会先移除该标记。若旧版随后报 `GetResult`、发送请求出错，则是另一个下载连接故障；1.1.2 的更新器未在新 PowerShell 进程内自行设置 TLS，请先使用 ZIP 安装方式，不能把去掉编码标记当作已修复网络。下载失败时无需重装 TeamSpeak、清空配对或开放管理端口。
 
 ## 3. 放行语音端口，回网页连接
 

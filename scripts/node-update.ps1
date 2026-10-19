@@ -2,6 +2,8 @@ param([switch]$Bootstrap)
 # Windows PowerShell 5.1; download and verify before invoking the existing installer.
 $ErrorActionPreference='Stop'
 function Get-OfficialNodeFile([string]$Url,[string]$Path,[long]$Limit) {
+    # This updater also runs in a fresh PowerShell process, without the bootstrap's TLS settings.
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
     Add-Type -AssemblyName System.Net.Http
     $handler=[Net.Http.HttpClientHandler]::new();$handler.AllowAutoRedirect=$false
     $client=[Net.Http.HttpClient]::new($handler);$client.Timeout=[TimeSpan]::FromMinutes(5)
@@ -11,7 +13,11 @@ function Get-OfficialNodeFile([string]$Url,[string]$Path,[long]$Limit) {
         for($redirect=0;$redirect -lt 6;$redirect++){
             $uri=[Uri]$Url
             if($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Port -ne 443 -or $uri.Host -notin @('api.github.com','github.com','release-assets.githubusercontent.com','objects.githubusercontent.com')){throw '更新下载目标不在官方允许列表中。'}
-            $response=$client.GetAsync($uri,[Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            try{$response=$client.GetAsync($uri,[Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()}
+            catch{
+                $cause=$_.Exception.GetBaseException()
+                throw ('无法连接 GitHub 下载服务 '+$uri.Host+'（'+$cause.GetType().Name+'）。请检查服务器出站网络、系统时间和系统证书；尚未停止节点。')
+            }
             if([int]$response.StatusCode -in @(301,302,303,307,308)){
                 $next=$response.Headers.Location
                 if(!$next){throw '更新下载重定向无效。'}

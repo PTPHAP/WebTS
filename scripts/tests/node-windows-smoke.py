@@ -51,6 +51,11 @@ def smoke(package, native_os=False):
         if result.returncode:
             raise RuntimeError(result.stderr.decode(errors='replace'))
         if not native_os:
+            bootstrap = base/'node-bootstrap.ps1'
+            bootstrap.write_text((ROOT/'scripts/tests/node-bootstrap.ps1').read_text(encoding='utf-8-sig'),encoding='utf-8-sig')
+            result=subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(bootstrap),'-ProjectRoot',str(ROOT),'-Scratch',str(scratch)],capture_output=True,timeout=30,creationflags=subprocess.CREATE_NO_WINDOW)
+            print(result.stdout.decode(errors='replace'))
+            if result.returncode:raise RuntimeError(result.stderr.decode(errors='replace'))
             checks=base/'node-update-checks.ps1'
             checks.write_text((ROOT/'scripts/tests/node-update-checks.ps1').read_text(encoding='utf-8-sig'),encoding='utf-8-sig')
             result=subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(checks),'-PackageRoot',str(package_root),'-Scratch',str(scratch),'-IsolatedModules'],capture_output=True,timeout=60,creationflags=subprocess.CREATE_NO_WINDOW)

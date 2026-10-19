@@ -43,7 +43,10 @@ try{
         }
     }finally{$client.Dispose();$handler.Dispose()}
     Write-Host 'WebTS同机语音节点 · 下载校验后的官方包，进入中文配置；不会安装主站或操作TeamSpeak。'
-    & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $stage 'scripts\node-update.ps1') -Bootstrap
+    $childEntry=(Join-Path $stage 'scripts\node-update.ps1').Replace("'","''")
+    $childCommand="[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & '$childEntry' -Bootstrap"
+    $encodedCommand=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+    & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand
     if($LASTEXITCODE -ne 0){throw '节点向导未完成；请保留提示及原节点backups，不要清空密钥。'}
 }finally{
     # Delete only these two known public helper files; never recurse into an install directory.

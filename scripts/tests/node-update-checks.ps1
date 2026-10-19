@@ -36,6 +36,12 @@ Expand-NodeUpdate $zip $out 'node'
 Assert ([IO.File]::ReadAllText((Join-Path $out 'node/scripts/check.txt')) -eq 'verified fixture') 'valid payload extracted'
 foreach($url in @('http://github.com/x','https://github.com.evil.invalid/x','https://user:secret@github.com/x','https://github.com:444/x')){Refuses {Get-OfficialNodeFile $url (Join-Path $Scratch 'must-not-write') 100}}
 Assert (!(Test-Path -LiteralPath (Join-Path $Scratch 'must-not-write'))) 'network rejection creates no output'
+$previousTls=[Net.ServicePointManager]::SecurityProtocol
+try{
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls
+    Refuses {Get-OfficialNodeFile 'http://github.com/must-not-request' (Join-Path $Scratch 'must-not-write') 100}
+    Assert ([Net.ServicePointManager]::SecurityProtocol -eq [Net.SecurityProtocolType]::Tls12) 'fresh legacy process establishes its own TLS 1.2 policy'
+}finally{[Net.ServicePointManager]::SecurityProtocol=$previousTls}
 # A first installation has no local config. Exercise download/manifest validation and
 # handoff to the newly verified installer without touching tasks, processes or firewall.
 $fixtureName='webts-node-1.2.3-preview.5-windows-x64.zip'

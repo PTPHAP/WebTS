@@ -88,6 +88,14 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 
 截图使用演示账号，部分来自较早版本；站名、图标与公告可由站长更换。
 
+## 管理命令在哪里输入
+
+- **网站服务器：** 输入`webts`，打开网站的中文管理菜单。
+- **TS节点Linux服务器：** 输入`webts-node install`重新配置；`systemctl start webts-node`启动，`systemctl status webts-node --no-pager`查看运行状态。
+- **TS节点Windows服务器：** 双击“开始安装.cmd”重新配置，安装位置选原目录。
+
+命令找不到、安装中断或想确认实际走哪台节点，看[命令对照和路线设置](docs/CONFIGURATION.md#先看命令要在哪里输入)。
+
 ## 常见问题
 
 | 问题 | 去哪里处理 |

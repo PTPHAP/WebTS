@@ -1,4 +1,15 @@
-export type ConnectionQuality={rtt?:number;jitter?:number;buffer?:number;loss?:number;received?:number;sent?:number;route?:'direct'|'relay';statsAvailable?:boolean;windowSeconds?:number;recentLoss?:number;recentBuffer?:number;recentConcealed?:number;recentConcealmentEvents?:number};
+export type ConnectionQuality={rtt?:number;jitter?:number;buffer?:number;loss?:number;received?:number;sent?:number;route?:'direct'|'relay';statsAvailable?:boolean;inboundStreams?:number;audioInboundStreams?:number;windowSeconds?:number;recentLoss?:number;recentBuffer?:number;recentConcealed?:number;recentConcealmentEvents?:number};
+function audioStats(row:RTCStats&{kind?:string;mediaType?:string;codecId?:string},report:RTCStatsReport):boolean {
+  const kind=row.kind||row.mediaType;
+  if(kind)return kind==='audio';
+  const codec=row.codecId?report.get(row.codecId):undefined;
+  return typeof codec?.mimeType==='string'&&codec.mimeType.toLowerCase().startsWith('audio/');
+}
+export function receiveStatsCoverage(report:RTCStatsReport){
+  let inboundStreams=0,audioInboundStreams=0;
+  for(const row of report.values())if(row.type==='inbound-rtp'){inboundStreams++;if(audioStats(row,report))audioInboundStreams++;}
+  return {inboundStreams,audioInboundStreams};
+}
 // Only numeric summaries reach the UI. Candidate addresses and raw reports stay local.
 export function connectionQuality(report:RTCStatsReport):ConnectionQuality {
   const rows=Array.from(report.values());
@@ -12,8 +23,8 @@ export function connectionQuality(report:RTCStatsReport):ConnectionQuality {
   if(finite(pair?.currentRoundTripTime))result.rtt=pair.currentRoundTripTime*1000;
   let received=0,lost=0,delay=0,emitted=0;
   for(const row of rows){
-    if(row.type==='outbound-rtp'&&(row.kind??row.mediaType)==='audio'&&finite(row.packetsSent))result.sent=(result.sent??0)+row.packetsSent;
-    if(row.type!=='inbound-rtp'||(row.kind??row.mediaType)!=='audio')continue;
+    if(row.type==='outbound-rtp'&&audioStats(row,report)&&finite(row.packetsSent))result.sent=(result.sent??0)+row.packetsSent;
+    if(row.type!=='inbound-rtp'||!audioStats(row,report))continue;
     if(finite(row.jitter))result.jitter=Math.max(result.jitter??0,row.jitter*1000);
     if(finite(row.packetsReceived))result.received=(result.received??0)+row.packetsReceived;
     if(finite(row.packetsReceived)&&typeof row.packetsLost==='number'&&Number.isFinite(row.packetsLost)){received+=row.packetsReceived;lost+=Math.max(0,row.packetsLost);}
@@ -37,7 +48,7 @@ export class QualityHistory {
     const result=connectionQuality(report),streams=new Map<string,Counters>();
     if(!Number.isFinite(now)||now<0){this.reset();return result;}
     report.forEach((row,id)=>{
-      if(streams.size>=128||row.type!=='inbound-rtp'||(row.kind??row.mediaType)!=='audio'||typeof id!=='string'||id.length>256)return;
+      if(streams.size>=128||row.type!=='inbound-rtp'||!audioStats(row,report)||typeof id!=='string'||id.length>256)return;
       const value:Counters={};for(const key of counters){const n=row[key];if(typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=Number.MAX_SAFE_INTEGER&&(n>=0||key==='packetsLost'))value[key]=n;}
       streams.set(`${id}:${Number.isSafeInteger(row.ssrc)?row.ssrc:''}`,value);
     });

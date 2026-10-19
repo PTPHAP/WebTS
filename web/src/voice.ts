@@ -2,7 +2,7 @@ type Event = Record<string, unknown>;
 import {defaultAudioSettings,type AudioSettings} from './audio-settings';
 import {createReceiver} from './receive-audio';
 import type {NoiseProcessor} from './noise';
-import {QualityHistory} from './connection-quality';
+import {QualityHistory,receiveStatsCoverage} from './connection-quality';
 class Retryable extends Error {}
 export class Voice {
   private socket?: WebSocket;
@@ -72,6 +72,7 @@ export class Voice {
   constructor(private event: (event: Event) => void) {}
   controlPath(){return !this.ready?'inactive':this.control?.ready&&this.control.channel.readyState==='open'?'direct':'signalling';}
   diagnostics(){return {context:this.context?.state??'inactive',processing:!this.context?'inactive':this.intent?.listenOnly?'listen':this.processingBlocked?'blocked':this.noiseNode?.mode??'off',receivers:this.receivers.size,players:this.elements.size,pausedPlayers:[...this.elements.values()].filter(audio=>audio.paused).length};}
+  timing(){const capture=this.stream?.getAudioTracks()[0]?.getSettings?.() as (MediaTrackSettings&{latency?:number})|undefined;return {base:this.context?.baseLatency,output:this.context?.outputLatency,capture:capture?.latency};}
   send(event: Event) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event)); }
   async connect(request: Event, device: string, listenOnly: boolean) {
     this.close();this.intent={request:{...request},device,listenOnly};
@@ -127,7 +128,7 @@ export class Voice {
       reading=true;let expired=false;
       const deadline=window.setTimeout(()=>{expired=true;qualityHistory.reset();if(generation===this.generation)this.event({type:'quality',statsAvailable:false});},3000);
       this.qualityDeadline=deadline;
-      try{const report=await qualityPeer.getStats();if(generation===this.generation&&!expired)this.event({type:'quality',statsAvailable:true,...qualityHistory.update(report,performance.now())});}
+      try{const report=await qualityPeer.getStats();if(generation===this.generation&&!expired)this.event({type:'quality',statsAvailable:true,...qualityHistory.update(report,performance.now()),...receiveStatsCoverage(report)});}
       catch{qualityHistory.reset();if(generation===this.generation&&!expired)this.event({type:'quality',statsAvailable:false});}
       finally{window.clearTimeout(deadline);if(this.qualityDeadline===deadline)this.qualityDeadline=undefined;reading=false;}
     },2000);

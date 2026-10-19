@@ -20,6 +20,22 @@ test('channel invites contain no secrets and accept only bounded configured iden
  assert.ok(!JSON.stringify(favorites.readFavorites([value])).includes('password'));
 });
 const input={connected:true,reconnecting:false,transport:'connected',capture:'running',listenOnly:false,muted:false,deafened:false,away:false,canSpeak:true,playbackBlocked:false,otherSpeaking:false,quality:{rtt:20,received:50,sent:40,route:'direct'},cipher:'AES-256-GCM',gain:1,volume:1};
+
+test('missing receive measurements are not reported as healthy or as packet loss',()=>{
+ const value={...input,runtime:{context:'running',processing:'rnnoise',receivers:2,players:2,pausedPlayers:0},quality:{statsAvailable:true,rtt:17,inboundStreams:2,audioInboundStreams:0}};
+ const issues=diagnostics.voiceDiagnosis(value);
+ assert.ok(issues.some(v=>v.title==='接收统计尚未报告'));
+ assert.ok(!issues.some(v=>v.title==='未发现明显的设置或连接异常'||v.title.includes('丢包')));
+ const report=diagnostics.diagnosticReport(value);assert.equal(report.metrics.inboundStreams,2);assert.equal(report.metrics.audioInboundStreams,0);
+ for(const invalid of [-1,.5,Infinity,'private-id'])assert.equal(diagnostics.diagnosticReport({...value,quality:{inboundStreams:invalid}}).metrics.inboundStreams,null);
+});
+
+test('reported device latency exports only finite millisecond summaries',()=>{
+ const report=diagnostics.diagnosticReport({...input,audioLatency:{base:.01,output:.2,capture:.05,deviceId:'private'}});
+ assert.equal(report.audio.contextBaseLatencyMs,10);assert.equal(report.audio.contextOutputLatencyMs,200);assert.equal(report.audio.captureLatencyMs,50);
+ for(const invalid of [-1,NaN,Infinity,'private'])assert.equal(diagnostics.diagnosticReport({...input,audioLatency:{base:invalid}}).audio.contextBaseLatencyMs,null);
+ assert.ok(!JSON.stringify(report).includes('private'));
+});
 test('echo diagnostics distinguish a request, rejection and unreported state without exporting raw device settings',()=>{
  for(const [echoActual,title] of [[false,'设备未启用回声消除'],[undefined,'设备未报告回声消除状态']]){
   const value={...input,echoRequested:true,echoActual,deviceId:'do not export',label:'private microphone'};

@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 const code=ts.transpileModule(await readFile(new URL('../src/connection-quality.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {connectionQuality,QualityHistory}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const {connectionQuality,QualityHistory,receiveStatsCoverage}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+
+test('audio counters can use the linked codec when kind fields are absent, without classifying video as audio',()=>{
+ const report=new Map([['codec',{type:'codec',mimeType:'audio/opus'}],['voice',{type:'inbound-rtp',codecId:'codec',ssrc:7,packetsReceived:50,packetsLost:0,jitter:.002,jitterBufferDelay:2,jitterBufferEmittedCount:50}],['video',{type:'inbound-rtp',kind:'video',codecId:'codec',packetsReceived:900}],['unknown',{type:'inbound-rtp',packetsReceived:800}]]);
+ assert.deepEqual(connectionQuality(report),{received:50,loss:0,jitter:2,buffer:40});
+ assert.deepEqual(receiveStatsCoverage(report),{inboundStreams:3,audioInboundStreams:1});
+ const history=new QualityHistory();history.update(report,0);report.get('voice').packetsReceived=100;report.get('voice').jitterBufferDelay=3;report.get('voice').jitterBufferEmittedCount=100;
+ assert.equal(history.update(report,2000).recentBuffer,20);
+ assert.deepEqual(receiveStatsCoverage(new Map()),{inboundStreams:0,audioInboundStreams:0});
+});
 test('selected transport metrics use milliseconds and cumulative weighted receive counters',()=>{
   const report=new Map([['transport',{type:'transport',selectedCandidatePairId:'active'}],['old',{type:'candidate-pair',state:'succeeded',nominated:true,currentRoundTripTime:9}],['active',{type:'candidate-pair',currentRoundTripTime:.025,localCandidateId:'private-address'}],['audio',{type:'inbound-rtp',kind:'audio',packetsReceived:98,packetsLost:2,jitter:.003,jitterBufferDelay:4,jitterBufferEmittedCount:100}],['video',{type:'inbound-rtp',kind:'video',packetsReceived:1,packetsLost:900,jitter:10}]]);
   assert.deepEqual(connectionQuality(report),{rtt:25,jitter:3,loss:2,buffer:40,received:98});

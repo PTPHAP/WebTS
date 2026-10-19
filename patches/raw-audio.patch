@@ -654,3 +654,56 @@ index cc507a8..402a6c1 100644
  	/// Convert to base64 encoded private tomcrypt key.
  	pub fn to_ts(&self) -> String { BASE64_STANDARD.encode(self.to_tomcrypt()) }
  
+diff --git a/tsproto/src/connection.rs b/tsproto/src/connection.rs
+index 2b07465..79f21aa 100644
+--- a/tsproto/src/connection.rs
++++ b/tsproto/src/connection.rs
+@@ -250,6 +250,7 @@ impl Connection {
+ 			match self.poll_send_udp_packet(cx, packet) {
+ 				Poll::Ready(Ok(())) => {
+ 					self.resender.handle_loss_outgoing(packet);
++					self.resender.sent_ping(packet);
+ 				}
+ 				Poll::Ready(Err(e)) => return Err(e),
+ 				Poll::Pending => break,
+@@ -454,6 +455,10 @@ impl Stream for Connection {
+ 			Ok(()) => {}
+ 			Err(e) => return Poll::Ready(Some(Err(e))),
+ 		}
++		// Keepalives generated above must not wait for unrelated actor/timer work.
++		if let Err(e) = self.poll_send_acks(cx) {
++			return Poll::Ready(Some(Err(e)));
++		}
+ 
+ 		// Return existing stream_items
+ 		if let Some(item) = self.stream_items.pop_front() {
+diff --git a/tsproto/src/resend.rs b/tsproto/src/resend.rs
+index ba86a33..a4b7d8c 100644
+--- a/tsproto/src/resend.rs
++++ b/tsproto/src/resend.rs
+@@ -462,7 +462,8 @@ impl Resender {
+ 				// Update srtt if the packet was not resent
+ 				if rec.id.tries == 1 {
+ 					let now = Instant::now();
+-					con.resender.update_srtt(now - rec.sent);
++					// Measure from the successful socket send, not command enqueue time.
++					con.resender.update_srtt(now - rec.id.last);
+ 				}
+ 
+ 				// Notify the waker that we can send another packet from the
+@@ -482,6 +483,15 @@ impl Resender {
+ 
+ 	pub fn received_packet(&mut self) { self.last_receive = Instant::now(); }
+ 
++	pub(crate) fn sent_ping(&mut self, packet: &OutUdpPacket) {
++		if packet.packet_type() == PacketType::Ping {
++			let id: PacketId = packet.into();
++			if let Some(ping) = self.last_pings.iter_mut().find(|ping| ping.id == id.part) {
++				ping.sent = Instant::now();
++			}
++		}
++	}
++
+ 	pub fn handle_loss_incoming(&mut self, packet: &InPacket, in_recv_win: bool, cur_next: u16) {
+ 		let p_type = packet.header().packet_type();
+ 		let id = packet.header().packet_id();

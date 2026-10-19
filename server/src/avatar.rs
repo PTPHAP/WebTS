@@ -18,7 +18,7 @@ use tsproto_types::{ChannelId, ClientId};
 
 pub const MAX_UPLOAD: usize = 64 * 1024;
 #[cfg(test)]
-const MAX_DOWNLOAD: usize = 128 * 1024;
+const MAX_DOWNLOAD: usize = 2048 * 1024;
 #[derive(Clone)]
 pub struct Target {
     pub client: u16,
@@ -432,6 +432,36 @@ mod tests {
         let decoded = image::load_from_memory(&normalized).unwrap();
         assert_eq!(decoded.width(), 256);
         assert_eq!(decoded.height(), 256);
+    }
+    #[test]
+    fn native_avatar_above_legacy_file_limit_is_safely_normalized() {
+        let mut seed = 17u32;
+        let image = image::RgbImage::from_fn(512, 512, |_, _| {
+            let mut pixel = [0; 3];
+            for byte in &mut pixel {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *byte = (seed >> 24) as u8;
+            }
+            image::Rgb(pixel)
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        assert!(encoded.get_ref().len() > 512 * 1024);
+        let limits = ImageLimits::default();
+        let output = sanitize_image(encoded.get_ref(), limits, true).unwrap();
+        assert!(output.len() <= MAX_UPLOAD);
+        assert!(image::load_from_memory(&output).unwrap().width() <= 256);
+        assert!(
+            sanitize_image(
+                encoded.get_ref(),
+                ImageLimits {
+                    avatar_download_kib: 128,
+                    ..limits
+                },
+                true
+            )
+            .is_err()
+        );
     }
     #[test]
     fn native_large_formats_and_small_output_budget_remain_bounded() {

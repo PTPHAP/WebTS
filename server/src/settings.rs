@@ -54,16 +54,16 @@ pub struct ImageLimits {
 impl Default for ImageLimits {
     fn default() -> Self {
         Self {
-            channel_download_kib: 2048,
-            channel_dimension: 2048,
+            channel_download_kib: 8192,
+            channel_dimension: 4096,
             channel_output_kib: 192,
-            channel_images: 8,
+            channel_images: 16,
             channel_cache: 32,
             channel_requests: 8,
-            avatar_download_kib: 128,
+            avatar_download_kib: 2048,
             avatar_upload_kib: 64,
             avatar_dimension: 512,
-            avatar_source_mib: 2,
+            avatar_source_mib: 16,
         }
     }
 }
@@ -76,10 +76,10 @@ impl ImageLimits {
             (self.channel_images, 1, 32),
             (self.channel_cache, 1, 128),
             (self.channel_requests, 1, 32),
-            (self.avatar_download_kib, 16, 512),
+            (self.avatar_download_kib, 16, 4096),
             (self.avatar_upload_kib, 8, 128),
             (self.avatar_dimension, 96, 1024),
-            (self.avatar_source_mib, 1, 8),
+            (self.avatar_source_mib, 1, 32),
         ] {
             if !(min..=max).contains(&value) {
                 bail!("图片限制超出安全范围");

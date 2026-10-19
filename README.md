@@ -30,6 +30,8 @@ WebTS 让你在浏览器里使用 TeamSpeak：登录账号、选一个身份，�
 
 **当前可下载版本：[1.1.1](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)。** 安装教程只使用已发布版本。开发进度放在[更新记录](CHANGELOG.md)，不要求使用者追踪源码版本。
 
+1.1.2维护更新修复TS往返统计和保活发送时序，并扩大安全图片读取范围。修改内容及检查边界见[本轮复核](docs/SECURITY-REVIEW-1.1.2.md)；安装包仅在对应提交检查通过后发布。
+
 ## 搭建自己的 WebTS 网站
 
 ### Linux / Docker

@@ -17,7 +17,7 @@ use tsclientlib::{Connection, FileDownloadResult};
 use tsproto_types::ChannelId;
 
 #[cfg(test)]
-const MAX_DOWNLOAD: usize = 2 * 1024 * 1024;
+const MAX_DOWNLOAD: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImagePath {
     pub channel: u64,
@@ -379,12 +379,12 @@ mod tests {
         let image = image::RgbImage::from_pixel(2500, 1, image::Rgb([50, 80, 130]));
         let mut encoded = Cursor::new(Vec::new());
         image.write_to(&mut encoded, ImageFormat::Png).unwrap();
-        assert!(sanitize(encoded.get_ref()).is_err());
         let limits = ImageLimits {
-            channel_dimension: 4096,
+            channel_dimension: 2048,
             ..Default::default()
         };
-        assert!(sanitize_with_limits(encoded.get_ref(), limits).is_ok());
+        assert!(sanitize_with_limits(encoded.get_ref(), limits).is_err());
+        assert!(sanitize(encoded.get_ref()).is_ok());
         let text = "[img]ts3image://a?channel=1[/img][img]ts3image://b?channel=1[/img]";
         assert!(!description_image(text, "ts3image://b?channel=1", 1));
         assert!(description_image(text, "ts3image://b?channel=1", 2));

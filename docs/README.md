@@ -1,6 +1,20 @@
-# WebTS 文档中心
+# WebTS 使用与安装
 
-第一次部署，从 **[安装教程](INSTALL.md)** 开始；已安装后查看 **[配置教程](CONFIGURATION.md)**。所有示例使用占位域名与邮箱，不包含可用账号或密钥。
+先选自己要做的事，不需要把所有文档读一遍。
+
+| 我要做什么 | 打开这一页 |
+| --- | --- |
+| 登录网站，连接频道，设置麦克风 | [使用说明](CLIENT.md) |
+| 搭建WebTS网站 | [Linux / Docker](INSTALL.md) · [Windows](WINDOWS.md) |
+| 已有网站，给TS服务器装语音节点 | [节点安装](NODE-INSTALL.md) |
+| 改邮箱、TS地址、域名或后台配置 | [配置教程](CONFIGURATION.md) |
+| 管理账号、封禁或发送通知 | [账号管理](ACCOUNT-ADMIN.md) · [信件通知](NOTIFICATIONS.md) |
+| 发帖子、加好友或配置消息存储 | [社区](COMMUNITY.md) · [好友](FRIENDS.md) · [对象存储](OBJECT-STORAGE.md) |
+
+网站服务器输入`webts`打开管理菜单；TS节点机器使用`webts-node`。两者安装位置与用途不同，普通网页使用者无需安装。
+
+<details>
+<summary>查看全部文档与开发资料</summary>
 
 | 文档 | 内容 |
 | --- | --- |
@@ -36,8 +50,8 @@
 | [贡献指南](../CONTRIBUTING.md) | 本地检查、变更约定与反馈 |
 | [更新记录](../CHANGELOG.md) | 面向使用者的功能更新 |
 
-返回 [项目首页](../README.md)。
+| [便捷登录与陌生环境](QUICK-LOGIN.md) | 用户名、手机扫码与公共设备 |
 
-- [好友、双棘轮私信与临时对象存储](FRIENDS.md)：安全码、身份备份、阅后即焚、S3热加载和实验范围。
+</details>
 
-- [便捷登录与陌生环境](QUICK-LOGIN.md)：用户名、手机确认扫码、公共设备限制与升级/回退边界。
+[返回项目首页](../README.md) · [查看已发布版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)

@@ -1,42 +1,68 @@
-# WebTS 同机语音节点 · 反向连接安装
+# 给 TeamSpeak 安装 WebTS 语音节点
 
-**Windows / Linux 1.1.1-node-preview.6 开发预览**，提供中文安装、显式服务器路线、保留配置更新和加密直达发言控制。旧反向节点仍可连接，但要启用直达发言控制须更新节点程序；TS、已配对密钥、公网IP和端口不必随之修改。真实TS通话、目标主机和长期容量仍须验收，不是稳定发行认证。
+已有WebTS网站，TS服务器也在运行时，可以装这个节点，让语音直接到TS那台机器。普通用户继续打开网页使用。
 
-节点装在TS同一台机器，主动WSS连接现有主站；浏览器加密语音直达节点，再经本机连接TS。用户无需安装插件。节点能接触当前TS身份私钥和声音，须由可信运营者管理。
+**当前下载：[1.1.0节点包](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)，组件为preview.5试用版。** Windows和Linux分别使用下面对应的入口。
 
-下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
+## 1. 先到网站后台拿配对码
 
-## 一条命令，进入中文配置
+打开WebTS网站，管理员进入 **站点管理 → 基础配置**：找到要连接的TS服务器，将路线选择为“同机节点”，验证密码并保存，然后生成安装配对码。
 
-**在运行TeamSpeak的机器执行，不是在WebTS主站执行。** 安装器下载官方最新正式Release中经过校验的节点包，首次安装和保留配置升级使用相同入口。不需要下载源码、编译或手写TOML。
+向导只需准备这四项：
 
-Linux：支持 **Debian 12、Ubuntu 22.04及更新版本的x64主机**，需要Python 3.10+、glibc 2.35+、systemd和curl。在root交互终端复制：
+| 提示 | 怎么填 |
+| --- | --- |
+| WebTS主站网址 | 平时打开的完整网站地址，例如`https://web.example.com` |
+| 当前TS机器的公网IPv4 | 这台TS服务器在云控制台显示的公网IP；这里不能填127.0.0.1 |
+| 节点标识 | 从网站后台复制，和对应TS服务器那一项保持一致 |
+| 一次性配对码 | 刚生成的码，5分钟有效；只填在安装向导的隐藏输入框 |
+
+## 2. 到TS那台机器安装
+
+### Linux（Debian 12 / Ubuntu 24.04 x64）
+
+用**root终端**复制整行，然后按中文提示填写。需要Python3、curl、有效CA和运行中的systemd；Debian12不需要为此升级系统库。
 
 ```bash
-bash <(curl -fsS --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.1/install-node.sh)
+umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.0' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
 ```
 
-Windows x64 / Windows Server：以管理员身份打开 **Windows PowerShell**，复制：
+### Windows / Windows Server x64
+
+以管理员身份打开 **Windows PowerShell**，复制这一行，进入中文安装窗口：
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.1/install-node.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.0/install-node.ps1 | iex
 ```
 
-按顺序准备四项：**主站HTTPS网址 → 本机公网IPv4 → 主站后台显示的节点标识 → 一次性配对码**。TS和语音端口默认值会直接显示，可选择修改；升级时使用原安装目录，原来正确的配对、TS、公网IP和端口可以沿用。配对码只在隐藏输入框填写，不拼进命令。
+也可下载[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip)，按旁边的[校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip.sha256)核对，解压后双击 **开始安装.cmd**。更新已有节点时，安装位置选原目录。
 
-Linux在修改节点前检查运行环境，不自动升级系统库或安装其他服务。ARM、Alpine/musl、旧glibc和macOS没有本批可验证的节点包，**不承诺所有操作系统均可安装**；Windows与Linux使用各自的命令。命令入口依赖GitHub可访问及发布附件齐全；失败不会跳过校验或改用第三方镜像。
+## 3. 放行语音端口，回网页连接
 
-Windows向导管理本节点专用防火墙规则；**云安全组、Linux防火墙仍需放行摘要中给出的入站UDP范围**，默认50000–50099。该操作需要云平台权限，不能仅凭安装命令替代。节点TCP8095保持本机回环；不开放新的公网管理入口。完整地址、主站绑定与验收见下文。
+在**TS那台机器**的云安全组放行 **入站 UDP 50000–50099**。Windows向导会处理本节点的主机防火墙规则，Linux还需管理员检查主机防火墙；改过范围则以向导摘要为准。
 
-### GitHub raw 无法访问时
+网站继续使用原来的HTTPS端口。节点的8095只在本机使用，不向公网开放。云安全组需要云账号权限，本机向导无法代改。
 
-若命令提示连接重置、超时或无法访问`raw.githubusercontent.com`，可使用下列**GitHub官方API**入口，不依赖raw域名；仍从官方Release下载并验证完整节点包。API也可能限流，失败时不要关闭证书验证或换不可信镜像。两种入口安装的是相同的发布程序，不需要重新创建身份或密钥。
+回到网站后台，看节点是否显示“在线”，再选择这个TS服务器连接并测试双向说话。节点在线只表示控制连接成功。
 
-Linux：仍需上面的运行环境，在**TS机器的root交互终端**复制整行；配对码会由随后启动的中文向导隐藏询问：
+## 取消、改配置和更新
 
-```bash
-umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.1' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
-```
+| 你遇到的情况 | 怎么做 |
+| --- | --- |
+| 中途取消，还没安装完成 | 重新运行上面的安装命令，不用删除目录 |
+| Linux已安装，想重新配置 | root终端运行`webts-node install`，回车可保留原值 |
+| Windows已安装，想重新配置 | 重新双击“开始安装.cmd”，选择原安装目录 |
+| 配对没成功，码已经过期 | 到网站后台重新生成码，再运行向导 |
+| 想更新程序 | Linux：`webts-node update`；Windows原目录：`webts-node.cmd update` |
+| 想查看运行状态 | Linux：`webts-node status`；Windows到网站后台查看节点是否在线 |
+| 想检查配置 | Linux：`webts-node check`；Windows原目录：`webts-node.cmd check` |
+| 下载提示404 | 使用本页已发布地址，不把版本号改成尚未发布的候选版 |
+| 下载提示超时 | 服务器需要能访问GitHub；保留原配置，不需要重新创建身份 |
+
+安装器会管理自己的节点并保留原配置、密钥和备份；更新或重新配置可能短暂中断该节点通话。它不修改TeamSpeak服务或其他网站。节点运营者能接触授权身份和声音，只装在可信服务器；UDP直达时用户能看到节点语音IP。
+
+<details>
+<summary>Windows下载失败：使用GitHub官方API入口</summary>
 
 Windows：以管理员身份打开 **Windows PowerShell**，整段复制运行，不需要编辑内容。暂存脚本目录仅当前维护者、SYSTEM及管理员可写；脚本按UTF-8保存，避免旧版PowerShell的中文解码问题。
 
@@ -54,14 +80,18 @@ foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
 [void][IO.Directory]::CreateDirectory((Join-Path $nodeTmp 'scripts'))
 foreach($name in @('node-install.ps1','node-update.ps1')){
     $file=Join-Path $nodeTmp ('scripts\'+$name)
-    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.1') -OutFile $file
+    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.0') -OutFile $file
     if((Get-Item -LiteralPath $file).Length -gt 1048576){throw '安装器下载大小超限。'}
     [IO.File]::WriteAllText($file,[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8),[Text.UTF8Encoding]::new($true))
 }
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $nodeTmp 'scripts\node-update.ps1') -Bootstrap
 ```
 
-暂存目录只含公开脚本和核验后的公开包；安装配置、密钥及备份在正式节点目录，不能把它们作为公开文件发送。若整个GitHub网络均不可达，用上方发布页的ZIP/归档离线传到TS机器，按对应系统章节启动中文向导。
+
+</details>
+
+<details>
+<summary>详细端口、手动配置、备份恢复与技术说明</summary>
 
 ## 地址和端口
 
@@ -168,15 +198,16 @@ key_file = "secrets/community-node.key"
 
 ## 3. Linux x64
 
-从1.1.1起，Linux原生包在Ubuntu22.04构建，运行基线为glibc2.35；Debian12自带glibc2.36，无需升级系统库。CI检查实际ELF依赖，并在隔离Debian12容器中启动同一二进制、验证健康接口、拒绝未授权API和正常退出；Ubuntu22.04另做真实systemd安装、升级及密钥保留检查。这些不等于完整Debian主机或真实TS通话验收。Alpine/musl、ARM及glibc低于2.35没有本批包。BUILD-INFO记录实际构建环境。旧1.1.0入口误把构建主机glibc版本作为运行门槛，使用本文新版入口。
+当前下载对应已发布的**1.1.0 / preview.5**。它的构建主机是Ubuntu24.04，实际导入的最高glibc符号版本为2.34，不能把构建主机版本2.39直接当作运行要求。Debian12优先使用本文上方的官方API命令：旧版`install-node.sh`的运行门槛设置过高，不建议在Debian12上用这个旧引导文件。
 
+源码中的1.1.1 / preview.6仍为**未发布候选**，新增Ubuntu22.04构建和Debian12隔离启动检查；不使用它的Tag或附件作为当前安装地址。候选检查不代表Debian主机、真实TS通话或网络已经完成验收。Alpine/musl和ARM没有本批节点包。
 ```sh
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz.sha256
-sha256sum -c webts-node-1.1.1-preview.6-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
+sha256sum -c webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
 # 核对后解压到新目录，不覆盖旧密钥
-tar -xzf webts-node-1.1.1-preview.6-linux-x64.tar.gz
-cd webts-node-1.1.1-preview.6-linux-x64
+tar -xzf webts-node-1.1.0-preview.5-linux-x64.tar.gz
+cd webts-node-1.1.0-preview.5-linux-x64
 sudo sh webts-node install
 # 安装后维护：
 sudo webts-node status
@@ -211,3 +242,6 @@ Docker普通bridge内127.0.0.1是容器自身。Linux用本批镜像时须核对
 5. 测量延迟、丢包和资源，再逐步扩大。本批未完成50连接/10路语音或长期容量验收。
 
 节点不复制账号库，连接身份仅在运行内存使用；宿主机和运营者仍属信任边界。图片限制暂独立配置[image_limits]，不随主站热加载。包仅含公开程序、模板、教程及许可证，不含部署配置、用户数据、密钥或进度。详情见[技术说明](VOICE-NODES.md)和[审查说明](SECURITY-REVIEW-VOICE-NODES.md)。
+
+
+</details>

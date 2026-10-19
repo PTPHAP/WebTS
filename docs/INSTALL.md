@@ -7,14 +7,21 @@
 这是 **Docker Compose 部署的中文引导入口**；Windows 原生运行包请看 [Windows 一键下载与初始化](WINDOWS.md)，已有 Docker 可选 [预构建镜像安装](DOCKER.md)。
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/PTPHAP/WebTS/main/install.sh -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
+apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsS --proto "=https" --tlsv1.2 -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/PTPHAP/WebTS/contents/install.sh?ref=v1.1.0" -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
+
+接下来按中文提示填写，首次构建需要等待。完成后打开自己的网址，再按下方“邮箱与站长账号”步骤开通后台；日后输入`webts`打开管理菜单。
+
+<details>
+<summary>安装位置、系统依赖与下载检查（需要时再看）</summary>
 
 安装器查询 GitHub 最新非预发布的正式版本，下载该标签与固定协议子模块，通过 Docker 从源码构建。首次构建需要时间与网络；它不要求下载 Release 二进制包，不创建演示账号，不内置邮箱、身份或密钥。版本查询或 HTTPS 下载失败时停止，不自动改用开发分支，不禁用证书验证。非 root 请先 `sudo -i`。
 
 安装目录 `/opt/webts`，管理入口 `/usr/local/bin/webts`。若这些位置已有非本项目文件，安装会停止。不会安装或修改 TS 服务，不调整现有防火墙或覆盖其他网站代理。安装缺少的系统依赖时使用发行版签名软件源；已有 Docker 不会被重装。
 
 缺少 Compose V2 时，按 [Docker 官方插件安装方式](https://docs.docker.com/compose/install/linux/) 下载固定 `v2.39.4`（x86_64/aarch64），核对官方 SHA-256 后安装插件，不为安装 Compose 而卸载或替换已有 Docker。已有有效插件继续使用。
+
+</details>
 
 ## 首次填写
 

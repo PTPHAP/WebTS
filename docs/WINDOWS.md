@@ -6,15 +6,15 @@ Windows 运行包面向 Windows 10/11 x64，网关在本机运行，用户通过
 
 ## 一键下载与打开菜单
 
-打开 **Windows PowerShell**，将下面整段命令一次粘贴执行。命令固定下载维护版 **1.1.1**，验证发布包 SHA-256，再打开现有中文管理菜单；不需要管理员权限。下载需要能够正常访问 GitHub，不会绕过 HTTPS 证书检查。
+打开 **Windows PowerShell**，将下面整段命令一次粘贴执行。命令固定下载维护版 **1.1.0**，验证发布包 SHA-256，再打开现有中文管理菜单；不需要管理员权限。下载需要能够正常访问 GitHub，不会绕过 HTTPS 证书检查。
 
-默认安装到当前用户的 `WebTS-1.1.1` 目录。目录已存在时停止，不覆盖已有安装；如需换位置，修改 `$Destination` 为独立的本机目录。安装前可先查看仓库中的 [中文菜单脚本](../scripts/windows-menu.ps1)。
+默认安装到当前用户的 `WebTS-1.1.0` 目录。目录已存在时停止，不覆盖已有安装；如需换位置，修改 `$Destination` 为独立的本机目录。安装前可先查看仓库中的 [中文菜单脚本](../scripts/windows-menu.ps1)。
 
 ```powershell
 & {
     $ErrorActionPreference = 'Stop'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $Version = '1.1.1'
+    $Version = '1.1.0'
     $Destination = Join-Path $env:USERPROFILE "WebTS-$Version"
     if (Test-Path -LiteralPath $Destination) {
         throw '目标目录已存在，请使用新的独立目录；更新请按下方步骤操作。'
@@ -46,7 +46,7 @@ Windows 运行包面向 Windows 10/11 x64，网关在本机运行，用户通过
 }
 ```
 
-命令从同一固定版本下载 [SHA256SUMS_WINDOWS](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/SHA256SUMS_WINDOWS)，只接受一条与预期ZIP文件名精确匹配的SHA-256，再校验ZIP；不会沿用旧版本校验值。HTTPS和校验只能检查来源及下载一致性，不能代替对发布者的信任。下载 ZIP 保留在命令显示的安装目录之外的临时目录中，不包含网站数据；初始化过程中输入的 SMTP 授权码保存在安装目录受限文件中。
+命令从同一固定版本下载 [SHA256SUMS_WINDOWS](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/SHA256SUMS_WINDOWS)，只接受一条与预期ZIP文件名精确匹配的SHA-256，再校验ZIP；不会沿用旧版本校验值。HTTPS和校验只能检查来源及下载一致性，不能代替对发布者的信任。下载 ZIP 保留在命令显示的安装目录之外的临时目录中，不包含网站数据；初始化过程中输入的 SMTP 授权码保存在安装目录受限文件中。
 
 如无法下载，先检查 GitHub 网络连接或使用下面的手动流程；不要关闭 TLS 验证。已部署网站更新请使用“更新、备份与回退”流程，不重复初始化。
 

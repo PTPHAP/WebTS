@@ -849,6 +849,12 @@ mod tests {
         let front = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = front.local_addr().unwrap().port();
         let back = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let back_port = back.local_addr().unwrap().port();
+        // Unsolicited packets must be dropped without aborting the mapping.
+        front
+            .send_to(b"unrelated UDP probe", ("127.0.0.1", back_port))
+            .await
+            .unwrap();
         let (_dir, source, _) = crate::app::tests::fixture();
         let mut config = source.config.clone();
         config.rtc.public_ip = "127.0.0.1".into();
@@ -903,6 +909,8 @@ mod tests {
         let target: std::net::SocketAddr = format!("{local}:{port}").parse().unwrap();
         let forwarded = Arc::new(AtomicUsize::new(0));
         let count = forwarded.clone();
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let dropped = discarded.clone();
         let proxy = tokio::spawn(async move {
             let (mut incoming, mut outgoing) = ([0u8; 4096], [0u8; 4096]);
             let mut client = None;
@@ -910,13 +918,22 @@ mod tests {
                 tokio::select! {
                     packet = front.recv_from(&mut incoming) => {
                         let (n, address) = packet.unwrap();
+                        if client.is_some_and(|client| client != address) {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                         client = Some(address);
                         back.send_to(&incoming[..n], target).await.unwrap();
                         count.fetch_add(1, Ordering::Relaxed);
                     }
                     packet = back.recv_from(&mut outgoing) => {
                         let (n, address) = packet.unwrap();
-                        assert_eq!(address, target);
+                        // Address/port-restricted NAT discards unrelated ICE probes;
+                        // they must neither kill the proxy nor change its mapping.
+                        if address != target {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                         if let Some(client) = client { front.send_to(&outgoing[..n], client).await.unwrap(); }
                     }
                 }
@@ -972,10 +989,9 @@ mod tests {
         peer.close().await.unwrap();
         proxy.abort();
         let _ = proxy.await;
-        ready.expect(
-            "mapped host candidate must carry real bidirectional DTLS/SCTP over the NAT proxy",
-        );
+        ready.unwrap_or_else(|error| panic!("mapped host candidate must carry real bidirectional DTLS/SCTP over the NAT proxy: {error}; gateway={target}, external_port={port}, internal_port={back_port}, forwarded={}, unrelated={}", forwarded.load(Ordering::Relaxed), discarded.load(Ordering::Relaxed)));
         assert!(forwarded.load(Ordering::Relaxed) > 0);
+        assert!(discarded.load(Ordering::Relaxed) > 0);
     }
     #[tokio::test]
     async fn direct_control_runs_over_real_dtls_sctp_and_closes_without_stopping_audio() {

@@ -27,7 +27,7 @@ test('disabled voice-only mode preserves the original continuous denoiser output
 test('recognition-only mode preserves input samples; fallback restores actual RNNoise filtering',async()=>{
   let seed=61;const input=Float32Array.from({length:48000*2},()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return (seed/4294967296-.5)*.02;});
   const analysis=await worklet('rnnoise',{preserveInput:true}),filter=await worklet('rnnoise');
-  try{const passthrough=analysis.process(input);let matched=false;for(let delay=0;delay<1600;delay+=16){if(passthrough.slice(3200,6400).every((v,i)=>v===input[3200+i-delay])){matched=true;break;}}assert.ok(matched,'classification must not filter GTCRN audio twice');analysis.message({type:'preserve',enabled:false});const clean=analysis.process(input),reference=filter.process(input);const energy=a=>a.reduce((s,v)=>s+v*v,0);assert.ok(energy(clean.slice(48000))<energy(passthrough.slice(48000))*.85);assert.ok(energy(reference)>0);}
+  try{const passthrough=analysis.process(input);assert.deepEqual(passthrough,input,'classification must neither filter GTCRN audio twice nor add a second PCM frame buffer');analysis.message({type:'preserve',enabled:false});const clean=analysis.process(input),reference=filter.process(input);const energy=a=>a.reduce((s,v)=>s+v*v,0);assert.ok(energy(clean.slice(48000))<energy(passthrough.slice(48000))*.85);assert.ok(energy(reference)>0);}
   finally{analysis.destroy();filter.destroy();}
 });
 
@@ -37,6 +37,18 @@ test('voice-only mode rejects settled fan hiss and hum without an amplitude thre
   const processor=await worklet('rnnoise',{voiceOnly:true});
   try{const output=processor.process(input);assert.ok(output.every(Number.isFinite));assert.ok(output.slice(48000*2).every(v=>v===0),'no speech: residual noise must become silence after settling');}
   finally{assert.equal(processor.destroy(),false);}
+});
+
+test('zero-delay recognition output retains typing attenuation and recovers smoothly',async()=>{
+  let seed=47;const input=Float32Array.from({length:128*375},()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return (seed/4294967296-.5)*.01;});
+  const processor=await worklet('rnnoise',{preserveInput:true});
+  try{
+    processor.process(input);processor.process(input);processor.message({type:'typing'});
+    const output=processor.process(input),energy=a=>a.reduce((sum,v)=>sum+v*v,0);
+    assert.ok(energy(output.slice(960,7200))<energy(input.slice(960,7200))*.02,'typing reduction must not disappear with the frame-buffer removal');
+    assert.deepEqual(output.slice(24000),input.slice(24000),'ended typing returns to unmodified current PCM');
+    assert.ok(output.every(Number.isFinite));
+  }finally{processor.destroy();}
 });
 
 test('real keyboard plus voice-only chain preserves quiet voiced input then settles to silence',async()=>{

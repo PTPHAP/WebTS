@@ -1,6 +1,17 @@
-param([Parameter(Mandatory=$true)][string]$PackageRoot,[Parameter(Mandatory=$true)][string]$Scratch)
+param([Parameter(Mandatory=$true)][string]$PackageRoot,[Parameter(Mandatory=$true)][string]$Scratch,[switch]$IsolatedModules)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+if($IsolatedModules){
+    $assembly=(Get-Command Add-Type).ImplementingType.Assembly.Location
+    Remove-Module Microsoft.PowerShell.Utility -ErrorAction SilentlyContinue
+    Import-Module $assembly
+    $PSModuleAutoLoadingPreference='None'
+}
+# Match the executable entrypoint: Get-FileHash is a manifest-exported function
+# in PS5.1; loading only the compiled utility cmdlets does not provide it.
+foreach($module in @('Microsoft.PowerShell.Utility','Microsoft.PowerShell.Security','Microsoft.PowerShell.Management')){
+    Import-Module "$PSHOME\Modules\$module\$module.psd1" -ErrorAction Stop
+}
 . (Join-Path $PackageRoot 'scripts\node-update.ps1')
 function Assert($condition,$name){if(!$condition){throw ('FAIL: '+$name)}}
 function Refuses([scriptblock]$action){$failed=$false;try{&$action}catch{$failed=$true};Assert $failed 'unsafe update refused'}

@@ -9,7 +9,7 @@
 适合第一次部署。先准备解析到服务器的域名、可达公网 IPv4、TLS SMTP 和获授权的 TeamSpeak 目标。在 **Debian 12 / Ubuntu 24.04** 的 root 终端粘贴：
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsS --proto "=https" --tlsv1.2 -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/PTPHAP/WebTS/contents/install.sh?ref=v1.1.0" -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
+apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsS --proto "=https" --tlsv1.2 -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/PTPHAP/WebTS/contents/install.sh?ref=v1.1.1" -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
 非 root 先执行 `sudo -i`。安装器补齐缺少的 Docker/Compose，下载最新正式版及固定子模块，通过中文引导配置并**从源码构建镜像**。不是预构建镜像的一键导入，首次构建会较慢。安装目录为 `/opt/webts`；输入 `webts` 打开菜单，支持修改邮箱/TS、备份、状态和更新。
@@ -26,14 +26,14 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 - `SHA256SUMS_DOCKER`：对应归档的 SHA-256。
 - `webts-版本-source.zip`：完整固定版本源码，包含 Compose、公开配置模板、文档和协议子模块。
 
-适合已有 Docker Engine / Compose v2，希望省去编译的 Linux x64 服务器。此流程不会安装 `webts` 管理菜单，使用 Compose 命令维护。以下固定使用 [1.1.0 维护版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)，在 root 终端、新的独立工作目录执行；需要 `curl`、`unzip` 和 `sha256sum`。
+适合已有 Docker Engine / Compose v2，希望省去编译的 Linux x64 服务器。此流程不会安装 `webts` 管理菜单，使用 Compose 命令维护。以下固定使用 [1.1.1 维护版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)，在 root 终端、新的独立工作目录执行；需要 `curl`、`unzip` 和 `sha256sum`。
 
 先下载、校验并导入镜像：
 
 ```bash
 (
 set -euo pipefail
-VERSION=1.1.0
+VERSION=1.1.1
 mkdir "webts-$VERSION-install"
 cd "webts-$VERSION-install"
 BASE="https://github.com/PTPHAP/WebTS/releases/download/v$VERSION"
@@ -52,7 +52,7 @@ unzip "webts-$VERSION-source.zip"
 失败时停止处理，不使用未通过校验的文件。随后进入源码包中的部署目录，准备配置：
 
 ```sh
-VERSION=1.1.0
+VERSION=1.1.1
 cd "webts-$VERSION-install/webts-$VERSION-source"
 cp .env.example .env
 printf '\nWEBTS_VERSION=%s\n' "$VERSION" >> .env
@@ -67,7 +67,7 @@ chmod 600 config.local.toml
 | 位置 | 必填内容 |
 | --- | --- |
 | `.env` 的 `WEBTS_DOMAIN` | 域名，例如 `voice.example.com`；A 记录指向网关公网 IPv4 |
-| `.env` 的 `WEBTS_VERSION` | `1.1.0`，与导入镜像的标签一致 |
+| `.env` 的 `WEBTS_VERSION` | `1.1.1`，与导入镜像的标签一致 |
 | 配置的 `public_url` | 真实 `https://voice.example.com`，用于邮件链接、Cookie 与同源校验 |
 | 配置的 `bind` / `trusted_proxy` | 自带代理时沿用回环监听与回环代理；其他代理填真实可信来源，不能信任任意来源 |
 | `[[servers]]` | 名称及 `address`，例如 `ts.example.com:9987`；目标需全局语音加密与 Opus |

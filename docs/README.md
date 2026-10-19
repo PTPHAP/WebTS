@@ -54,4 +54,4 @@
 
 </details>
 
-[返回项目首页](../README.md) · [查看已发布版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)
+[返回项目首页](../README.md) · [查看已发布版本](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)

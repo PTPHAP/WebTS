@@ -28,7 +28,7 @@ WebTS 让你在浏览器里使用 TeamSpeak：登录账号、选一个身份，�
 | 我已有 WebTS 网站，想让语音直接到 TS 所在机器 | [安装语音节点](docs/NODE-INSTALL.md)，装在运行 TeamSpeak 的那台服务器 |
 | 我已经装好了，想改邮箱、服务器或站点名称 | [安装后的配置](docs/CONFIGURATION.md) |
 
-**当前可下载版本：[1.1.0](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)。** 安装教程只使用已发布版本。开发进度放在[更新记录](CHANGELOG.md)，不要求使用者追踪源码版本。
+**当前可下载版本：[1.1.1](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)。** 安装教程只使用已发布版本。开发进度放在[更新记录](CHANGELOG.md)，不要求使用者追踪源码版本。
 
 ## 搭建自己的 WebTS 网站
 
@@ -37,7 +37,7 @@ WebTS 让你在浏览器里使用 TeamSpeak：登录账号、选一个身份，�
 准备一台 **Debian 12 或 Ubuntu 24.04** 服务器、指向它的域名、可发信的邮箱，以及要连接的 TeamSpeak 地址。在服务器的 **root 终端**复制这一行：
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsS --proto "=https" --tlsv1.2 -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/PTPHAP/WebTS/contents/install.sh?ref=v1.1.0" -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
+apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp) && curl -fsS --proto "=https" --tlsv1.2 -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/PTPHAP/WebTS/contents/install.sh?ref=v1.1.1" -o "$f" && bash "$f"; r=$?; rm -f "$f"; exit "$r"'
 ```
 
 之后按中文提示填写。安装器会安装缺少的 Docker、下载正式版本并构建网站；首次构建需要等待。完成后打开自己的网址，注册并验证站长邮箱，再运行 `webts admin` 开通后台。[完整步骤](docs/INSTALL.md)。
@@ -105,7 +105,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 | 节点已经装好，怎么重新配置？ | Linux root终端运行 `webts-node install`；Windows重新打开“开始安装.cmd” |
 | 哪台机器要开哪些端口？ | 网站看[网站安装教程](docs/INSTALL.md)，节点看[节点端口说明](docs/NODE-INSTALL.md#地址和端口) |
 | 页面能开，但是没有声音？ | 查看[语音与设备说明](docs/CLIENT.md)，网页可访问不代表语音UDP已连通 |
-| 更新了什么、当前能下载哪个版本？ | [正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0) · [更新记录](CHANGELOG.md) |
+| 更新了什么、当前能下载哪个版本？ | [正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1) · [更新记录](CHANGELOG.md) |
 
 ## 安全与隐私
 

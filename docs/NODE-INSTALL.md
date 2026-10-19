@@ -32,12 +32,12 @@ umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --ma
 以管理员身份打开 **Windows PowerShell**，复制这一行，进入中文安装窗口：
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $webtsScript=irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.2/install-node.ps1; iex ($webtsScript.TrimStart([char]0xFEFF))
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $webtsScript=irm https://raw.githubusercontent.com/PTPHAP/WebTS/33d0c418cb496534efbf82ea1e015c0d7c67172e/install-node.ps1; iex ($webtsScript.TrimStart([char]0xFEFF))
 ```
 
 也可下载[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip)，按旁边的[校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip.sha256)核对，解压后双击 **开始安装.cmd**。更新已有节点时，安装位置选原目录。
 
-若旧版入口报 `﻿#`，这是脚本开头的编码标记被当作命令，上面的入口会先移除该标记。若旧版随后报 `GetResult`、发送请求出错，则是另一个下载连接故障；1.1.2 的更新器未在新 PowerShell 进程内自行设置 TLS，请先使用 ZIP 安装方式，不能把去掉编码标记当作已修复网络。下载失败时无需重装 TeamSpeak、清空配对或开放管理端口。
+若旧版入口报 `﻿#`，这是脚本开头的编码标记被当作命令，上面的入口会先移除该标记。若旧版随后报 `GetResult`、发送请求出错，则是另一个下载连接故障。上方命令使用固定源码修订的修正入口，在子进程中明确设置 TLS 1.2，仍下载并校验已发布的正式节点包。旧版 `webts-node.cmd update` 若也下载失败，可重新运行上方命令并选择原安装目录；也可使用 ZIP 安装方式。修正 TLS 不能解决云防火墙阻断 GitHub 或系统证书错误。下载失败时无需重装 TeamSpeak、清空配对或开放管理端口。
 
 ## 3. 放行语音端口，回网页连接
 
@@ -98,7 +98,9 @@ foreach($name in @('node-install.ps1','node-update.ps1')){
     if((Get-Item -LiteralPath $file).Length -gt 1048576){throw '安装器下载大小超限。'}
     [IO.File]::WriteAllText($file,[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8),[Text.UTF8Encoding]::new($true))
 }
-& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $nodeTmp 'scripts\node-update.ps1') -Bootstrap
+$childEntry=(Join-Path $nodeTmp 'scripts\node-update.ps1').Replace("'","''")
+$childCommand="[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & '$childEntry' -Bootstrap"
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand)))
 ```
 
 

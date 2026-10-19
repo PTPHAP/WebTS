@@ -1,0 +1,8 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN python3 -c "import platform; assert platform.libc_ver() == ('glibc', '2.36')"
+COPY web-ts /usr/local/bin/web-ts
+COPY node-smoke.py /work/scripts/tests/node-smoke.py
+WORKDIR /work
+USER 65532:65532
+ENTRYPOINT ["python3", "/work/scripts/tests/node-smoke.py", "--binary", "/usr/local/bin/web-ts"]

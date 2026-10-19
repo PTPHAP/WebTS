@@ -1,6 +1,6 @@
 # TeamSpeak同机语音节点 · 反向连接预览
 
-默认关闭，当前节点包为preview.5；旧反向节点继续兼容，直达发言控制需要升级节点。[安装与端口教程](NODE-INSTALL.md) · [审查记录](SECURITY-REVIEW-VOICE-NODES.md)。真实目标主机、通话和长期容量须现场验收，安装检查不等于完整语音验收。
+默认关闭，当前节点包为preview.6；旧反向节点继续兼容，直达发言控制需要升级节点。[安装与端口教程](NODE-INSTALL.md) · [审查记录](SECURITY-REVIEW-VOICE-NODES.md)。真实目标主机、通话和长期容量须现场验收，安装检查不等于完整语音验收。
 
 ```text
 浏览器 ←HTTPS/WSS→ 主站 ← 已认证WSS，由节点主动建立 ← TS同机节点

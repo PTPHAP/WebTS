@@ -26,6 +26,26 @@ class NodeMaintenanceTests(unittest.TestCase):
     def setUp(self):
         (ROOT/'.cache').mkdir(exist_ok=True)
 
+    def test_runtime_accepts_debian12_and_ubuntu22_before_any_installation(self):
+        with patch.object(node.sys, 'platform', 'linux'), patch.object(node.platform, 'machine', return_value='x86_64'):
+            for python, libc in [((3, 11), ('glibc', '2.36')), ((3, 10), ('glibc', '2.35'))]:
+                with patch.object(node.sys, 'version_info', python), patch.object(node.platform, 'libc_ver', return_value=libc):
+                    node.check_runtime()
+            for python, libc in [((3, 9), ('glibc', '2.36')), ((3, 11), ('glibc', '2.31')), ((3, 11), ('musl', '1.2'))]:
+                with patch.object(node.sys, 'version_info', python), patch.object(node.platform, 'libc_ver', return_value=libc):
+                    with self.assertRaisesRegex(ValueError, 'Python 3.10.*glibc 2.35'):
+                        node.check_runtime()
+        with patch.object(node.sys, 'platform', 'linux'), patch.object(node.platform, 'machine', return_value='aarch64'):
+            with self.assertRaisesRegex(ValueError, 'x64'):
+                node.check_runtime()
+
+    def test_incompatible_direct_update_is_rejected_before_lock_download_or_service_changes(self):
+        with patch.object(node.sys, 'argv', ['node-linux.py', 'update']), patch.object(node.os, 'geteuid', return_value=0, create=True), patch.object(node.sys, 'platform', 'linux'), patch.object(node.platform, 'machine', return_value='x86_64'), patch.object(node.platform, 'libc_ver', return_value=('glibc', '2.31')), patch.object(node.os, 'open') as lock, patch.object(node, 'update') as update:
+            with self.assertRaisesRegex(ValueError, 'glibc 2.35'):
+                node.main()
+            lock.assert_not_called()
+            update.assert_not_called()
+
     @unittest.skipUnless(os.name == 'posix', 'Linux shell preflight')
     def test_bootstrap_refuses_noninteractive_execution_before_downloading(self):
         result = subprocess.run(['bash', str(ROOT/'install-node.sh')], input=b'', capture_output=True, timeout=10)

@@ -20,9 +20,15 @@
 
 WebTS 是独立开源的 **TeamSpeak 网页客户端与协议网关**。成员登录自己的账号、创建或导入 TeamSpeak 身份，在浏览器里加入已有频道；网站以该身份连接目标服务器，继承它原有的权限。部署者掌握自己的账号数据库、密钥、邮件服务和默认服务器配置。
 
-> **1.1.0 社区与便捷连接更新。** 核心发布范围是自托管账号、TS3 网关与网页工作区；好友 E2EE、TS6 和移动语音继续标为实验支持。 已有真实 TS3 协议联调、浏览器双向语音及 Linux 安装/更新检查。TS6、移动语音、各浏览器完整兼容、TURN 长连接及容量指标仍在验收中。[查看支持与验证范围](docs/SUPPORT.md)。
+> **1.1.1 Linux 节点兼容维护。** 核心发布范围是自托管账号、TS3 网关与网页工作区；好友 E2EE、TS6 和移动语音继续标为实验支持。 已有真实 TS3 协议联调、浏览器双向语音及 Linux 安装/更新检查。TS6、移动语音、各浏览器完整兼容、TURN 长连接及容量指标仍在验收中。[查看支持与验证范围](docs/SUPPORT.md)。
 
 > **1.1.0** 新增[手机确认扫码、用户名登录与陌生环境保护](docs/QUICK-LOGIN.md)、多对象存储配置，以及默认关闭的[会员社区](docs/COMMUNITY.md)：独立帖子与讨论页、头像署名、游戏讨论分区及图标、编辑、置顶/锁帖、举报与回复通知。旧对象按原桶读取/清理，升级与回退见[对象存储](docs/OBJECT-STORAGE.md)和[登录说明](docs/QUICK-LOGIN.md)。
+
+## 1.1.1 更新 · 2026-10-19
+
+- **Debian 12 / Ubuntu 22.04 节点：** 修正过高的引导门槛，原生Linux包改用glibc2.35构建基线，维护脚本兼容Python3.10+；不需要升级系统库或重建原有配对。
+- **兼容验证：** 发布检查加入实际ELF依赖上限，以及同一程序在隔离Debian12容器中的启动、健康接口和退出验证；保留真实systemd安装及密钥保留检查。
+- 节点包为preview.6；运行系统支持不替代真实TS通话、手机和容量验收。[节点安装教程](docs/NODE-INSTALL.md)。
 
 ## 1.1.0 更新 · 2026-10-19
 
@@ -43,7 +49,7 @@ WebTS 是独立开源的 **TeamSpeak 网页客户端与协议网关**。成员�
 - **隐私与兼容：** 仅记录粗略浏览器/系统及登录期限，不新增IP、完整User-Agent或设备指纹；旧会话信息缺失时明确说明。
 - **桌面与手机：** 安全中心按需加载，没有额外定时轮询；失败清除旧列表、确认状态和密码。提供[使用与升级说明](docs/ACCOUNT-SECURITY.md)。
 
-安装教程指向1.1.0；正式运行包需经过对应提交的完整发布检查，附件以[发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)为准。更新不改变Olm或语音加密协议，也不将实验功能改称正式。
+安装教程指向1.1.1；正式运行包需经过对应提交的完整发布检查，附件以[发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)为准。更新不改变Olm或语音加密协议，也不将实验功能改称正式。
 
 ## 1.0.7 更新 · 2026-10-15
 
@@ -92,7 +98,7 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 
 ### Windows：下载运行包，打开中文菜单
 
-Windows 10/11 x64 不需要 Docker 或开发工具链。[Windows 教程](docs/WINDOWS.md#一键下载与打开菜单)提供一次粘贴的 PowerShell 命令，下载 **1.1.0**、核对 SHA-256、解压到独立目录并打开 `webts.cmd`。选择“初始化”填写基础配置，再选择“启动”。首次先在本机使用，公网访问需要另配 HTTPS 和语音 UDP。
+Windows 10/11 x64 不需要 Docker 或开发工具链。[Windows 教程](docs/WINDOWS.md#一键下载与打开菜单)提供一次粘贴的 PowerShell 命令，下载 **1.1.1**、核对 SHA-256、解压到独立目录并打开 `webts.cmd`。选择“初始化”填写基础配置，再选择“启动”。首次先在本机使用，公网访问需要另配 HTTPS 和语音 UDP。
 
 已有 Docker，希望省去源码构建？[预构建镜像教程](docs/DOCKER.md#使用预构建镜像手动安装)提供正式镜像的下载、校验、导入与 Compose 配置命令。Windows 原生运行包和 Linux Docker 镜像是两种不同部署方式。
 
@@ -115,7 +121,7 @@ Windows 10/11 x64 不需要 Docker 或开发工具链。[Windows 教程](docs/WI
 | 发布维护通知与更新邮件 | [信件与通知](docs/NOTIFICATIONS.md) |
 | 了解数据如何处理 | [隐私政策](PRIVACY.md) · [安全边界](docs/SECURITY.md) |
 
-完整导航见 [文档中心](docs/README.md)。[正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)提供 Linux、Windows、Docker 镜像归档、完整源码 ZIP 和 SHA256 校验，含固定协议子模块；GitHub 自动生成的 Source code 归档不含子模块，请优先使用完整源码包。
+完整导航见 [文档中心](docs/README.md)。[正式发布页](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)提供 Linux、Windows、Docker 镜像归档、完整源码 ZIP 和 SHA256 校验，含固定协议子模块；GitHub 自动生成的 Source code 归档不含子模块，请优先使用完整源码包。
 
 联合观赛是可选试验功能：免费直播链接接入、官方播放器或跳转、现有频道语音、手动 CS2 赛况及签名接口。平台限制与后台配置见 [联合观赛文档](docs/WATCH.md)。
 

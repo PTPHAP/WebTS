@@ -13,7 +13,7 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PREVIEW = 5
+PREVIEW = 6
 PUBLIC = ('node.example.toml', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/NODE-INSTALL.md',
           'docs/VOICE-NODES.md',
           'docs/SECURITY-REVIEW-VOICE-NODES.md')
@@ -64,7 +64,7 @@ def package(binary, output, platform, build_target=None, runtime=None):
     quick = ('Windows：解压到临时专用文件夹，双击 **开始安装.cmd**，按中文说明填写安装位置、主站网址、公网地址和配对码。'
              '自动备份、停启本节点、设置专用防火墙和开机任务；可选自定义端口，无需手写配置。\n\n'
              if platform == 'windows-x64' else
-             'Linux（Ubuntu 24.04 x64 / Python 3.11+ / systemd）：解压后运行 `sudo sh webts-node install`，按中文向导安装；之后 `sudo webts-node update` 检查升级。不会自动修改未知防火墙。\n\n')
+             'Linux（Debian 12 / Ubuntu 22.04及更新版本，x64 / glibc 2.35+ / Python 3.10+ / systemd）：解压后运行 `sudo sh webts-node install`，按中文向导安装；之后 `sudo webts-node update` 检查升级。不会自动修改未知防火墙。\n\n')
     files['README.md'] = ('# WebTS 同机语音节点 · 开发预览\n\n' + quick +
                           '完整说明：[中文安装教程](docs/NODE-INSTALL.md)。\n\n'
                           '此包不是独立网站；主站也需包含节点支持并完成配对。'
@@ -117,7 +117,7 @@ def package(binary, output, platform, build_target=None, runtime=None):
         'binary_sha256': digest(data),
         'toolchain': 'rustc 1.99.0; Cargo.lock',
         'target': build_target,
-        'build_runtime': runtime or ('Windows x64 / local GNU build' if platform == 'windows-x64' else 'local Zig build; glibc >= 2.36'),
+        'build_runtime': runtime or ('Windows x64 / local GNU build' if platform == 'windows-x64' else 'local build; runtime not declared'),
         'acceptance': 'Development preview. See review docs for individual checks; real TS voice, Windows Server and capacity require acceptance. Installer OS changes require isolated-machine verification.',
     }
     files['BUILD-INFO.json'] = (json.dumps(info, ensure_ascii=False, indent=2) + '\n').encode()

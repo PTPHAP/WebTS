@@ -1,25 +1,25 @@
 # WebTS 同机语音节点 · 反向连接安装
 
-**Windows / Linux 1.1.0-node-preview.5 开发预览**，提供中文安装、显式服务器路线、保留配置更新和加密直达发言控制。旧反向节点仍可连接，但要启用直达发言控制须更新节点程序；TS、已配对密钥、公网IP和端口不必随之修改。真实TS通话、目标主机和长期容量仍须验收，不是稳定发行认证。
+**Windows / Linux 1.1.1-node-preview.6 开发预览**，提供中文安装、显式服务器路线、保留配置更新和加密直达发言控制。旧反向节点仍可连接，但要启用直达发言控制须更新节点程序；TS、已配对密钥、公网IP和端口不必随之修改。真实TS通话、目标主机和长期容量仍须验收，不是稳定发行认证。
 
 节点装在TS同一台机器，主动WSS连接现有主站；浏览器加密语音直达节点，再经本机连接TS。用户无需安装插件。节点能接触当前TS身份私钥和声音，须由可信运营者管理。
 
-下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.0)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
+下载：[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-windows-x64.zip) · [Windows校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-windows-x64.zip.sha256) · [Linux节点归档](https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz) · [同版发布说明](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.1)。附件只在完整CI通过后发布；不要用其他版本的程序搭配此安装器。
 
 ## 一条命令，进入中文配置
 
 **在运行TeamSpeak的机器执行，不是在WebTS主站执行。** 安装器下载官方最新正式Release中经过校验的节点包，首次安装和保留配置升级使用相同入口。不需要下载源码、编译或手写TOML。
 
-Linux：推荐 **Ubuntu 24.04 x64**，需要Python 3.11+、glibc 2.39+、systemd和curl。在root交互终端复制：
+Linux：支持 **Debian 12、Ubuntu 22.04及更新版本的x64主机**，需要Python 3.10+、glibc 2.35+、systemd和curl。在root交互终端复制：
 
 ```bash
-bash <(curl -fsS --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.0/install-node.sh)
+bash <(curl -fsS --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.1/install-node.sh)
 ```
 
 Windows x64 / Windows Server：以管理员身份打开 **Windows PowerShell**，复制：
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.0/install-node.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.1/install-node.ps1 | iex
 ```
 
 按顺序准备四项：**主站HTTPS网址 → 本机公网IPv4 → 主站后台显示的节点标识 → 一次性配对码**。TS和语音端口默认值会直接显示，可选择修改；升级时使用原安装目录，原来正确的配对、TS、公网IP和端口可以沿用。配对码只在隐藏输入框填写，不拼进命令。
@@ -35,7 +35,7 @@ Windows向导管理本节点专用防火墙规则；**云安全组、Linux防火
 Linux：仍需上面的运行环境，在**TS机器的root交互终端**复制整行；配对码会由随后启动的中文向导隐藏询问：
 
 ```bash
-umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.0' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
+umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.1' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
 ```
 
 Windows：以管理员身份打开 **Windows PowerShell**，整段复制运行，不需要编辑内容。暂存脚本目录仅当前维护者、SYSTEM及管理员可写；脚本按UTF-8保存，避免旧版PowerShell的中文解码问题。
@@ -54,7 +54,7 @@ foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
 [void][IO.Directory]::CreateDirectory((Join-Path $nodeTmp 'scripts'))
 foreach($name in @('node-install.ps1','node-update.ps1')){
     $file=Join-Path $nodeTmp ('scripts\'+$name)
-    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.0') -OutFile $file
+    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.1') -OutFile $file
     if((Get-Item -LiteralPath $file).Length -gt 1048576){throw '安装器下载大小超限。'}
     [IO.File]::WriteAllText($file,[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8),[Text.UTF8Encoding]::new($true))
 }
@@ -168,15 +168,15 @@ key_file = "secrets/community-node.key"
 
 ## 3. Linux x64
 
-本轮GitHub节点包在Ubuntu24.04构建，按glibc2.39及以上部署；不适用于Alpine/musl或未经验证的旧glibc。BUILD-INFO记录具体构建环境。旧本地Zig预览的glibc2.36基线不适用于新的CI包；Debian12等环境可从源码构建或使用经过验证的容器，不能仅换标签冒充兼容。Linux真实TS通话仍须现场验收。
+从1.1.1起，Linux原生包在Ubuntu22.04构建，运行基线为glibc2.35；Debian12自带glibc2.36，无需升级系统库。CI检查实际ELF依赖，并在隔离Debian12容器中启动同一二进制、验证健康接口、拒绝未授权API和正常退出；Ubuntu22.04另做真实systemd安装、升级及密钥保留检查。这些不等于完整Debian主机或真实TS通话验收。Alpine/musl、ARM及glibc低于2.35没有本批包。BUILD-INFO记录实际构建环境。旧1.1.0入口误把构建主机glibc版本作为运行门槛，使用本文新版入口。
 
 ```sh
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.0/webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
-sha256sum -c webts-node-1.1.0-preview.5-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.1/webts-node-1.1.1-preview.6-linux-x64.tar.gz.sha256
+sha256sum -c webts-node-1.1.1-preview.6-linux-x64.tar.gz.sha256
 # 核对后解压到新目录，不覆盖旧密钥
-tar -xzf webts-node-1.1.0-preview.5-linux-x64.tar.gz
-cd webts-node-1.1.0-preview.5-linux-x64
+tar -xzf webts-node-1.1.1-preview.6-linux-x64.tar.gz
+cd webts-node-1.1.1-preview.6-linux-x64
 sudo sh webts-node install
 # 安装后维护：
 sudo webts-node status
@@ -184,7 +184,7 @@ sudo webts-node check
 sudo webts-node update
 ```
 
-中文安装需要 Python 3.11+、systemd、root维护权限；不自动安装依赖。固定安装到`/opt/webts-node`，管理专用`webts-node.service`及`/usr/local/bin/webts-node`。按提示填写主站、真实公网IPv4、节点标识、配对码，可选端口；检查并确认后才停止旧节点、备份和更新。运行使用专用无登录系统账号，配置和密钥root持有、服务组只读，备份root独占；不公开控制HTTP。低权限服务的控制监听及网页语音UDP须使用1024以上端口，TS目标端口不受此限制；不会为低端口授予额外权限。不覆盖未知同名服务、额外systemd覆盖项、其他所有者目录或链接。
+中文安装需要 Python 3.10+、systemd、root维护权限；不自动安装依赖。固定安装到`/opt/webts-node`，管理专用`webts-node.service`及`/usr/local/bin/webts-node`。按提示填写主站、真实公网IPv4、节点标识、配对码，可选端口；检查并确认后才停止旧节点、备份和更新。运行使用专用无登录系统账号，配置和密钥root持有、服务组只读，备份root独占；不公开控制HTTP。低权限服务的控制监听及网页语音UDP须使用1024以上端口，TS目标端口不受此限制；不会为低端口授予额外权限。不覆盖未知同名服务、额外systemd覆盖项、其他所有者目录或链接。
 
 Linux主机防火墙和云安全组由部署者放行安装摘要中的**入站UDP范围**；本安装器不会猜测并改动ufw、firewalld或nftables。普通用户前台维护仍可用`sh scripts/node.sh init | configure | check | start`，但不要与systemd同时运行。不用`sh -x`运行向导。
 

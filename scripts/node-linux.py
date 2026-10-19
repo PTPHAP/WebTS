@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Chinese node installer/updater. Python 3.11+, systemd; never operates TeamSpeak."""
+"""Chinese node installer/updater. Python 3.10+, systemd; never operates TeamSpeak."""
 import getpass
 import hashlib
 import ipaddress
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import shutil
 import stat
@@ -25,6 +26,14 @@ SOURCE = Path(__file__).resolve().parents[1]
 PUBLIC = {'web-ts', 'webts-node', 'scripts', 'docs', 'deploy', 'licenses', 'LICENSE',
           'README.md', 'THIRD_PARTY_NOTICES.md', 'node.example.toml', 'SHA256SUMS', 'BUILD-INFO.json',
           'node.local.toml', 'secrets', 'backups'}
+
+
+def check_runtime():
+    if sys.platform != 'linux' or platform.machine() != 'x86_64':
+        raise ValueError('此节点包需要Linux x64；Windows请使用PowerShell入口。尚未修改节点。')
+    libc, version = platform.libc_ver()
+    if sys.version_info < (3, 10) or libc != 'glibc' or tuple(map(int, version.split('.')[:2])) < (2, 35):
+        raise ValueError('需要Python 3.10+及glibc 2.35+（Debian 12、Ubuntu 22.04或更新版本）；不要强行替换系统库。尚未修改节点。')
 
 
 def regular(path):
@@ -274,14 +283,15 @@ def update():
 
 
 def main():
-    import fcntl
     os.umask(0o077)
     action = sys.argv[1] if len(sys.argv) > 1 else 'help'
     if action not in {'install', 'update', 'status', 'check', 'start', 'stop', 'restart'}:
         print('WebTS节点：sudo ./webts-node install；安装后：sudo webts-node update | status | check | start | stop | restart')
         return
     if os.geteuid() != 0: raise ValueError('请使用sudo运行节点维护命令')
+    if action in {'install', 'update'}: check_runtime()
     if sys.platform != 'linux' or not Path('/run/systemd/system').is_dir(): raise ValueError('需要使用systemd的Linux；不会自动安装依赖或修改其他服务')
+    import fcntl
     lock_path = Path('/run/webts-node-install.lock')
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as lock:

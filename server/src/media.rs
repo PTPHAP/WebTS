@@ -342,6 +342,7 @@ struct Speaker {
     timestamp: u32,
     samples: u32,
     last: Instant,
+    ended: bool,
     ready: bool,
     pending: VecDeque<(Instant, u16, Bytes)>,
 }
@@ -555,6 +556,7 @@ impl Media {
                     timestamp: 0,
                     samples: 960,
                     last: Instant::now(),
+                    ended: true,
                     ready: false,
                     pending: VecDeque::new(),
                 },
@@ -684,13 +686,16 @@ impl Media {
             }
             return Ok(true);
         }
+        let elapsed = s.last.elapsed();
+        let marker = s.ended || elapsed > Duration::from_millis(200);
         if let Some(previous) = s.seq {
             let delta = sequence.wrapping_sub(previous);
             if delta == 0 || delta >= 0x8000 {
                 return Ok(false);
             }
-            let elapsed = s.last.elapsed();
-            let advance = if elapsed > Duration::from_millis(200) {
+            // A TS end marker starts silence suppression, including pauses below
+            // 200ms. Preserve that elapsed time instead of making NetEq buffer it.
+            let advance = if marker {
                 (elapsed.as_secs_f64() * 48000.0) as u32
             } else {
                 u32::from(delta) * s.samples
@@ -703,15 +708,18 @@ impl Media {
             // TS end markers occupy a TS sequence number but have no RTP audio.
             // Compress that intentional gap so it is not reported as packet loss.
             s.sequence_offset = s.sequence_offset.wrapping_add(1);
+            s.ended = true;
             return Ok(true);
         };
         s.samples = samples;
+        s.ended = false;
         let packet = Packet {
             header: Header {
                 version: 2,
                 payload_type: 111,
                 sequence_number: sequence.wrapping_sub(s.sequence_offset),
                 timestamp: s.timestamp,
+                marker,
                 ssrc: s.ssrc,
                 ..Default::default()
             },
@@ -1160,6 +1168,78 @@ mod tests {
             assert!(stats.observe(now - Duration::from_nanos(nanos), now));
             assert_eq!(stats.take(2.0)["p95_upper_ms"], upper);
         }
+    }
+    #[tokio::test]
+    async fn speech_restarts_preserve_short_silence_on_the_rtp_clock() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals, audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media
+            .sync_speakers(&[2], &media.signals.clone())
+            .await
+            .unwrap();
+        // Clock conversion only: real cipher negotiation is covered by the RTC tests.
+        media.secure.store(true, Ordering::Release);
+        media.speakers.get_mut(&2).unwrap().ready = true;
+        assert!(media.audio(2, 100, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        assert!(media.audio(2, 101, &[]).await.unwrap());
+        let boundary = media.speakers[&2].timestamp;
+        media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(120);
+        assert!(media.audio(2, 102, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        let resumed = media.speakers[&2].timestamp;
+        let offset = media.speakers[&2].sequence_offset;
+        media.close().await;
+        assert!(
+            resumed.wrapping_sub(boundary) >= 5760,
+            "120ms speech pause must not collapse to a 20ms RTP step: {} samples",
+            resumed.wrapping_sub(boundary)
+        );
+        assert_eq!(offset, 1, "TS end marker is not an RTP packet loss");
+    }
+    #[tokio::test]
+    async fn speech_clock_preserves_loss_wrap_and_rejects_stale_or_insecure_packets() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals, audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media
+            .sync_speakers(&[2], &media.signals.clone())
+            .await
+            .unwrap();
+        media.secure.store(true, Ordering::Release);
+        media.speakers.get_mut(&2).unwrap().ready = true;
+        assert!(
+            media
+                .audio(2, u16::MAX - 1, &[0xf8, 0xff, 0xfe])
+                .await
+                .unwrap()
+        );
+        media.speakers.get_mut(&2).unwrap().timestamp = u32::MAX - 400;
+        assert!(media.audio(2, 0, &[0x18, 0]).await.unwrap()); // Lost 20ms frame and sequence wrap.
+        assert_eq!(media.speakers[&2].timestamp, 1519);
+        assert!(media.audio(2, 1, &[0]).await.unwrap()); // Single-byte TS end marker after 60ms audio.
+        assert_eq!(media.speakers[&2].timestamp, 4399);
+        let last = media.speakers[&2].last;
+        assert!(!media.audio(2, 1, &[]).await.unwrap());
+        assert!(!media.audio(2, 0, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        assert!(!media.audio(2, 2, &[0xfb, 0]).await.unwrap());
+        assert_eq!(media.speakers[&2].last, last);
+        assert_eq!(media.speakers[&2].sequence_offset, 1);
+        assert!(media.speakers[&2].ended);
+        media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(120);
+        assert!(media.audio(2, 2, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        assert!(media.speakers[&2].timestamp.wrapping_sub(4399) >= 5760);
+        assert!(!media.speakers[&2].ended);
+        let resumed = media.speakers[&2].timestamp;
+        media.secure.store(false, Ordering::Release);
+        assert!(!media.audio(2, 3, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        assert_eq!(media.speakers[&2].timestamp, resumed);
+        media.close().await;
     }
     #[tokio::test]
     async fn malformed_received_audio_does_not_close_the_media_connection() {

@@ -13,7 +13,7 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PREVIEW = 7
+PREVIEW = 8
 PUBLIC = ('node.example.toml', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/NODE-INSTALL.md',
           'docs/VOICE-NODES.md',
           'docs/SECURITY-REVIEW-VOICE-NODES.md')

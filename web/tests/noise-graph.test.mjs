@@ -17,7 +17,7 @@ test('keyboard graph connects GTCRN before RNNoise and runtime GTCRN failure pre
   const context=environment(),processor=await createNoise(context,true,true);assert.equal(processor.mode,'keyboard');assert.equal(nodes[0].options.processorOptions.voiceOnly,true);assert.equal(context.input.target,nodes[1]);assert.equal(nodes[1].target,nodes[0]);assert.equal(nodes[0].target,processor.output);
   let notices=0;processor.onchange=()=>notices++;nodes[1].onprocessorerror();assert.equal(processor.mode,'rnnoise');assert.equal(context.input.target,nodes[0]);assert.ok(nodes[1].destroyed);assert.equal(notices,0);assert.equal(processor.output.gain.value,0);
   nodes[0].port.onmessage({data:{type:'preserve',enabled:false}});assert.equal(notices,1);assert.equal(processor.output.gain.value,1);
-  assert.deepEqual(nodes[0].messages,[{type:'preserve',enabled:true},{type:'preserve',enabled:false}],'GTCRN output is never denoised twice; fallback restores RNNoise filtering');
+  assert.deepEqual(nodes[0].messages,[{type:'preserve',enabled:false},{type:'preserve',enabled:false}],'enhanced mode retains both accepted filters; recognition-only output must not weaken keyboard suppression');
   let errors=0;processor.onerror=()=>errors++;nodes[0].onprocessorerror();assert.equal(errors,1);processor.destroy();assert.ok(nodes.every(n=>n.destroyed&&n.disconnected));
 });
 test('unavailable SIMD keyboard processor retains local RNNoise; primary initialization failure rejects',async()=>{
@@ -48,7 +48,7 @@ test('enhanced automatic speech keeps its denoised output stable across acknowle
   assert.equal(output.gain.value,0,'do not expose recognition-only raw PCM while the fallback control is pending');
   nodes[0].port.onmessage({data:{type:'preserve',enabled:true}});assert.equal(output.gain.value,0,'an old initialization acknowledgement cannot unmute fallback');
   nodes[0].port.onmessage({data:{type:'preserve',enabled:false}});assert.equal(output.gain.value,1);
-  assert.equal(nodes[0].messages.filter(m=>m.type==='preserve'&&m.enabled===false).length,1,'repeated model failure cannot leave another fallback timeout');
+  assert.equal(nodes[0].messages.filter(m=>m.type==='preserve'&&m.enabled===false).length,2,'one initial filtering request and one fallback; repeated failure cannot add a timeout');
   assert.equal(processor.output,output,'hot fallback must keep the connected output node');
   assert.equal(context.input.target,nodes[0]);assert.equal(nodes[0].target,output);
   assert.ok(nodes[1].destroyed&&nodes[1].disconnected);

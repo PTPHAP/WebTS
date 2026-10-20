@@ -319,8 +319,8 @@ async fn custom_target_alias_is_deduplicated_and_hot_policy_disconnects() {
     .unwrap();
     assert_eq!(app.connections.count(owner), 1);
     first = replacement;
-    let mut settings = app.runtime.read().unwrap().settings.clone();
-    settings.allow_custom = false;
+    let mut settings = app.runtime.read().unwrap().settings.admin_view();
+    settings["allow_custom"] = json!(false);
     let update = axum::http::Request::builder()
         .method("POST")
         .uri("/api/admin/settings")

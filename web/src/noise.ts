@@ -38,7 +38,8 @@ export async function createNoise(context:AudioContext,keyboard=false,voiceOnly=
     } catch {warning='键盘声增强不可用，继续使用本地 RNNoise 降噪。';}
     if(context.state==='closed'||failed)throw new Error('语音连接已关闭或降噪处理器停止');
     const input=context.createGain(),output=context.createGain();let fallbackTimer:number|undefined;
-    if(gtcrn)rnnoise.port.postMessage({type:'preserve',enabled:true});
+    // Enhanced mode retains RNNoise filtering to preserve keyboard suppression.
+    if(gtcrn)rnnoise.port.postMessage({type:'preserve',enabled:false});
     input.connect(gtcrn??rnnoise);gtcrn?.connect(rnnoise);rnnoise.connect(output);
     const processor:NoiseProcessor={input,output,mode:gtcrn?'keyboard':'rnnoise',warning,speaking:false,typing(){rnnoise.port.postMessage({type:'typing'});},destroy(){window.clearTimeout(fallbackTimer);fallbackTimer=undefined;input.disconnect();output.disconnect();for(const node of [gtcrn,rnnoise])if(node){node.onprocessorerror=null;node.port.onmessage=null;node.destroy();node.disconnect();}gtcrn=undefined;}};
     rnnoise.port.onmessage=e=>{if(e.data.type==='speech'&&typeof e.data.enabled==='boolean'){processor.speaking=e.data.enabled;processor.onspeech?.(e.data.enabled);}else if(e.data.type==='preserve'&&e.data.enabled===false&&fallbackTimer!==undefined){window.clearTimeout(fallbackTimer);fallbackTimer=undefined;output.gain.value=1;processor.onchange?.('键盘声增强已停止，继续使用本地 RNNoise 降噪。');}};

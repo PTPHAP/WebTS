@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -51,40 +51,47 @@ struct Totals {
     latency_max_us: u128,
     matched: u64,
     latency_buckets: Vec<u64>,
+    streams: usize,
 }
 async fn pair(
     app: Arc<App>,
     index: usize,
     active: bool,
+    speakers: usize,
+    slots: usize,
     stop: CancellationToken,
     ready: mpsc::Sender<usize>,
 ) -> Result<Totals> {
     let (at, mut ar) = mpsc::channel(64);
     let (bt, mut br) = mpsc::channel(64);
-    let (aa, mut a_audio) = mpsc::channel::<InboundAudio>(8);
-    let (ba, mut b_audio) = mpsc::channel::<InboundAudio>(8);
+    let (aa, mut a_audio) = mpsc::channel::<InboundAudio>((speakers * 2).max(8));
+    let (ba, mut b_audio) = mpsc::channel::<InboundAudio>((speakers * 2).max(8));
     let mut a = Media::new(&app, 1, 0, at.clone(), aa, stop.child_token()).await?;
     let mut b = Media::new(&app, 2, 0, bt.clone(), ba, stop.child_token()).await?;
     let outcome=async{
-  a.sync_speakers(&[7],&at).await?;b.sync_speakers(&[8],&bt).await?;
+  let ids=if speakers>0{(1..=slots as u16).collect::<Vec<_>>()}else{vec![7]};
+  a.sync_speakers(&ids,&at).await?;b.sync_speakers(if speakers>0{&[]}else{&[8]},&bt).await?;
   tokio::time::timeout(Duration::from_secs(20),async{negotiate(&mut a,&mut b,&mut ar,&at).await?;negotiate(&mut b,&mut a,&mut br,&bt).await?;anyhow::Ok(())}).await??;
   let mut tick=tokio::time::interval(Duration::from_millis(if active{20}else{500}));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-  let mut started=false;let mut totals=Totals::default();let mut seq=0u16;let deadline=Instant::now();let mut last_a=None;let mut last_b=None;let mut sent=VecDeque::new();
+  let mut started=false;let mut totals=Totals::default();let mut seq=0u16;let deadline=Instant::now();let mut cipher_check=Instant::now()-Duration::from_secs(1);let mut last_a=HashMap::new();let mut last_b=HashMap::new();let mut sent=VecDeque::new();
   loop{tokio::select!{
    _=stop.cancelled()=>break,
    Some(e)=ar.recv()=>if e["type"]=="ice"{b.peer.add_ice_candidate(serde_json::from_value(e["candidate"].clone())?).await?;},
    Some(e)=br.recv()=>if e["type"]=="ice"{a.peer.add_ice_candidate(serde_json::from_value(e["candidate"].clone())?).await?;},
    _=tick.tick()=>{
-    let ac=a.check_cipher().await?;let bc=b.check_cipher().await?;
-    if let(Some(ac),Some(bc))=(ac,bc){if ac["browser"]!="SRTP_AEAD_AES_256_GCM"||bc["browser"]!="SRTP_AEAD_AES_256_GCM"{bail!("cipher floor failed");}
-     if !started{ready.send(index).await?;started=true;}
-     if active{let now=Instant::now();a.audio(7,seq,&[0xf8,0xff,0xfe]).await?;b.audio(8,seq,&[0xf8,0xff,0xfe]).await?;sent.push_back((seq,now));while sent.len()>128{sent.pop_front();}seq=seq.wrapping_add(1);totals.sent+=2;}
-    }else if deadline.elapsed()>Duration::from_secs(20)&&!started{bail!("cipher negotiation timeout");}
+    if cipher_check.elapsed()>=Duration::from_secs(1){
+     let ac=a.check_cipher().await?;let bc=b.check_cipher().await?;cipher_check=Instant::now();
+     if let(Some(ac),Some(bc))=(ac,bc){if ac["browser"]!="SRTP_AEAD_AES_256_GCM"||bc["browser"]!="SRTP_AEAD_AES_256_GCM"{bail!("cipher floor failed");}
+      if !started{ready.send(index).await?;started=true;}
+     }else if deadline.elapsed()>Duration::from_secs(20)&&!started{bail!("cipher negotiation timeout");}
+    }
+    if started&&active{let now=Instant::now();if speakers>0{for id in 1..=speakers as u16{a.audio(id,seq,&[0xf8,0xff,0xfe]).await?;}}else{a.audio(7,seq,&[0xf8,0xff,0xfe]).await?;b.audio(8,seq,&[0xf8,0xff,0xfe]).await?;}sent.push_back((seq,now));while sent.len()>128{sent.pop_front();}seq=seq.wrapping_add(1);totals.sent+=if speakers>0{speakers as u64}else{2};}
    },
    packet=a_audio.recv()=>record(packet,&mut totals,&mut last_a,&sent)?,
    packet=b_audio.recv()=>record(packet,&mut totals,&mut last_b,&sent)?,
   }}
-  if active&&totals.received<2{bail!("no encrypted audio received");}Ok(totals)
+  totals.streams=last_a.len()+last_b.len();
+  if active{let expected=if speakers>0{speakers}else{2};if totals.sent==0||totals.streams!=expected||last_a.values().chain(last_b.values()).any(|(_,n)|*n as f64/(totals.sent as f64/expected as f64)<=0.99){bail!("pair {index}: a stream is missing or encrypted audio delivery below 99%; expected {expected} streams, sent {}, received {:?}/{:?}, max gap {}ms",totals.sent,last_a.iter().map(|(ssrc,(_,n))|(*ssrc,*n)).collect::<Vec<_>>(),last_b.iter().map(|(ssrc,(_,n))|(*ssrc,*n)).collect::<Vec<_>>(),totals.max_gap_ms);}}Ok(totals)
  }.await;
     a.close().await;
     b.close().await;
@@ -93,7 +100,7 @@ async fn pair(
 fn record(
     packet: Option<InboundAudio>,
     totals: &mut Totals,
-    last: &mut Option<Instant>,
+    last: &mut HashMap<u32, (Instant, u64)>,
     sent: &VecDeque<(u16, Instant)>,
 ) -> Result<()> {
     let packet = packet.context("audio channel ended")?;
@@ -102,10 +109,14 @@ fn record(
     }
     let now = Instant::now();
     totals.received += 1;
-    if let Some(old) = last.replace(now) {
+    if let Some((old, count)) = last.get_mut(&packet.packet.header.ssrc) {
         totals.max_gap_ms = totals
             .max_gap_ms
-            .max(now.duration_since(old).as_millis() as u64);
+            .max(now.duration_since(*old).as_millis() as u64);
+        *old = now;
+        *count += 1;
+    } else {
+        last.insert(packet.packet.header.ssrc, (now, 1));
     }
     if let Some((_, at)) = sent
         .iter()
@@ -126,6 +137,17 @@ fn record(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "isolated loopback, 50 connections / 10 synthetic Opus streams, 30 minutes"]
 async fn fifty_connections_ten_voice_loopback_soak() {
+    let pairs = std::env::var("WEBTS_SOAK_PAIRS")
+        .map(|s| s.parse::<usize>().expect("invalid WEBTS_SOAK_PAIRS"))
+        .unwrap_or(50);
+    let active = std::env::var("WEBTS_SOAK_ACTIVE_PAIRS")
+        .map(|s| s.parse::<usize>().expect("invalid WEBTS_SOAK_ACTIVE_PAIRS"))
+        .unwrap_or(10);
+    assert!((1..=200).contains(&pairs) && (1..=pairs).contains(&active));
+    let speakers = std::env::var("WEBTS_SOAK_SPEAKERS")
+        .map(|s| s.parse::<usize>().expect("invalid WEBTS_SOAK_SPEAKERS"))
+        .unwrap_or(0);
+    assert!(speakers == 0 || (speakers <= pairs && pairs <= 128 && active == pairs));
     let seconds = std::env::var("WEBTS_SOAK_SECONDS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -147,23 +169,29 @@ async fn fifty_connections_ten_voice_loopback_soak() {
     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join(".cache/voice-community-20261015");
+        .join(if speakers > 0 {
+            ".cache/voice-fanout-20261020"
+        } else {
+            ".cache/voice-community-20261015"
+        });
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(
         output.join("soak-running.json"),
         json!({"pid":std::process::id(),"seconds":seconds,"state":"starting"}).to_string(),
     )
     .unwrap();
-    for index in 0..50 {
+    for index in 0..pairs {
         jobs.spawn(pair(
             app.clone(),
             index,
-            index < 10,
+            index < active,
+            speakers,
+            pairs,
             stop.child_token(),
             tx.clone(),
         ));
     }
-    let ready=tokio::time::timeout(Duration::from_secs(90),async{for _ in 0..50{tokio::select!{v=rx.recv()=>{v.expect("startup channel");},r=jobs.join_next()=>panic!("pair ended early: {}",r.unwrap().unwrap().err().map(|e|e.to_string()).unwrap_or_default())}}}).await;
+    let ready=tokio::time::timeout(Duration::from_secs(90),async{for _ in 0..pairs{tokio::select!{v=rx.recv()=>{v.expect("startup channel");},r=jobs.join_next()=>panic!("pair ended early: {}",r.unwrap().unwrap().err().map(|e|e.to_string()).unwrap_or_default())}}}).await;
     if ready.is_err() {
         stop.cancel();
         while let Some(r) = jobs.join_next().await {
@@ -171,7 +199,7 @@ async fn fifty_connections_ten_voice_loopback_soak() {
         }
         panic!("soak startup timed out");
     }
-    std::fs::write(output.join("soak-running.json"),json!({"pid":std::process::id(),"seconds":seconds,"state":"running","connections":50,"active":10}).to_string()).unwrap();
+    std::fs::write(output.join("soak-running.json"),json!({"pid":std::process::id(),"seconds":seconds,"state":"running","connections":pairs,"active":active}).to_string()).unwrap();
     let start = Instant::now();
     tokio::time::sleep(Duration::from_secs(seconds)).await;
     stop.cancel();
@@ -185,6 +213,7 @@ async fn fifty_connections_ten_voice_loopback_soak() {
         totals.latency_us += v.latency_us;
         totals.latency_max_us = totals.latency_max_us.max(v.latency_max_us);
         totals.matched += v.matched;
+        totals.streams += v.streams;
         for (i, n) in v.latency_buckets.into_iter().enumerate() {
             totals.latency_buckets[i] += n;
         }
@@ -200,7 +229,19 @@ async fn fifty_connections_ten_voice_loopback_soak() {
             (cumulative >= rank && rank > 0 && (i < 1000 || totals.latency_max_us <= 1_000_000))
                 .then_some(i)
         });
-    let report = json!({"scope":"Windows loopback RTC only; synthetic Opus silence; not TS, physical microphone or reference Linux acceptance","seconds":start.elapsed().as_secs_f64(),"connections":50,"active_bidirectional_pairs":10,"cipher":"SRTP_AEAD_AES_256_GCM","sent":totals.sent,"received":totals.received,"max_receive_gap_ms":totals.max_gap_ms,"matched_timing_samples":totals.matched,"mean_loopback_transit_ms":totals.latency_us as f64/totals.matched as f64/1000.0,"p95_loopback_transit_upper_ms":p95,"max_loopback_transit_ms":totals.latency_max_us as f64/1000.0,"closed_peers":100});
+    let report = json!({"scope":"Windows loopback RTC only; synthetic Opus silence; not TS, physical microphone or reference Linux acceptance","seconds":start.elapsed().as_secs_f64(),"connections":pairs,"active_bidirectional_pairs":active,"cipher":"SRTP_AEAD_AES_256_GCM","sent":totals.sent,"received":totals.received,"max_receive_gap_ms":totals.max_gap_ms,"matched_timing_samples":totals.matched,"mean_loopback_transit_ms":totals.latency_us as f64/totals.matched as f64/1000.0,"p95_loopback_transit_upper_ms":p95,"max_loopback_transit_ms":totals.latency_max_us as f64/1000.0,"closed_peers":pairs*2});
+    let mut report = report;
+    report["mode"] = json!(if speakers > 0 {
+        "speaker-fanout"
+    } else {
+        "bidirectional-pairs"
+    });
+    report["speaker_streams"] = json!(totals.streams);
+    if speakers > 0 {
+        report["active_bidirectional_pairs"] = json!(0);
+        report["speakers_per_listener"] = json!(speakers);
+        report["preallocated_speaker_slots_per_listener"] = json!(pairs);
+    }
     std::fs::write(
         output.join(if seconds >= 1800 {
             "soak-30min.json"
@@ -212,7 +253,7 @@ async fn fifty_connections_ten_voice_loopback_soak() {
     .unwrap();
     println!("{}", report);
     assert!(
-        totals.received as f64 / totals.sent as f64 > 0.95,
-        "loopback delivery below 95%"
+        totals.received as f64 / totals.sent as f64 > 0.99,
+        "loopback delivery below 99%"
     );
 }

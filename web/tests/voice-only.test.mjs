@@ -39,13 +39,15 @@ test('voice-only mode rejects settled fan hiss and hum without an amplitude thre
   finally{assert.equal(processor.destroy(),false);}
 });
 
-test('zero-delay recognition output retains typing attenuation and recovers smoothly',async()=>{
+test('zero-delay recognition caps typing attenuation to preserve quiet onsets and recovers smoothly',async()=>{
   let seed=47;const input=Float32Array.from({length:128*375},()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return (seed/4294967296-.5)*.01;});
   const processor=await worklet('rnnoise',{preserveInput:true});
   try{
     processor.process(input);processor.process(input);processor.message({type:'typing'});
     const output=processor.process(input),energy=a=>a.reduce((sum,v)=>sum+v*v,0);
-    assert.ok(energy(output.slice(960,7200))<energy(input.slice(960,7200))*.02,'typing reduction must not disappear with the frame-buffer removal');
+    const ratio=energy(output.slice(960,7200))/energy(input.slice(960,7200));
+    assert.ok(ratio>=.249&&ratio<.3,'additional typing attenuation is limited to 6 dB; the AI model handles keyboard noise');
+    for(let i=0;i<output.length;i++)assert.ok(Math.abs(output[i])+1e-9>=Math.abs(input[i])*.5,'late speech classification must not hard-gate the first phoneme');
     assert.deepEqual(output.slice(24000),input.slice(24000),'ended typing returns to unmodified current PCM');
     assert.ok(output.every(Number.isFinite));
   }finally{processor.destroy();}

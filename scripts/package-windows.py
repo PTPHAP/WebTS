@@ -39,7 +39,7 @@ def package(binary, output, root=ROOT):
     if binary.is_symlink() or magic != b'MZ':
         raise ValueError('Expected a native Windows executable')
     dist = root / 'web/dist'
-    for required in ('index.html', 'crypto/webts_crypto.js', 'crypto/webts_crypto_bg.wasm', 'audio/0.4.1-gtcrn.wasm', 'audio/0.4.1-rnnoise.wasm', 'audio/0.4.1-rnnoise_simd.wasm', 'audio/gtcrn-0.4.1-strength1.js', 'audio/rnnoise-0.4.1-voice5.js'):
+    for required in ('index.html', 'crypto/webts_crypto.js', 'crypto/webts_crypto_bg.wasm', 'audio/0.4.1-gtcrn.wasm', 'audio/0.4.1-rnnoise.wasm', 'audio/0.4.1-rnnoise_simd.wasm', 'audio/gtcrn-0.4.1-strength2.js', 'audio/rnnoise-0.4.1-voice6.js'):
         if not (dist / required).exists():
             raise ValueError(f'Incomplete frontend: {required}')
     inputs = [(binary, 'web-ts.exe')]

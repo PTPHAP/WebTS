@@ -12,10 +12,11 @@ const source=await readFile(new URL('../src/noise.ts',import.meta.url),'utf8');
 const packageUrl=new URL('../node_modules/@sapphi-red/web-noise-suppressor/dist/index.js',import.meta.url).href;
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText.replace("import('@sapphi-red/web-noise-suppressor')",`import(${JSON.stringify(packageUrl)})`);
 const {createNoise}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
-function environment(){nodes=[];failedModel='';duringKeyboard=undefined;globalThis.window={setTimeout,clearTimeout};globalThis.fetch=async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(8)});const input={connect(target){this.target=target;},disconnect(){this.disconnected=true;}};return {sampleRate:48000,state:'running',audioWorklet:{addModule:async()=>{}},createGain:()=>input,input};}
+function environment(){nodes=[];failedModel='';duringKeyboard=undefined;globalThis.window={setTimeout,clearTimeout};globalThis.fetch=async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(8)});const gains=[];return {sampleRate:48000,state:'running',audioWorklet:{addModule:async()=>{}},createGain:()=>{const gain={gain:{value:1},connect(target){this.target=target;},disconnect(){this.disconnected=true;}};gains.push(gain);return gain;},get input(){return gains[0];}};}
 test('keyboard graph connects GTCRN before RNNoise and runtime GTCRN failure preserves RNNoise',async()=>{
-  const context=environment(),processor=await createNoise(context,true,true);assert.equal(processor.mode,'keyboard');assert.equal(nodes[0].options.processorOptions.voiceOnly,true);assert.equal(context.input.target,nodes[1]);assert.equal(nodes[1].target,nodes[0]);assert.equal(processor.output,nodes[0]);
-  let notices=0;processor.onchange=()=>notices++;nodes[1].onprocessorerror();assert.equal(processor.mode,'rnnoise');assert.equal(context.input.target,nodes[0]);assert.ok(nodes[1].destroyed);assert.equal(notices,1);
+  const context=environment(),processor=await createNoise(context,true,true);assert.equal(processor.mode,'keyboard');assert.equal(nodes[0].options.processorOptions.voiceOnly,true);assert.equal(context.input.target,nodes[1]);assert.equal(nodes[1].target,nodes[0]);assert.equal(nodes[0].target,processor.output);
+  let notices=0;processor.onchange=()=>notices++;nodes[1].onprocessorerror();assert.equal(processor.mode,'rnnoise');assert.equal(context.input.target,nodes[0]);assert.ok(nodes[1].destroyed);assert.equal(notices,0);assert.equal(processor.output.gain.value,0);
+  nodes[0].port.onmessage({data:{type:'preserve',enabled:false}});assert.equal(notices,1);assert.equal(processor.output.gain.value,1);
   assert.deepEqual(nodes[0].messages,[{type:'preserve',enabled:true},{type:'preserve',enabled:false}],'GTCRN output is never denoised twice; fallback restores RNNoise filtering');
   let errors=0;processor.onerror=()=>errors++;nodes[0].onprocessorerror();assert.equal(errors,1);processor.destroy();assert.ok(nodes.every(n=>n.destroyed&&n.disconnected));
 });
@@ -36,4 +37,30 @@ test('model speech transitions reach the consumer and cleanup detaches port mess
   const processor=await createNoise(environment(),true,true),states=[];processor.onspeech=enabled=>states.push(enabled);
   nodes[0].port.onmessage({data:{type:'speech',enabled:true}});nodes[0].port.onmessage({data:{type:'speech',enabled:false}});
   assert.deepEqual(states,[true,false]);assert.equal(processor.speaking,false);processor.destroy();assert.equal(nodes[0].port.onmessage,null);
+});
+
+test('enhanced automatic speech keeps its denoised output stable across acknowledged fallback',async()=>{
+  const context=environment(),processor=await createNoise(context,true,false),output=processor.output;
+  assert.equal(context.input.target,nodes[1]);
+  assert.equal(nodes[1].target,nodes[0],'classify cleaned audio so steady microphone noise cannot reopen the stream');
+  assert.equal(nodes[0].target,output,'only the enhanced PCM reaches the output');
+  const failure=nodes[1].onprocessorerror;failure();failure();
+  assert.equal(output.gain.value,0,'do not expose recognition-only raw PCM while the fallback control is pending');
+  nodes[0].port.onmessage({data:{type:'preserve',enabled:true}});assert.equal(output.gain.value,0,'an old initialization acknowledgement cannot unmute fallback');
+  nodes[0].port.onmessage({data:{type:'preserve',enabled:false}});assert.equal(output.gain.value,1);
+  assert.equal(nodes[0].messages.filter(m=>m.type==='preserve'&&m.enabled===false).length,1,'repeated model failure cannot leave another fallback timeout');
+  assert.equal(processor.output,output,'hot fallback must keep the connected output node');
+  assert.equal(context.input.target,nodes[0]);assert.equal(nodes[0].target,output);
+  assert.ok(nodes[1].destroyed&&nodes[1].disconnected);
+  processor.destroy();
+});
+
+test('missing fallback acknowledgement fails closed and destruction cancels its timer',async()=>{
+  const context=environment();let expire,cancelled=false;
+  window.setTimeout=(callback,ms)=>ms===1000?(expire=callback,123):setTimeout(callback,ms);
+  window.clearTimeout=id=>id===123?cancelled=true:clearTimeout(id);
+  const processor=await createNoise(context,true,false);let errors=0;processor.onerror=()=>errors++;
+  nodes[1].onprocessorerror();expire();assert.equal(errors,1);assert.equal(processor.output.gain.value,0);
+  processor.destroy();
+  const next=await createNoise(context,true,false);nodes[3].onprocessorerror();next.destroy();assert.equal(cancelled,true);assert.equal(nodes[2].port.onmessage,null);
 });

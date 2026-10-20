@@ -75,6 +75,8 @@ apt-get update && apt-get install -y curl ca-certificates && bash -c 'f=$(mktemp
 
 好友私信需站长配置对象存储。TS6、手机语音和好友端到端模式仍有试验范围，具体见[支持说明](docs/SUPPORT.md)。通用文件传输、屏幕共享与完整组权限编辑器尚未提供。
 
+语音修复同时涉及网页和节点程序：本地降噪控制、模型故障回退、停顿时间轴与乱序音频处理，详见[语音质量说明](docs/VOICE-QUALITY.md)和[更新记录](CHANGELOG.md)。使用同机节点时，更新网站后还需在 TS 机器上[更新节点](docs/NODE-INSTALL.md#节点更新的范围与恢复)；测试参数和面板 RTT 不代表已验收的用户容量或嘴到耳延迟。
+
 ## 界面预览
 
 ![WebTS 社区首页](docs/images/webts-home.png)

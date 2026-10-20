@@ -25,7 +25,7 @@ try{
     $client=[Net.Http.HttpClient]::new($handler);$client.Timeout=[TimeSpan]::FromSeconds(60)
     try{
         foreach($name in @('node-update.ps1','node-install.ps1')){
-            $url='https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.2/scripts/'+$name
+            $url='https://raw.githubusercontent.com/PTPHAP/WebTS/v1.1.3/scripts/'+$name
             $response=$client.GetAsync($url,[Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
             try{
                 if([int]$response.StatusCode -ne 200){throw '官方安装器下载失败；未修改现有节点。'}

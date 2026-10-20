@@ -120,8 +120,11 @@ jobs:
         with:
           name: webts-frontend
           path: .cache/browser-frontend
-      - name: Use exact-commit Olm assets
-        run: mkdir -p web/public/crypto && cp .cache/browser-frontend/crypto/* web/public/crypto/
+      - name: Use exact-commit audio and Olm assets
+        run: |
+          mkdir -p web/public/crypto web/public/audio
+          cp .cache/browser-frontend/crypto/* web/public/crypto/
+          cp .cache/browser-frontend/audio/* web/public/audio/
       - name: Install locked test dependencies and isolated browsers
         working-directory: web
         run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit

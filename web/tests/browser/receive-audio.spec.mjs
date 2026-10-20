@@ -7,18 +7,18 @@ test('real AI fallback remains silent until the worklet acknowledges filtering a
   const {createNoise}=window.audioFixture,Original=window.AudioWorkletNode,worklets=[];
   const context=new AudioContext({sampleRate:48000,latencyHint:'interactive'}),source=context.createBufferSource(),level=context.createGain(),analyser=context.createAnalyser(),silent=context.createGain();silent.gain.value=0;level.gain.value=1;
   const buffer=context.createBuffer(1,48000*4,48000),samples=buffer.getChannelData(0);let phase=0;for(let i=0;i<samples.length;i++){const t=i/48000;phase+=2*Math.PI*(150+30*Math.sin(t*12))/48000;for(let h=1;h<16;h++)samples[i]+=Math.sin(phase*h)/h*.015*(.3+.7*Math.sin(t*9)**2);}source.buffer=buffer;source.loop=true;
-  let processor,notice=false,error=false;
+  let processor,notice=false,error=false,started=false;
   window.AudioWorkletNode=class extends Original{constructor(c,id,options){super(c,id,options);worklets.push({id,node:this});}};
   const pause=ms=>new Promise(r=>setTimeout(r,ms)),read=async()=>{const end=context.currentTime+.25,deadline=Date.now()+3000;while(context.currentTime<end){if(Date.now()>deadline)throw Error('audio clock stopped');await pause(20);}const samples=new Float32Array(2048);analyser.getFloatTimeDomainData(samples);return Math.sqrt(samples.reduce((n,x)=>n+x*x,0)/samples.length);};
   try{
    processor=await createNoise(context,true,false);if(processor.mode!=='keyboard')throw Error('GTCRN did not initialize');
-   processor.onchange=()=>notice=true;processor.onerror=()=>error=true;source.connect(level);level.connect(processor.input);processor.output.connect(analyser);analyser.connect(silent);silent.connect(context.destination);source.start();await context.resume();const before=await read();
+   processor.onchange=()=>notice=true;processor.onerror=()=>error=true;source.connect(level);level.connect(processor.input);processor.output.connect(analyser);analyser.connect(silent);silent.connect(context.destination);source.start();started=true;await context.resume();const before=await read();
    const originalOutput=processor.output,keyboard=worklets.find(w=>w.id.endsWith('/gtcrn')).node;
    keyboard.onprocessorerror(new Event('processorerror'));
    const immediatelyMuted=processor.output.gain.value===0;
    const deadline=Date.now()+2500;while(!notice&&!error&&Date.now()<deadline)await pause(10);
    return {before,immediatelyMuted,acknowledged:notice,error,mode:processor.mode,sameOutput:processor.output===originalOutput,gain:processor.output.gain.value,rms:await read()};
-  }finally{window.AudioWorkletNode=Original;processor?.destroy();source.stop();for(const node of [source,level,analyser,silent])node.disconnect();await context.close();}
+  }finally{window.AudioWorkletNode=Original;processor?.destroy();if(started)source.stop();for(const node of [source,level,analyser,silent])node.disconnect();await context.close();}
  });
  expect(result.immediatelyMuted,JSON.stringify(result)).toBe(true);expect(result.acknowledged).toBe(true);expect(result.error).toBe(false);expect(result.mode).toBe('rnnoise');expect(result.sameOutput).toBe(true);expect(result.gain).toBe(1);expect(result.before,JSON.stringify(result)).toBeGreaterThan(.0001);expect(result.rms,JSON.stringify(result)).toBeGreaterThan(.0001);
 });

@@ -2,7 +2,7 @@
 
 已有WebTS网站，TS服务器也在运行时，可以装这个节点，让语音直接到TS那台机器。普通用户继续打开网页使用。
 
-**当前下载：[1.1.2节点包](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.2)，组件为preview.7试用版。** Windows和Linux分别使用下面对应的入口。
+**当前下载：[1.1.3节点包](https://github.com/PTPHAP/WebTS/releases/tag/v1.1.3)，组件为preview.8试用版。** Windows和Linux分别使用下面对应的入口。
 
 ## 1. 先到网站后台拿配对码
 
@@ -24,7 +24,7 @@
 用**root终端**复制整行，然后按中文提示填写。需要Python3、curl、有效CA和运行中的systemd；Debian12不需要为此升级系统库。
 
 ```bash
-umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.2' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
+umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.3' -o "$webts_tmp/node-linux.py" && python3 "$webts_tmp/node-linux.py" update
 ```
 
 ### Windows / Windows Server x64
@@ -35,7 +35,7 @@ umask 077 && webts_tmp=$(mktemp -d) && curl -fsS --proto '=https' --tlsv1.2 --ma
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $webtsScript=irm https://raw.githubusercontent.com/PTPHAP/WebTS/33d0c418cb496534efbf82ea1e015c0d7c67172e/install-node.ps1; iex ($webtsScript.TrimStart([char]0xFEFF))
 ```
 
-也可下载[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip)，按旁边的[校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-windows-x64.zip.sha256)核对，解压后双击 **开始安装.cmd**。更新已有节点时，安装位置选原目录。
+也可下载[Windows节点ZIP](https://github.com/PTPHAP/WebTS/releases/download/v1.1.3/webts-node-1.1.3-preview.8-windows-x64.zip)，按旁边的[校验文件](https://github.com/PTPHAP/WebTS/releases/download/v1.1.3/webts-node-1.1.3-preview.8-windows-x64.zip.sha256)核对，解压后双击 **开始安装.cmd**。更新已有节点时，安装位置选原目录。
 
 若旧版入口报 `﻿#`，这是脚本开头的编码标记被当作命令，上面的入口会先移除该标记。若旧版随后报 `GetResult`、发送请求出错，则是另一个下载连接故障。上方命令使用固定源码修订的修正入口，在子进程中明确设置 TLS 1.2，仍下载并校验已发布的正式节点包。旧版 `webts-node.cmd update` 若也下载失败，可重新运行上方命令并选择原安装目录；也可使用 ZIP 安装方式。修正 TLS 不能解决云防火墙阻断 GitHub 或系统证书错误。下载失败时无需重装 TeamSpeak、清空配对或开放管理端口。
 
@@ -94,7 +94,7 @@ foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
 [void][IO.Directory]::CreateDirectory((Join-Path $nodeTmp 'scripts'))
 foreach($name in @('node-install.ps1','node-update.ps1')){
     $file=Join-Path $nodeTmp ('scripts\'+$name)
-    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.2') -OutFile $file
+    Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -Headers @{Accept='application/vnd.github.raw+json'} -Uri ('https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/'+$name+'?ref=v1.1.3') -OutFile $file
     if((Get-Item -LiteralPath $file).Length -gt 1048576){throw '安装器下载大小超限。'}
     [IO.File]::WriteAllText($file,[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8),[Text.UTF8Encoding]::new($true))
 }
@@ -214,16 +214,16 @@ key_file = "secrets/community-node.key"
 
 ## 3. Linux x64
 
-当前下载对应已发布的**1.1.2 / preview.7**。Linux包在Ubuntu22.04构建，实际ELF依赖检查不超过glibc2.35，并经过Debian12隔离启动和Ubuntu22.04 systemd安装检查。要求Linux x64、Python3.10+及正常运行的systemd；实际通话仍须在目标机器验收。Debian12可直接使用本文上方的官方API命令。
+当前下载对应已发布的**1.1.3 / preview.8**。Linux包在Ubuntu22.04构建，实际ELF依赖检查不超过glibc2.35，并经过Debian12隔离启动和Ubuntu22.04 systemd安装检查。要求Linux x64、Python3.10+及正常运行的systemd；实际通话仍须在目标机器验收。Debian12可直接使用本文上方的官方API命令。
 
-1.1.2增加协议确认与保活时序回归；默认AI链减少约10.7ms重复PCM缓冲。实际声音延迟与面板RTT分别验收，目标机器与真实通话仍需现场检查。Alpine/musl和ARM没有本批节点包。
+1.1.3修复语音停顿时间轴、合法乱序音频恢复和本地降噪控制；增强模式保留原过滤强度。实际声音延迟与面板RTT分别验收，目标机器与真实通话仍需现场检查。Alpine/musl和ARM没有本批节点包。
 ```sh
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-linux-x64.tar.gz
-curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.2/webts-node-1.1.2-preview.7-linux-x64.tar.gz.sha256
-sha256sum -c webts-node-1.1.2-preview.7-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.3/webts-node-1.1.3-preview.8-linux-x64.tar.gz
+curl -fLO https://github.com/PTPHAP/WebTS/releases/download/v1.1.3/webts-node-1.1.3-preview.8-linux-x64.tar.gz.sha256
+sha256sum -c webts-node-1.1.3-preview.8-linux-x64.tar.gz.sha256
 # 核对后解压到新目录，不覆盖旧密钥
-tar -xzf webts-node-1.1.2-preview.7-linux-x64.tar.gz
-cd webts-node-1.1.2-preview.7-linux-x64
+tar -xzf webts-node-1.1.3-preview.8-linux-x64.tar.gz
+cd webts-node-1.1.3-preview.8-linux-x64
 sudo sh webts-node install
 # 安装后维护：
 sudo webts-node status

@@ -22,5 +22,5 @@ trap 'rm -f -- "$stage/node-linux.py"; rmdir -- "$stage"' EXIT
 echo 'WebTS同机语音节点 · 正在下载中文安装器（不安装主站，不操作TeamSpeak）'
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 \
   -H 'Accept: application/vnd.github.raw+json' \
-  'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.2' -o "$stage/node-linux.py"
+  'https://api.github.com/repos/PTPHAP/WebTS/contents/scripts/node-linux.py?ref=v1.1.3' -o "$stage/node-linux.py"
 python3 "$stage/node-linux.py" update

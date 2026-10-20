@@ -549,6 +549,7 @@ async fn run() {
     let leading_payload = [0xf8, 0x12, 0x34];
     let mut end_requested = false;
     let mut ts_end = false;
+    let mut end_sequence: Option<u16> = None;
     let mut stopped_at: Option<std::time::Instant> = None;
     let mut native_end_requested = false;
     let mut own_end_received = false;
@@ -568,7 +569,7 @@ async fn run() {
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            _=&mut deadline=>panic!("incomplete live test: secure={secure}, normal(browser/ts)={browser_voice}/{ts_voice}, whisper(browser/ts)={browser_whisper}/{ts_whisper}, chat={chat_received}, denied={denied}, revoked={revoked}"),
+            _=&mut deadline=>panic!("incomplete live test: secure={secure}, normal(browser/ts)={browser_voice}/{ts_voice}, whisper(browser/ts)={browser_whisper}/{ts_whisper}, chat={chat_received}/{browser_chat}, poke={browser_poke}, denied={denied}, revoked={revoked}, end={ts_end}/{own_end_received}/{native_end_received}, avatar={avatar_to_native}/{avatar_to_web}, leading={leading_received}"),
             _=timer.tick()=>{
                 if peer.check_cipher().await.unwrap().is_some() && secure {
                     if dtx_probes < 50 {
@@ -614,7 +615,8 @@ async fn run() {
 
                     assert!(!packet.data().packet().header().flags().contains(Flags::UNENCRYPTED));
                     match packet.data().data(){
-                        AudioData::S2C{data,..}=>{if data.is_empty(){ts_end=true;stopped_at.get_or_insert_with(std::time::Instant::now);}else if *data==leading_payload {leading_received=true;}else{assert!(leading_received,"delayed automatic speech start must not discard the initial phoneme");assert!(!ts_end||whisper_requested,"valid browser RTP silence/refresh must not reopen ended TS voice");assert_eq!(*data,payload);ts_voice=true;}},
+                        // UDP arrival order is not the sender's sequence order.
+                        AudioData::S2C{id,data,..}=>{if data.is_empty(){ts_end=true;end_sequence.get_or_insert(*id);stopped_at.get_or_insert_with(std::time::Instant::now);}else if *data==leading_payload {assert_eq!(*id,0,"the initial phoneme must be the first transmitted TS frame");leading_received=true;}else{assert_ne!(*id,0,"ordinary audio must not precede the initial phoneme in TS sequence order");assert!(whisper_requested||end_sequence.is_none_or(|end|id.wrapping_sub(end)>=0x8000),"valid browser RTP silence/refresh must not reopen ended TS voice");assert_eq!(*data,payload);ts_voice=true;}},
                         AudioData::S2CWhisper{data,..} if !data.is_empty()=>{assert_eq!(*data,payload);ts_whisper=true;},
                         _=>{}
                     }
@@ -717,6 +719,7 @@ async fn run() {
             whisper_requested = true;
         }
         if ts_whisper
+            && leading_received
             && browser_voice
             && browser_whisper
             && ts_end
@@ -749,6 +752,7 @@ async fn run() {
     }
     assert!(
         secure
+            && leading_received
             && browser_voice
             && browser_whisper
             && ts_voice

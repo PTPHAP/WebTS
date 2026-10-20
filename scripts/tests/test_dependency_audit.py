@@ -12,6 +12,21 @@ spec.loader.exec_module(audit)
 
 
 class AdvisoryTests(unittest.TestCase):
+    def test_roots_advisory_exception_requires_exact_reviewed_reexport_and_patched_parent(self):
+        item = {'package': {'ecosystem': 'crates.io', 'name': 'webpki-roots'}, 'version': '0.26.11'}
+        checksum = '521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9'
+        parent_checksum = '1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9'
+        registry = 'registry+https://github.com/rust-lang/crates.io-index'
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for parent, digest, allowed in [('1.0.10', checksum, True), ('1.0.9', checksum, False), ('1.0.10', '0' * 64, False)]:
+                with self.subTest(parent=parent, checksum=digest):
+                    (root / 'Cargo.lock').write_text(f'[[package]]\nname="webpki-roots"\nversion="0.26.11"\nsource="{registry}"\nchecksum="{digest}"\ndependencies=["webpki-roots {parent}"]\n[[package]]\nname="webpki-roots"\nversion="{parent}"\nsource="{registry}"\nchecksum="{parent_checksum}"\n')
+                    self.assertEqual(audit.patched_root_reexport(root, item, 'RUSTSEC-2026-0381'), allowed)
+                    self.assertFalse(audit.patched_root_reexport(root, item, 'RUSTSEC-OTHER'))
+                    with patch.object(audit, 'coordinates', return_value=[item]), patch.object(audit, 'query', side_effect=[[{'vulns': [{'id': 'control'}]}], [{'vulns': [{'id': 'RUSTSEC-2026-0381'}]}]]), patch('sys.stdout', new_callable=io.StringIO):
+                        self.assertEqual(audit.audit(root), 0 if allowed else 1)
+
     def test_only_public_lockfile_coordinates_are_sent(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

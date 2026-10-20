@@ -38,6 +38,23 @@ def query(queries):
     return results
 
 
+def patched_root_reexport(root, item, advisory):
+    # 0.26.11 contains no certificate data: its only export forwards parent v1.
+    # Pin this reviewed case; other advisories, shims or bundles still fail closed.
+    if item != {'package': {'ecosystem': 'crates.io', 'name': 'webpki-roots'}, 'version': '0.26.11'} or advisory != 'RUSTSEC-2026-0381':
+        return False
+    packages = tomllib.loads((root / 'Cargo.lock').read_text(encoding='utf-8'))['package']
+    registry = 'registry+https://github.com/rust-lang/crates.io-index'
+    shim = any(p['name'] == 'webpki-roots' and p['version'] == '0.26.11'
+               and p.get('source') == registry
+               and p.get('checksum') == '521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9'
+               and p.get('dependencies') == ['webpki-roots 1.0.10'] for p in packages)
+    patched = any(p['name'] == 'webpki-roots' and p['version'] == '1.0.10'
+                  and p.get('source') == registry
+                  and p.get('checksum') == '1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9' for p in packages)
+    return shim and patched
+
+
 def audit(root):
     # Ensure the service really reports a known affected version.
     control = query([{'package': {'ecosystem': 'crates.io', 'name': 'time'}, 'version': '0.2.22'}])
@@ -49,6 +66,9 @@ def audit(root):
         group = queries[start:start + 100]
         for item, result in zip(group, query(group), strict=True):
             for vulnerability in result.get('vulns', []):
+                if patched_root_reexport(root, item, vulnerability['id']):
+                    print('Reviewed RUSTSEC-2026-0381: webpki-roots 0.26.11 re-exports patched 1.0.10; no bundled roots in shim.')
+                    continue
                 found = True
                 print(f"{item['package']['ecosystem']} {item['package']['name']}@{item['version']}: {vulnerability['id']}")
     print(f'Checked {len(queries)} public registry package versions; local/vendor code and container images require separate review.')

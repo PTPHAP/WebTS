@@ -323,7 +323,7 @@
 | [rustls-pki-types](https://crates.io/crates/rustls-pki-types/1.15.1) | 1.15.1 | MIT OR Apache-2.0 |
 | [rustls-platform-verifier](https://crates.io/crates/rustls-platform-verifier/0.7.1) | 0.7.1 | MIT OR Apache-2.0 |
 | [rustls-platform-verifier-android](https://crates.io/crates/rustls-platform-verifier-android/0.2.0) | 0.2.0 | MIT OR Apache-2.0 |
-| [rustls-webpki](https://crates.io/crates/rustls-webpki/0.103.15) | 0.103.15 | ISC |
+| [rustls-webpki](https://crates.io/crates/rustls-webpki/0.103.16) | 0.103.16 | ISC |
 | [rustversion](https://crates.io/crates/rustversion/1.0.23) | 1.0.23 | MIT OR Apache-2.0 |
 | [ryu](https://crates.io/crates/ryu/1.0.23) | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | [same-file](https://crates.io/crates/same-file/1.0.6) | 1.0.6 | Unlicense/MIT |
@@ -445,8 +445,8 @@
 | [web-sys](https://crates.io/crates/web-sys/0.3.106) | 0.3.106 | MIT OR Apache-2.0 |
 | web-ts | 1.0.0 | MIT |
 | [web_atoms](https://crates.io/crates/web_atoms/0.3.0) | 0.3.0 | MIT OR Apache-2.0 |
-| [webpki-root-certs](https://crates.io/crates/webpki-root-certs/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
-| [webpki-roots](https://crates.io/crates/webpki-roots/1.0.9) | 1.0.9 | CDLA-Permissive-2.0 |
+| [webpki-root-certs](https://crates.io/crates/webpki-root-certs/1.0.10) | 1.0.10 | CDLA-Permissive-2.0 |
+| [webpki-roots](https://crates.io/crates/webpki-roots/1.0.10) | 1.0.10 | CDLA-Permissive-2.0 |
 | [webrtc](https://crates.io/crates/webrtc/0.21.0) | 0.21.0 | MIT/Apache-2.0 |
 | webts-crypto | 1.0.0 | MIT |
 | [weezl](https://crates.io/crates/weezl/0.1.12) | 0.1.12 | MIT OR Apache-2.0 |

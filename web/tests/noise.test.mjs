@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
+test('generated audio assets retain the exact voice6 worklet for cached clients',async()=>{
+ const original=await readFile(new URL('../compat/audio/rnnoise-0.4.1-voice6.js',import.meta.url));
+ assert.deepEqual(await readFile(new URL('../public/audio/rnnoise-0.4.1-voice6.js',import.meta.url)),original);
+});
+
 test('real RNNoise WASM acknowledges ready, processes finite samples and destroys', async()=>{
   const source=await readFile(new URL('../public/audio/rnnoise-0.4.1-voice8.js',import.meta.url),'utf8');
   const wasm=await readFile(new URL('../public/audio/0.4.1-rnnoise.wasm',import.meta.url));

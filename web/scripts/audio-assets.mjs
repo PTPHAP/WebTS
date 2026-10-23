@@ -3,6 +3,8 @@ import {createVoiceGate,createVoiceActivity} from './voice-gate.mjs';
 const packageRoot=new URL('../node_modules/@sapphi-red/web-noise-suppressor/dist/',import.meta.url);
 const target=new URL('../public/audio/',import.meta.url);
 await mkdir(target,{recursive:true});
+// Cached pages still request the exact voice6 processor after a clean deployment.
+await copyFile(new URL('../compat/audio/rnnoise-0.4.1-voice6.js',import.meta.url),new URL('rnnoise-0.4.1-voice6.js',target));
 for(const model of ['rnnoise','gtcrn']) {
   let source=await readFile(new URL(`${model}/workletProcessor.js`,packageRoot),'utf8');
   // Pin every patch seam; do not silently patch a different upstream release.

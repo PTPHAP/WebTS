@@ -1,5 +1,37 @@
 import {test,expect} from '@playwright/test';
 
+test('a real audio context rejects a removed sink without blocking voice reconnect',async({page})=>{
+ await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
+ test.skip(!await page.evaluate(()=>typeof AudioContext.prototype.setSinkId==='function'),'Context output selection is unavailable in this browser.');
+ const result=await page.evaluate(async()=>{
+  const {Voice}=window.audioFixture,original={fetch:window.fetch,WebSocket:window.WebSocket},sockets=[],events=[];
+  let voice;
+  try{
+   window.fetch=(url,options)=>String(url).split('?')[0]==='/api/rtc'?Promise.resolve(new Response('{"iceServers":[]}')):original.fetch(url,options);
+   window.WebSocket=class{static OPEN=1;readyState=1;constructor(){sockets.push(this);queueMicrotask(()=>this.onopen?.());}send(){}close(){this.readyState=3;}};
+   voice=new Voice(e=>events.push(e));await voice.connect({identity:'synthetic-only'},'',true);
+   voice.sink='webts-nonexistent-unplugged-headset';sockets[0].onclose();
+   const deadline=Date.now()+7000;while(sockets.length<2&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));
+   return {sockets:sockets.length,open:sockets.at(-1).readyState===1,peer:!!voice.peer,sink:voice.sink,actualSink:voice.context?.sinkId,notice:events.some(e=>e.type==='notice'&&/默认.*输出/.test(e.message)),errors:events.filter(e=>e.type==='error')};
+  }finally{voice?.close();window.fetch=original.fetch;window.WebSocket=original.WebSocket;}
+ });
+ expect(result).toEqual({sockets:2,open:true,peer:true,sink:'',actualSink:'',notice:true,errors:[]});
+});
+
+test('cached voice6 clients can initialize the original worklet after a clean deployment',async({page})=>{
+ await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
+ const result=await page.evaluate(async()=>{
+  const context=new AudioContext({sampleRate:48000});let node;
+  try{
+   const response=await fetch('/audio/0.4.1-rnnoise.wasm');if(!response.ok)throw Error('Legacy WASM unavailable');
+   const wasmBinary=await response.arrayBuffer();await context.audioWorklet.addModule('/audio/rnnoise-0.4.1-voice6.js');
+   node=new AudioWorkletNode(context,'@sapphi-red/web-noise-suppressor/rnnoise',{outputChannelCount:[1],processorOptions:{maxChannels:1,wasmBinary,strength:1}});
+   return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Legacy ready timeout')),5000);node.port.onmessage=e=>{clearTimeout(timer);resolve(e.data.type);};node.onprocessorerror=()=>{clearTimeout(timer);reject(Error('Legacy processor error'));};});
+  }finally{node?.port.postMessage('destroy');node?.disconnect();await context.close();}
+ });
+ expect(result).toBe('ready');
+});
+
 test('real AI fallback remains silent until the worklet acknowledges filtering and then resumes audio',async({page})=>{
  await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
  test.skip(!await page.evaluate(()=>typeof AudioContext==='function'),'AudioContext unavailable; physical phone validation remains separate.');

@@ -274,6 +274,24 @@ test('direct processed playback keeps the exported player silent and selects the
  context.setSinkId=async()=>{throw Error('device removed');};await assert.rejects(voice.output('missing'),/device removed/);assert.equal(voice.sink,'headset');voice.close();
 });
 
+test('a removed saved output device does not block reconnect or restoring the last channel',async()=>{
+ const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+ AudioContext.prototype.setSinkId=async function(id){if(id==='headset'&&this!==env.contexts[0])throw new DOMException('Device removed','NotFoundError');};
+ await voice.connect({identity:'fixture'},'',true);await voice.output('headset');
+ await env.message({type:'state',own:1,members:[{id:1,channel:7}],channels:[{id:7,name:'last'}]});
+ env.sockets[0].onclose();await env.wait();
+ assert.equal(env.sockets.length,2);assert.equal(env.sockets[1].readyState,1);assert.equal(voice.sink,'');
+ assert.ok(events.some(e=>e.type==='notice'&&/默认.*输出/.test(e.message)));
+ await env.message({type:'state',own:2,members:[{id:2,channel:1}],channels:[{id:1,name:'default'},{id:7,name:'last'}]});
+ assert.ok(events.some(e=>e.type==='restore_channel'&&e.channel===7));voice.close();
+});
+
+test('element output selection uses the device ID rather than the remote track ID',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
+ const selected=[],audio={pause(){},setSinkId:async id=>selected.push(id)};voice.elements.set('remote-track',audio);
+ await voice.output('headset');assert.deepEqual(selected,['headset']);assert.equal(voice.sink,'headset');voice.close();
+});
+
 test('a late TS speaker binds member volume to a browser receiver whose track ID remains unchanged',async()=>{
  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
  const audio={volume:1,muted:false,pause(){}},receiver={volume(value){this.level=value;},destroy(){}};

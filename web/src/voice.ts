@@ -84,7 +84,9 @@ export class Voice {
     const intent=this.intent;if(!intent)return;const {request,device,listenOnly}=intent;
     this.dispose();this.failure=undefined; const generation = this.generation;this.restoreChannel=this.lastChannel;this.restoring=false;
     try {
-    this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context.resume().catch(()=>{});if(this.sink)await this.output(this.sink);
+    this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.context.resume().catch(()=>{});
+    if(this.sink){try{await this.output(this.sink);}catch{if(generation!==this.generation)return;this.sink='';this.event({type:'notice',message:'原收听设备不可用，已使用系统默认音频输出；可在语音设置中重新选择。'});}}
+    if(generation!==this.generation)return;
     let response:Response;try{response=await fetch('/api/rtc'+(typeof request.server==='string'&&request.server?'?server='+encodeURIComponent(request.server):''),{signal:AbortSignal.timeout(10000)});}catch{throw new Retryable('无法连接网关');}if(!response.ok){if(response.status===401||response.status===403)throw new Error('登录已过期，请重新登录');throw new Retryable('网关暂不可用');}
     const config = await response.json();if(generation!==this.generation)return;
     let stream: MediaStream | undefined;
@@ -307,7 +309,7 @@ export class Voice {
   outputVolume(value:number){this.settings.volume=Math.max(0,Math.min(1,value));this.applyAudio();}
   setMute(muted:boolean,deafened:boolean){this.muted=muted;this.deafened=deafened;this.update();this.applyAudio();this.send({type:'mute',muted,deafened});}
   volume(client:number,value:number){this.volumes.set(client,value);this.applyAudio();}
-  async output(id:string){const context=this.context as (AudioContext & {setSinkId?:(id:string)=>Promise<void>})|undefined;if(context?.setSinkId)await context.setSinkId(id);for(const[id,element]of this.elements){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(!this.receivers.get(id)?.direct&&audio.setSinkId)await audio.setSinkId(id);}this.sink=id;}
+  async output(id:string){const context=this.context as (AudioContext & {setSinkId?:(id:string)=>Promise<void>})|undefined;if(context?.setSinkId)await context.setSinkId(id);if(context!==this.context)return;for(const[track,element]of this.elements){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(!this.receivers.get(track)?.direct&&audio.setSinkId)await audio.setSinkId(id);}if(context===this.context)this.sink=id;}
   private bindTracks(){
     const peer=this.peer,sdp=peer?.remoteDescription?.sdp;if(!peer||!sdp)return;
     // A receive transceiver can keep its original browser track UUID when a later speaker joins.

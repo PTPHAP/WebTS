@@ -6,9 +6,9 @@ test('low resource mode is visible, persists locally and releases seasonal effec
  await fixture(page,{replies:{'/api/site':{site_name:'WebTS',season:'spring',title:'本地界面验收',announcements:[]}}});
  await page.goto('/app');
  const toggle=page.getByRole('switch',{name:'低占用模式'});
- await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');await expect(toggle).toContainText('已关闭');
+ await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');await expect(page.locator('.low-resource-state')).toHaveText('已关闭');
  await expect(page.locator('.season-click-layer')).toHaveCount(1);
- await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');await expect(toggle).toContainText('已开启');await expect(page.getByText('低占用模式已开启：减少界面特效和电平显示刷新，语音降噪与加密保持原样。',{exact:true})).toBeVisible();
+ await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');await expect(page.locator('.low-resource-state')).toHaveText('已开启');await expect(page.getByText('低占用模式已开启：停止非设置页面的电平显示刷新并减少界面特效，语音降噪与加密保持原样。',{exact:true})).toBeVisible();
  await expect(page.locator('.app')).toHaveAttribute('data-low-resource','true');await expect(page.locator('.season-click-layer')).toHaveCount(0);
  expect(await page.evaluate(()=>localStorage.getItem('webts-low-resource'))).toBe('1');
  await page.reload();await expect(toggle).toHaveAttribute('aria-checked','true');
@@ -16,7 +16,7 @@ test('low resource mode is visible, persists locally and releases seasonal effec
  for(const width of mobile?[390]:[1440,768]){
   await page.setViewportSize({width,height:900});await page.reload();await expect(toggle).toBeVisible();await expect(toggle).toHaveAttribute('aria-checked','true');
   if(width===390)await expect(page.locator('.app')).toHaveAttribute('data-layout','mobile');
-  const box=await toggle.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);expect(box.height).toBeGreaterThanOrEqual(44);
+  const box=await page.locator('.low-resource-toggle').boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);expect(box.height).toBeGreaterThanOrEqual(44);
   expect(await page.locator('.app').evaluate(n=>getComputedStyle(n).animationName)).toBe('none');
   await page.screenshot({path:test.info().outputPath('low-resource-'+width+'.png')});
  }

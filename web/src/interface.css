@@ -259,9 +259,13 @@ dialog::backdrop {background:#061020a3; backdrop-filter:blur(5px);}
 .app[data-layout=mobile] {height:var(--viewport-height,100dvh); padding-bottom:calc(64px + env(safe-area-inset-bottom));}
 .app[data-layout=mobile]:has(.workspace-shell) {padding-bottom:calc(64px + env(safe-area-inset-bottom));}
 .low-resource-toggle {display:inline-flex;align-items:center;gap:8px;min-height:44px;flex-shrink:0;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);font-size:12px;font-weight:600;white-space:nowrap;}
-.low-resource-toggle>span {padding:2px 6px;border-radius:5px;background:var(--panel);color:var(--muted);font-size:11px;}
-.low-resource-toggle[aria-checked=true] {border-color:var(--accent);}
-.low-resource-toggle[aria-checked=true]>span {color:var(--accent);}
+.topbar .low-resource-toggle {display:inline-flex;flex-direction:row;align-items:center;cursor:pointer;border-color:transparent;background:transparent;}
+.low-resource-state {color:var(--muted);font-size:11px;}
+.low-resource-toggle input {appearance:none;position:relative;flex-shrink:0;width:42px;height:24px;margin:0;border:1px solid var(--border);border-radius:14px;background:var(--panel);cursor:pointer;}
+.low-resource-toggle input::before {content:'';position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--muted);}
+.low-resource-toggle input:checked {background:var(--accent);border-color:var(--accent);}
+.low-resource-toggle input:checked::before {transform:translateX(18px);background:var(--surface);}
+.low-resource-toggle:has(input:checked) .low-resource-state {color:var(--accent);}
 .app[data-low-resource] *,.app[data-low-resource] *::before,.app[data-low-resource] *::after {animation:none!important;transition:none!important;scroll-behavior:auto!important;backdrop-filter:none!important;box-shadow:none!important;}
 .app[data-low-resource] :focus-visible {outline:2px solid var(--accent);outline-offset:3px;}
 @media(max-width:760px) {.topbar .top-actions {flex-wrap:wrap;justify-content:flex-end;}.low-resource-toggle {padding:6px 9px;gap:5px;}}

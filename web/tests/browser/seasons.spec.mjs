@@ -126,6 +126,17 @@ test('classic preference persists with the account and later site broadcasts can
   f.publish('https://evil.example/theme.css');await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await expect(page.locator('html')).toHaveAttribute('data-season','classic');
 });
 
+test('low resource mode suppresses meter-driven React commits without reconnecting voice',async({page})=>{
+ await page.addInitScript(()=>{window.__reactCommits=0;window.__REACT_DEVTOOLS_GLOBAL_HOOK__={supportsFiber:true,renderers:new Map(),inject(){return 1;},onCommitFiberRoot(){window.__reactCommits++;},onCommitFiberUnmount(){}};});
+ await fixture(page,{voice:true});let socket,joins=0;
+ await page.routeWebSocket('**/api/connect',peer=>{socket=peer;peer.onMessage(text=>{if(JSON.parse(String(text)).identity){joins++;peer.send(JSON.stringify({type:'state',server:'Performance test',own:1,canSpeak:true,channels:[{id:1,parent:0,order:0,name:'测试',password:false}],members:[{id:1,channel:1,name:'测试用户',uid:'test',muted:false,deafened:false,serverGroups:[],channelGroup:0}]}));}});});
+ await page.goto('/app');await page.getByRole('button',{name:'连接服务器',exact:true}).first().click();await page.getByRole('checkbox',{name:'仅收听，不打开麦克风'}).check();await page.getByRole('button',{name:'连接',exact:true}).click();await expect.poll(()=>joins).toBe(1);
+ const sample=async()=>{await page.waitForTimeout(200);const before=await page.evaluate(()=>window.__reactCommits);for(let i=0;i<30;i++){socket.send(JSON.stringify({type:'level',level:(i+1)/32,input_level:(i+1)/32}));await page.waitForTimeout(35);}return await page.evaluate(()=>window.__reactCommits)-before;};
+ const normal=await sample();await page.getByRole('switch',{name:'低占用模式'}).check();const reduced=await sample();
+ expect(normal).toBeGreaterThan(5);expect(reduced).toBeLessThan(normal/2);expect(joins).toBe(1);
+ await test.info().attach('meter-commit-comparison',{body:JSON.stringify({eventsPerMode:30,normal,reduced,joins}),contentType:'application/json'});
+});
+
 test('season changes preserve live voice transport and a mounted watch player',async({page})=>{
   await page.goto('/');if(!await page.evaluate(()=>typeof AudioContext!=='undefined'))test.skip(true,'This local WebKit build lacks AudioContext; actual voice compatibility remains unverified');
   await page.addInitScript(()=>{window.__rtcCreations=0;window.__audioCreations=0;for(const[name,counter]of[['RTCPeerConnection','__rtcCreations'],['AudioContext','__audioCreations']]){const Original=window[name];if(Original)window[name]=new Proxy(Original,{construct(target,args,newTarget){window[counter]++;return Reflect.construct(target,args,newTarget);}});}});

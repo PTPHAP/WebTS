@@ -102,6 +102,9 @@ class ReleaseTests(unittest.TestCase):
             keyboard_revision = re.search(r"model==='rnnoise'\?'[^']+':'([^']+)'", loader)[1]
             for name in ('index.html', 'crypto/webts_crypto.js', 'crypto/webts_crypto_bg.wasm', 'audio/0.4.1-gtcrn.wasm', 'audio/0.4.1-rnnoise.wasm', 'audio/0.4.1-rnnoise_simd.wasm', f'audio/gtcrn-0.4.1-{keyboard_revision}.js', f'audio/rnnoise-0.4.1-{revision}.js'):
                 write('web/dist/' + name)
+            realtime_resources = ('rnnoise-2025.1.5.js', 'realtime-noise-v1.js', 'voice-gate-v1.js')
+            for name in realtime_resources:
+                write('web/dist/audio/' + name)
             for retained in ('voice6', 'voice7'):
                 write(f'web/dist/audio/rnnoise-0.4.1-{retained}.js')
             for name in ('react','react-dom','scheduler','qrcode','dijkstrajs'):
@@ -120,6 +123,12 @@ class ReleaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'Incomplete frontend'):
                         windows.package(root / 'web-ts.exe', root / ('missing-' + required), root)
                     self.assertFalse((root / ('missing-' + required) / 'webts-1.2.3-windows-x64.zip').exists())
+                    write(resource)
+                for name in realtime_resources:
+                    resource = 'web/dist/audio/' + name
+                    (root / resource).unlink()
+                    with self.assertRaisesRegex(ValueError, 'Incomplete frontend'):
+                        windows.package(root / 'web-ts.exe', root / ('missing-' + name), root)
                     write(resource)
                 write('web/dist/config.local.toml', b'private fixture')
                 with self.assertRaises(ValueError):

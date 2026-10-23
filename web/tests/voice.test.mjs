@@ -10,7 +10,7 @@ const settingsCode=ts.transpileModule(await readFile(new URL('../src/audio-setti
 const settingsURL='data:text/javascript;base64,'+Buffer.from(settingsCode).toString('base64');
 const receiveCode=ts.transpileModule(await readFile(new URL('../src/receive-audio.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
 const receiveURL='data:text/javascript;base64,'+Buffer.from(receiveCode).toString('base64');
-const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace('./audio-settings',settingsURL).replace('./receive-audio',receiveURL).replace('./connection-quality',qualityURL).replace("import('./noise')",'globalThis.loadFixtureNoise()');
+const compiled = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext, target:ts.ScriptTarget.ES2022}}).outputText.replace('./audio-settings',settingsURL).replace('./receive-audio',receiveURL).replace('./connection-quality',qualityURL).replace("import('./noise')",'globalThis.loadFixtureNoise()').replace("import('./stream-noise')",'globalThis.loadFixtureStreamNoise()');
 const {Voice} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 
 function browser(microphoneError) {
@@ -45,6 +45,43 @@ function browser(microphoneError) {
   };
   return {sent,tracks,captured,constraints,contexts,sockets,processors,connections,delays,wait:async()=>{const [id,task]=delays.entries().next().value??[];if(task){delays.delete(id);await task.callback();}},message:async value=>{sockets.at(-1).onmessage?.({data:JSON.stringify(value)});for(let i=0;i<15;i++)await Promise.resolve();},tick:()=>timers.forEach(callback=>callback()),focus:value=>{focused=value;},requests:()=>requests,sampleFailure:value=>sampleFailure=value};
 }
+
+async function realtimeFixture(run){
+ const env=browser(),nodes=[];
+ const keys=['Worker','MediaStreamTrackGenerator','MediaStreamTrackProcessor'],original=keys.map(k=>globalThis[k]);
+ for(const key of keys)globalThis[key]=class{};
+ globalThis.loadFixtureStreamNoise=async()=>({createStreamNoise:async(context,stream)=>{
+  const track=stream.getAudioTracks()[0].clone(),node={input:{},output:{connect(){}},stream:new MediaStream([track]),mode:'realtime',gains:[],gain(value){this.gains.push(value);},typing(){},destroy(){this.destroyed=true;track.stop();}};nodes.push(node);return node;
+ }});
+ try{await run(env,nodes);}finally{for(let i=0;i<keys.length;i++){if(original[i]===undefined)delete globalThis[keys[i]];else globalThis[keys[i]]=original[i];}delete globalThis.loadFixtureStreamNoise;}
+}
+
+test('realtime capture bypasses the graph queue and noise-off reacquires a microphone without reconnecting',async()=>{
+ await realtimeFixture(async(env,nodes)=>{
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);const peer=voice.peer,socket=voice.socket,first=voice.sendTrack;
+  assert.equal(env.constraints[0].audio.noiseSuppression,true);assert.equal(voice.processed,nodes[0].stream);assert.equal(voice.noiseNode.mode,'realtime');
+  voice.setMute(true,false);await voice.configure({...voice.settings,gain:1.6});assert.equal(nodes[0].gains.at(-1),1.6);assert.equal(voice.sendTrack.enabled,false);
+  await voice.configure({...voice.settings,noise:'off'});
+  assert.equal(env.constraints.at(-1).audio.noiseSuppression,false);assert.equal(voice.peer,peer);assert.equal(voice.socket,socket);assert.equal(nodes[0].destroyed,true);assert.equal(first.stopped,true);assert.equal(voice.sendTrack.enabled,false);assert.equal(voice.noiseNode,undefined);
+  voice.setMute(false,false);assert.equal(voice.sendTrack.enabled,true);voice.close();
+ });
+});
+
+test('realtime device recovery replaces processing while keeping AFK and receivers',async()=>{
+ await realtimeFixture(async(env,nodes)=>{
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);const peer=voice.peer,socket=voice.socket;let destroyed=0;voice.receivers.set('existing',{destroy(){destroyed++;}});
+  voice.setAway(true);await voice.recoverMicrophone();assert.equal(nodes.length,2);assert.equal(nodes[0].destroyed,true);assert.equal(voice.processed,nodes[1].stream);assert.equal(voice.sendTrack.enabled,false);assert.equal(voice.peer,peer);assert.equal(voice.socket,socket);assert.equal(destroyed,0);
+  voice.close();assert.equal(destroyed,1);assert.equal(nodes[1].destroyed,true);
+ });
+});
+
+test('realtime failure stops sending and restores filtering without leaking raw capture',async()=>{
+ await realtimeFixture(async(env,nodes)=>{
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);const peer=voice.peer;
+  nodes[0].onerror();assert.equal(voice.active,false);assert.equal(voice.sendTrack.enabled,false);
+  await voice.microphoneTask;assert.equal(voice.peer,peer);assert.equal(voice.noiseNode.mode,'keyboard');assert.equal(env.constraints.at(-1).audio.noiseSuppression,false);assert.equal(voice.processingBlocked,false);voice.close();
+ });
+});
 
 test('ICE configuration follows the selected configured server and leaves custom targets on the site',async()=>{
  browser();const urls=[];globalThis.fetch=async url=>{urls.push(url);return {ok:true,json:async()=>({iceServers:[]})};};
@@ -574,8 +611,8 @@ test('late microphone recovery after disconnect or device change releases the st
     voice.close();
   }
 });
-test('unprocessed microphone recovery preserves the stable outgoing destination track',async()=>{
-  const env=browser(),voice=new Voice(()=>{});voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);
+test('nonunity microphone recovery preserves the stable outgoing graph destination track',async()=>{
+  const env=browser(),voice=new Voice(()=>{});voice.configure({...voice.settings,noise:'off',gain:.5});await voice.connect({identity:'fixture'},'',false);
   const socket=voice.socket,old=voice.sendTrack;env.captured[0].readyState='ended';env.captured[0].onended();await voice.microphoneTask;
   assert.equal(voice.socket,socket);assert.equal(voice.sendTrack,old);assert.equal(old.stopped,false);assert.equal(env.captured[0].stopped,true);assert.equal(voice.sendTrack.enabled,true);voice.close();
 });
@@ -621,6 +658,7 @@ test('diagnostic snapshots follow live processing and disposal without exposing 
  await voice.configure({...voice.settings,noise:'off'});assert.equal(voice.diagnostics().processing,'off');voice.context.state='suspended';assert.equal(voice.diagnostics().context,'suspended');voice.close();
 });
 
+
 test('a delayed background watchdog lets queued heartbeats arrive before reconnecting',async t=>{
   let now=0;t.mock.method(performance,'now',()=>now);t.mock.method(Date,'now',()=>now);
   const env=browser(),events=[],voice=new Voice(e=>events.push(e));
@@ -641,6 +679,7 @@ test('a genuinely silent gateway still reconnects after a background scheduling 
   assert.equal(events.filter(e=>e.type==='disconnected').length,1);voice.close();
 });
 
+
 test('silent open-mic, muted and listen-only sessions stay connected while gateway heartbeats arrive',async t=>{
  let now=0;t.mock.method(performance,'now',()=>now);
  for(const mode of ['open-mic','muted','listen-only']){
@@ -654,4 +693,68 @@ test('silent open-mic, muted and listen-only sessions stay connected while gatew
   assert.ok(!events.some(e=>e.type==='disconnected'),mode+' must not disconnect because of speech inactivity');
   voice.close();
  }
+});
+
+
+test('noise-off unity gain sends the original capture without a graph queue and hot gain retains mute',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);voice.setMode('open');
+ const peer=voice.peer,socket=voice.socket,raw=voice.stream;
+ assert.equal(voice.processed,raw);voice.setMute(true,false);
+ await voice.configure({...voice.settings,gain:.5});assert.equal(voice.processed,voice.captureDestination);assert.equal(voice.captureGain.gain.value,.5);assert.equal(voice.sendTrack.enabled,false);
+ await voice.configure({...voice.settings,gain:1});assert.equal(voice.processed,raw);assert.equal(voice.sendTrack.enabled,false);assert.equal(raw.getTracks()[0].stopped,false);
+ voice.setMute(false,false);assert.equal(voice.sendTrack.enabled,true);assert.equal(voice.peer,peer);assert.equal(voice.socket,socket);voice.close();
+});
+
+test('a failed raw-to-zero-gain switch stays silent and a later nonunity gain retries the actual route',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);voice.setMode('open');
+ const sender=voice.sender,replace=sender.replaceTrack;sender.replaceTrack=async()=>{throw Error('fixture route rejection');};
+ await voice.configure({...voice.settings,gain:0});assert.equal(voice.sendTrack.enabled,false);
+ sender.replaceTrack=replace;
+ await voice.configure({...voice.settings,gain:.5});assert.equal(voice.processed,voice.captureDestination);assert.equal(voice.captureGain.gain.value,.5);assert.equal(voice.sendTrack.enabled,true);voice.close();
+});
+
+
+test('unity raw microphone recovery replaces its ended source without reconnecting or unmuting',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.configure({...voice.settings,noise:'off',gain:1});await voice.connect({identity:'fixture'},'',false);voice.setMute(true,false);
+ const socket=voice.socket,peer=voice.peer,old=voice.sendTrack,raw=voice.stream;raw.getTracks()[0].readyState='ended';raw.getTracks()[0].onended();await voice.microphoneTask;
+ assert.equal(voice.socket,socket);assert.equal(voice.peer,peer);assert.notEqual(voice.stream,raw);assert.equal(voice.processed,voice.stream);assert.notEqual(voice.sendTrack,old);assert.equal(old.stopped,true);assert.equal(voice.sendTrack.enabled,false);voice.close();
+});
+
+
+test('realtime gain can return from zero without leaving its sender disabled',async()=>{
+ await realtimeFixture(async(env,nodes)=>{
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);voice.setMode('open');nodes[0].speaking=true;nodes[0].onspeech(true);
+  const track=voice.sendTrack;await voice.configure({...voice.settings,gain:0});assert.equal(track.enabled,true);assert.equal(nodes[0].gains.at(-1),0);
+  await voice.configure({...voice.settings,gain:.5});assert.equal(voice.sendTrack,track);assert.equal(track.enabled,true);assert.equal(nodes[0].gains.at(-1),.5);voice.close();
+ });
+});
+
+
+test('initial realtime failure disables native suppression before loading compatible filtering',async()=>{
+ await realtimeFixture(async(env)=>{
+  globalThis.loadFixtureStreamNoise=async()=>({createStreamNoise:async(context,stream)=>{
+   const track=stream.getAudioTracks()[0];track.applyConstraints=async value=>{track.applied=value;track.getSettings=()=>({noiseSuppression:false});};throw Error('fixture worker failure');
+  }});
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  assert.equal(env.captured[0].applied.noiseSuppression,false);assert.equal(voice.noiseNode.mode,'keyboard');assert.equal(voice.nativeCapture,false);assert.equal(voice.processingBlocked,false);voice.close();
+ });
+});
+
+test('failed native suppression reset keeps initial sending blocked instead of stacking models',async()=>{
+ await realtimeFixture(async(env)=>{
+  globalThis.loadFixtureStreamNoise=async()=>({createStreamNoise:async()=>{throw Error('fixture worker failure');}});
+  const voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  assert.equal(voice.processingBlocked,true);assert.equal(voice.sendTrack.enabled,false);assert.equal(voice.noiseNode,undefined);assert.ok(voice.peer);voice.close();
+ });
+});
+
+
+test('a worker failure during sender replacement is not lost before handler attachment',async()=>{
+ await realtimeFixture(async(env,nodes)=>{
+  const voice=new Voice(()=>{});await voice.configure({...voice.settings,noise:'off'});await voice.connect({identity:'fixture'},'',false);
+  const sender=voice.sender,replace=sender.replaceTrack.bind(sender);sender.replaceTrack=async track=>{await replace(track);if(nodes.length)nodes.at(-1).failure='fixture asynchronous failure';};
+  await voice.configure({...voice.settings,noise:'rnnoise'});
+  await voice.microphoneTask;
+  assert.notEqual(voice.noiseNode?.mode,'realtime');assert.equal(voice.sendTrack.enabled,false);assert.ok(voice.peer);voice.close();
+ });
 });

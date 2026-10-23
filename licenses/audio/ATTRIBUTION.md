@@ -29,3 +29,15 @@ It does not perform acoustic echo cancellation. Neither model uses a WebTS
 amplitude threshold or keyboard-event mute rule to stop transmission.
 
 WebTS另在既有人声门控状态改变时发送Worklet消息，用于网关语音开始/结束控制；不更改模型权重、概率参数或音频样本计算。
+
+The optional realtime capture path uses @shiguredo/rnnoise-wasm 2025.1.5
+(Apache-2.0), Copyright 2021-2025 Takeru Ohta (Original Author) and
+Shiguredo Inc. Source: https://github.com/shiguredo/rnnoise-wasm/tree/2025.1.5
+Its embedded RNNoise model is loaded locally; microphone audio is not sent to
+an external inference service. WebTS provides the capture worker, frame
+assembly, gain, speech control, startup priming and bounded output handling.
+The compatible 2022 model and GTCRN resources remain available for older clients.
+
+Embedded RNNoise source revision: 70f1d256acd4b34a572f999a05c87bf00b67730d,
+BSD-3-Clause; see rnnoise-2025-BSD-3-Clause.txt. The wrapper build script
+pins this revision; its license is retained separately from the older model.

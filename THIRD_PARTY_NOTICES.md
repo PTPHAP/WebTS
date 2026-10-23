@@ -53,3 +53,10 @@ scripts/fix-music-bot-encryption.py 包含 @honeybbq/teamspeak-client 0.2.2（Ho
 ## 邀请二维码
 
 固定 qrcode 1.5.4（MIT）在浏览器本地生成邀请二维码；来源：https://github.com/soldair/node-qrcode 。其浏览器编码依赖 dijkstrajs（MIT）的许可证随包收集；不会向第三方二维码服务发送频道信息。二维码按需加载，分享内容不含密码或身份密钥。
+
+实时采集路径另使用固定 @shiguredo/rnnoise-wasm 2025.1.5（Apache-2.0），
+Copyright 2021-2025 Takeru Ohta / Shiguredo Inc.，模型在本地运行。
+原文见 licenses/audio/rnnoise-wasm-2025-APACHE-2.0.txt，来源与改动说明见
+[音频归属](licenses/audio/ATTRIBUTION.md)。兼容路径的旧模型及许可继续保留。
+
+The embedded RNNoise 2025 source license is retained in `licenses/audio/rnnoise-2025-BSD-3-Clause.txt` (pinned upstream revision 70f1d256acd4b34a572f999a05c87bf00b67730d).

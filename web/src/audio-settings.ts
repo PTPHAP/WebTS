@@ -5,8 +5,8 @@ export function processingLabel(noise:unknown,actual:unknown,voiceOnly=false):st
   if(noise==='blocked')return '降噪与发言检测不可用 · 麦克风发送已暂停，可在当前频道切换方案重试';
   const settings=actual&&typeof actual==='object'?actual as MediaTrackSettings:{};
   const state=(value:unknown)=>value===true?'已启用':value===false?'未启用':'设备未报告';
-  const label=noise==='keyboard'?'本地 AI 智能增强 · GTCRN':noise==='rnnoise'?'本地 AI 轻量保真 · RNNoise':'降噪已关闭';
-  return `${label}${voiceOnly&&noise!=='off'?' + 仅保留人声':''} · 回声消除：${state(settings.echoCancellation)} · 自动增益：${state(settings.autoGainControl)}${settings.noiseSuppression===true?' · 设备仍开启原生降噪':''}`;
+  const label=noise==='realtime'?'本地 AI 实时降噪 · RNNoise':noise==='keyboard'?'本地 AI 智能增强 · GTCRN':noise==='rnnoise'?'本地 AI 轻量保真 · RNNoise':'降噪已关闭';
+  return `${label}${voiceOnly&&noise!=='off'?' + 仅保留人声':''} · 回声消除：${state(settings.echoCancellation)} · 自动增益：${state(settings.autoGainControl)}${settings.noiseSuppression===true?(noise==='realtime'?' · 基础降噪已启用，强度调节 AI 增强':' · 设备仍开启原生降噪'):''}`;
 }
 export function readAudioSettings():AudioSettings {
   try {

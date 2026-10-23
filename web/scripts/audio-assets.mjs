@@ -62,3 +62,6 @@ for(const model of ['rnnoise','gtcrn']) {
 }
 for(const obsolete of ['rnnoise-0.4.1-ready1.js','rnnoise-0.4.1-voice1.js','rnnoise-0.4.1-voice2.js','rnnoise-0.4.1-voice3.js','rnnoise-0.4.1-voice4.js','rnnoise-0.4.1-voice5.js','gtcrn-0.4.1-ready1.js','gtcrn-0.4.1-strength1.js'])await unlink(new URL(obsolete,target)).catch(error=>{if(error.code!=='ENOENT')throw error;});
 for(const file of ['rnnoise.wasm','rnnoise_simd.wasm','gtcrn.wasm'])await copyFile(new URL(file,packageRoot),new URL(`0.4.1-${file}`,target));
+await copyFile(new URL('../node_modules/@shiguredo/rnnoise-wasm/dist/rnnoise.js',import.meta.url),new URL('rnnoise-2025.1.5.js',target));
+await copyFile(new URL('../workers/realtime-noise.js',import.meta.url),new URL('realtime-noise-v1.js',target));
+await writeFile(new URL('voice-gate-v1.js',target),`export const createVoiceGate=${createVoiceGate.toString()};\n`);

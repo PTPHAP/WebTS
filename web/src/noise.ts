@@ -1,5 +1,5 @@
 type Worklet=AudioWorkletNode & {destroy():void};
-export type NoiseProcessor={input:AudioNode;output:AudioNode;mode:'rnnoise'|'keyboard';warning?:string;onchange?:(message:string)=>void;onerror?:()=>void;speaking?:boolean;onspeech?:(enabled:boolean)=>void;preparing?:boolean;onprepare?:(enabled:boolean)=>void;typing():void;destroy():void};
+export type NoiseProcessor={input:AudioNode;output:AudioNode;stream?:MediaStream;diagnostics?:{frames:number;sourceSamples:number;renderedSamples:number;primingSamples:number;maxCost:number;writeMax:number;initialRebases:number;discardedPrimingSamples:number;pendingSamples:number};gain?:(value:number)=>void;mode:'rnnoise'|'keyboard'|'realtime';failure?:string;warning?:string;onchange?:(message:string)=>void;onerror?:()=>void;speaking?:boolean;onspeech?:(enabled:boolean)=>void;preparing?:boolean;onprepare?:(enabled:boolean)=>void;typing():void;destroy():void};
 
 async function ready(node:Worklet) {
   try {

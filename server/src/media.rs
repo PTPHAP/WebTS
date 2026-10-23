@@ -344,6 +344,7 @@ struct Speaker {
     received: u64,
     stable_frames: u16,
     last: Instant,
+    clock: Instant,
     ended: bool,
     ready: bool,
     pending: VecDeque<(Instant, u16, Bytes)>,
@@ -560,6 +561,7 @@ impl Media {
                     received: 0,
                     stable_frames: 0,
                     last: Instant::now(),
+                    clock: Instant::now(),
                     ended: true,
                     ready: false,
                     pending: VecDeque::new(),
@@ -714,35 +716,49 @@ impl Media {
             s.received |= 1u64 << behind;
             s.timestamp.wrapping_sub(u32::from(behind) * s.samples)
         } else {
+            let Some(samples) = samples else {
+                // A TS end marker has a sequence number but no audio clock.
+                // Keep the last real frame's time: markers may arrive immediately
+                // or long after it, and must not add or erase elapsed silence.
+                s.seq = Some(sequence);
+                s.received = 1;
+                s.stable_frames = 0;
+                s.sequence_offset = s.sequence_offset.wrapping_add(delta);
+                s.ended = true;
+                return Ok(true);
+            };
             if s.seq.is_some() {
+                if marker {
+                    // TS may advance its voice ID while not transmitting PCM.
+                    // A new speech epoch must not turn that pause into RTP loss.
+                    s.sequence_offset = s.sequence_offset.wrapping_add(delta - 1);
+                }
                 // Preserve the explicit speech boundary and the idle recovery
                 // fallback: TS end markers can be lost on the UDP link.
                 let advance = if marker {
-                    (elapsed.as_nanos() * 48 / 1_000_000) as u32
+                    (s.clock.elapsed().as_nanos() * 48 / 1_000_000).max(u128::from(s.samples))
                 } else {
-                    u32::from(delta) * s.samples
+                    u128::from(delta) * u128::from(s.samples)
                 };
-                s.timestamp = s.timestamp.wrapping_add(advance);
+                s.timestamp = s.timestamp.wrapping_add(advance as u32);
+                // A burst advances the sample clock ahead of its arrival time.
+                // Preserve that anchor so the next pause cannot count it again.
+                s.clock += Duration::from_nanos((advance * 1_000_000_000 / 48_000) as u64);
+            } else {
+                s.clock = Instant::now();
             }
             s.received = if marker || delta >= 64 {
                 1
             } else {
                 (s.received << delta) | 1
             };
-            s.stable_frames = if marker || samples != Some(s.samples) {
+            s.stable_frames = if marker || samples != s.samples {
                 0
             } else {
                 (s.stable_frames + delta).min(63)
             };
             s.seq = Some(sequence);
             s.last = Instant::now();
-            let Some(samples) = samples else {
-                // TS end markers occupy a TS sequence number but have no RTP audio.
-                // Compress that intentional gap so it is not reported as packet loss.
-                s.sequence_offset = s.sequence_offset.wrapping_add(1);
-                s.ended = true;
-                return Ok(true);
-            };
             s.samples = samples;
             s.ended = false;
             s.timestamp
@@ -1204,6 +1220,147 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn speech_boundaries_compress_idle_ids_but_preserve_active_packet_loss() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals, audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media
+            .sync_speakers(&[2], &media.signals.clone())
+            .await
+            .unwrap();
+        media.secure.store(true, Ordering::Release);
+        media.speakers.get_mut(&2).unwrap().ready = true;
+        let frame = &[0xf8, 0xff, 0xfe];
+        assert!(media.audio(2, 65530, frame).await.unwrap());
+        assert!(media.audio(2, 65532, frame).await.unwrap());
+        assert_eq!(
+            65532u16.wrapping_sub(media.speakers[&2].sequence_offset),
+            65532,
+            "a missing frame inside active speech remains an RTP sequence gap"
+        );
+        assert!(media.audio(2, 65533, &[]).await.unwrap());
+        assert!(media.audio(2, 16, frame).await.unwrap());
+        assert_eq!(
+            16u16.wrapping_sub(media.speakers[&2].sequence_offset),
+            65533,
+            "native idle voice IDs, including wrap, are not lost RTP packets"
+        );
+        assert!(media.audio(2, 17, frame).await.unwrap());
+        assert!(media.audio(2, 19, frame).await.unwrap());
+        assert_eq!(19u16.wrapping_sub(media.speakers[&2].sequence_offset), 0);
+        // A delayed end marker can itself carry idle IDs.
+        assert!(media.audio(2, 40, &[0xff]).await.unwrap());
+        assert!(media.audio(2, 41, frame).await.unwrap());
+        assert_eq!(41u16.wrapping_sub(media.speakers[&2].sequence_offset), 1);
+        // Recover the boundary when the UDP end marker was lost.
+        media.speakers.get_mut(&2).unwrap().last -= Duration::from_millis(300);
+        media.speakers.get_mut(&2).unwrap().clock -= Duration::from_millis(300);
+        assert!(media.audio(2, 60, frame).await.unwrap());
+        assert_eq!(60u16.wrapping_sub(media.speakers[&2].sequence_offset), 2);
+        assert!(!media.audio(2, 59, frame).await.unwrap());
+        media.close().await;
+    }
+    #[tokio::test]
+    async fn speech_bursts_do_not_add_their_sample_duration_again_at_restart() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals, audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media
+            .sync_speakers(&[2], &media.signals.clone())
+            .await
+            .unwrap();
+        media.secure.store(true, Ordering::Release);
+        media.speakers.get_mut(&2).unwrap().ready = true;
+        assert!(media.audio(2, 100, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        let start = media.speakers[&2].clock;
+        // A speech lead-in arrives together, but still represents 120ms of PCM.
+        for sequence in 101..=106 {
+            assert!(media.audio(2, sequence, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        }
+        assert_eq!(media.speakers[&2].timestamp, 5760);
+        assert!(media.audio(2, 107, &[]).await.unwrap());
+        // Advance the wall clock by 400ms without waiting in a protocol test.
+        media.speakers.get_mut(&2).unwrap().last -= Duration::from_millis(400);
+        media.speakers.get_mut(&2).unwrap().clock -= Duration::from_millis(400);
+        let minimum =
+            ((start.elapsed() + Duration::from_millis(400)).as_nanos() * 48 / 1_000_000) as u32;
+        assert!(media.audio(2, 108, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        let maximum = ((start.elapsed() + Duration::from_millis(400)).as_nanos() * 48 / 1_000_000)
+            as u32
+            + 48;
+        let resumed = media.speakers[&2].timestamp;
+        media.close().await;
+        assert!(
+            (minimum.saturating_sub(48)..=maximum).contains(&resumed),
+            "burst duration must not be counted twice: got {resumed}, expected {minimum}..={maximum}"
+        );
+    }
+    #[tokio::test]
+    async fn end_markers_do_not_rebase_the_last_audio_sample_clock() {
+        let (_dir, app, _) = crate::app::tests::fixture();
+        let (signals, _events) = mpsc::channel(64);
+        let (audio, _) = mpsc::channel(8);
+        let mut media = Media::new(&app, 1, 0, signals, audio, CancellationToken::new())
+            .await
+            .unwrap();
+        media
+            .sync_speakers(&[2], &media.signals.clone())
+            .await
+            .unwrap();
+        media.secure.store(true, Ordering::Release);
+        media.speakers.get_mut(&2).unwrap().ready = true;
+        assert!(media.audio(2, 100, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        let timestamp = media.speakers[&2].timestamp;
+        // Model an end marker delivered well after its last 20ms audio frame.
+        let anchor = Instant::now() - Duration::from_millis(120);
+        media.speakers.get_mut(&2).unwrap().last = anchor;
+        media.speakers.get_mut(&2).unwrap().clock = anchor;
+        assert!(media.audio(2, 101, &[]).await.unwrap());
+        let end_timestamp = media.speakers[&2].timestamp;
+        let end_anchor = media.speakers[&2].last;
+        let before = (anchor.elapsed().as_nanos() * 48 / 1_000_000) as u32;
+        assert!(media.audio(2, 102, &[0xf8, 0xff, 0xfe]).await.unwrap());
+        let after = (anchor.elapsed().as_nanos() * 48 / 1_000_000) as u32;
+        let resumed = media.speakers[&2].timestamp.wrapping_sub(timestamp);
+        for i in 0..8u16 {
+            let timestamp = media.speakers[&2].timestamp;
+            let anchor = media.speakers[&2].last;
+            let marker: &[u8] = if i % 2 == 0 { &[] } else { &[0] };
+            assert!(media.audio(2, 103 + i * 2, marker).await.unwrap());
+            assert_eq!(media.speakers[&2].timestamp, timestamp);
+            assert_eq!(media.speakers[&2].last, anchor);
+            assert!(
+                media
+                    .audio(2, 104 + i * 2, &[0xf8, 0xff, 0xfe])
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                media.speakers[&2].timestamp.wrapping_sub(timestamp) >= 960,
+                "adjacent speech frames must not overlap when their end marker is immediate"
+            );
+        }
+        media.close().await;
+        assert_eq!(
+            end_timestamp, timestamp,
+            "a non-audio marker has no sample duration"
+        );
+        assert_eq!(
+            end_anchor, anchor,
+            "late end markers must not erase elapsed silence"
+        );
+        assert!(
+            (before..=after).contains(&resumed),
+            "resume must use the last audio anchor, got {resumed} samples; expected {before}..={after}"
+        );
+    }
+    #[tokio::test]
     async fn speech_restarts_preserve_short_silence_on_the_rtp_clock() {
         let (_dir, app, _) = crate::app::tests::fixture();
         let (signals, _events) = mpsc::channel(64);
@@ -1222,6 +1379,7 @@ mod tests {
         assert!(media.audio(2, 101, &[]).await.unwrap());
         let boundary = media.speakers[&2].timestamp;
         media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(120);
+        media.speakers.get_mut(&2).unwrap().clock = media.speakers[&2].last;
         assert!(media.audio(2, 102, &[0xf8, 0xff, 0xfe]).await.unwrap());
         let resumed = media.speakers[&2].timestamp;
         let offset = media.speakers[&2].sequence_offset;
@@ -1252,6 +1410,7 @@ mod tests {
         let boundary = media.speakers[&2].timestamp;
         let at = Instant::now() - Duration::from_secs(26 * 3600);
         media.speakers.get_mut(&2).unwrap().last = at;
+        media.speakers.get_mut(&2).unwrap().clock = at;
         let minimum = (at.elapsed().as_nanos() * 48 / 1_000_000) as u32;
         assert!(media.audio(2, 3, &[0xf8, 0xff, 0xfe]).await.unwrap());
         let maximum = (at.elapsed().as_nanos() * 48 / 1_000_000) as u32;
@@ -1298,6 +1457,7 @@ mod tests {
         assert!(media.audio(2, 69, frame).await.unwrap());
         assert!(media.audio(2, 71, frame).await.unwrap());
         media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(201);
+        media.speakers.get_mut(&2).unwrap().clock = media.speakers[&2].last;
         assert!(!media.audio(2, 70, frame).await.unwrap()); // Expired speech epoch.
         media.close().await;
         assert!(
@@ -1326,6 +1486,7 @@ mod tests {
         assert_eq!(media.speakers[&2].timestamp.wrapping_sub(start), 960);
         let start = media.speakers[&2].timestamp;
         media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(300);
+        media.speakers.get_mut(&2).unwrap().clock = media.speakers[&2].last;
         assert!(media.audio(2, 3, &[0xf8, 0xff, 0xfe]).await.unwrap());
         let advance = media.speakers[&2].timestamp.wrapping_sub(start);
         media.close().await;
@@ -1358,7 +1519,7 @@ mod tests {
         assert!(media.audio(2, 0, &[0x18, 0]).await.unwrap()); // Lost 20ms frame and sequence wrap.
         assert_eq!(media.speakers[&2].timestamp, 1519);
         assert!(media.audio(2, 1, &[0]).await.unwrap()); // Single-byte TS end marker after 60ms audio.
-        assert_eq!(media.speakers[&2].timestamp, 4399);
+        assert_eq!(media.speakers[&2].timestamp, 1519);
         let last = media.speakers[&2].last;
         assert!(!media.audio(2, 1, &[]).await.unwrap());
         assert!(!media.audio(2, 0, &[0xf8, 0xff, 0xfe]).await.unwrap());
@@ -1367,8 +1528,9 @@ mod tests {
         assert_eq!(media.speakers[&2].sequence_offset, 1);
         assert!(media.speakers[&2].ended);
         media.speakers.get_mut(&2).unwrap().last = Instant::now() - Duration::from_millis(120);
+        media.speakers.get_mut(&2).unwrap().clock = media.speakers[&2].last;
         assert!(media.audio(2, 2, &[0xf8, 0xff, 0xfe]).await.unwrap());
-        assert!(media.speakers[&2].timestamp.wrapping_sub(4399) >= 5760);
+        assert!(media.speakers[&2].timestamp.wrapping_sub(1519) >= 5760);
         assert!(!media.speakers[&2].ended);
         let resumed = media.speakers[&2].timestamp;
         media.secure.store(false, Ordering::Release);

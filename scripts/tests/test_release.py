@@ -102,6 +102,8 @@ class ReleaseTests(unittest.TestCase):
             keyboard_revision = re.search(r"model==='rnnoise'\?'[^']+':'([^']+)'", loader)[1]
             for name in ('index.html', 'crypto/webts_crypto.js', 'crypto/webts_crypto_bg.wasm', 'audio/0.4.1-gtcrn.wasm', 'audio/0.4.1-rnnoise.wasm', 'audio/0.4.1-rnnoise_simd.wasm', f'audio/gtcrn-0.4.1-{keyboard_revision}.js', f'audio/rnnoise-0.4.1-{revision}.js'):
                 write('web/dist/' + name)
+            for retained in ('voice6', 'voice7'):
+                write(f'web/dist/audio/rnnoise-0.4.1-{retained}.js')
             for name in ('react','react-dom','scheduler','qrcode','dijkstrajs'):
                 write('web/node_modules/' + name + ('/LICENSE.md' if name=='dijkstrajs' else '/LICENSE'))
             write('licenses/audio/LICENSE'); write('vendor/tsclientlib/LICENSE')
@@ -112,6 +114,13 @@ class ReleaseTests(unittest.TestCase):
                 with zipfile.ZipFile(package) as archive:
                     self.assertFalse(any(name.endswith(('user.db','master.key','HANDOFF.md')) for name in archive.namelist()))
                     self.assertTrue(archive.read('webts-1.2.3-windows-x64/scripts/windows-menu.ps1').startswith(b'\xef\xbb\xbf'))
+                for required in (revision, 'voice6', 'voice7'):
+                    resource = f'web/dist/audio/rnnoise-0.4.1-{required}.js'
+                    (root / resource).unlink()
+                    with self.assertRaisesRegex(ValueError, 'Incomplete frontend'):
+                        windows.package(root / 'web-ts.exe', root / ('missing-' + required), root)
+                    self.assertFalse((root / ('missing-' + required) / 'webts-1.2.3-windows-x64.zip').exists())
+                    write(resource)
                 write('web/dist/config.local.toml', b'private fixture')
                 with self.assertRaises(ValueError):
                     windows.package(root / 'web-ts.exe', root / 'refused', root)

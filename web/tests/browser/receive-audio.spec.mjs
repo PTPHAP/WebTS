@@ -1,5 +1,19 @@
 import {test,expect} from '@playwright/test';
 
+test('playback peak protection adds no lookahead and preserves ordinary speech samples',async({page})=>{
+ await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);
+ const result=await page.evaluate(async()=>{
+  const {createPlaybackLimiter}=window.audioFixture;
+  const context=new OfflineAudioContext(1,8192,48000),source=context.createBufferSource(),buffer=context.createBuffer(1,8192,48000),input=buffer.getChannelData(0);
+  input[512]=.2;for(let i=1024;i<4096;i++)input[i]=.6*Math.sin(i*.37);for(let i=4608;i<7680;i++)input[i]=4*Math.sin(i*.29);
+  source.buffer=buffer;const limiter=createPlaybackLimiter(context);source.connect(limiter);limiter.connect(context.destination);source.start();
+  const output=(await context.startRendering()).getChannelData(0);let error=0,peak=0,first=-1;
+  for(let i=0;i<output.length;i++){if(!Number.isFinite(output[i]))throw Error('Nonfinite protected output');if(first<0&&Math.abs(output[i])>1e-5)first=i;if(i>=1024&&i<4096)error=Math.max(error,Math.abs(input[i]-output[i]));peak=Math.max(peak,Math.abs(output[i]));}
+  return{first,error,peak};
+ });
+ expect(result.first).toBe(512);expect(result.error).toBeLessThan(1e-6);expect(result.peak).toBeLessThanOrEqual(1);expect(result.peak).toBeGreaterThan(.8);
+});
+
 test('a real audio context rejects a removed sink without blocking voice reconnect',async({page})=>{
  await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
  test.skip(!await page.evaluate(()=>typeof AudioContext.prototype.setSinkId==='function'),'Context output selection is unavailable in this browser.');

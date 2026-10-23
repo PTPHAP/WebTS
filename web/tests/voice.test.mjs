@@ -100,7 +100,7 @@ test('playback failure stays visible when another member starts successfully and
  const env=browser(),events=[],voice=new Voice(e=>events.push(e));await voice.connect({identity:'fixture'},'',true);
  let count=0,blocked=true;globalThis.Audio=class{constructor(){this.id=count++;}play(){return this.id===1&&blocked?Promise.reject(Error('autoplay')):Promise.resolve();}pause(){}};
  const node=()=>({connect(){},disconnect(){},stream:new MediaStream([]),gain:{value:1},threshold:{},knee:{},ratio:{},attack:{},release:{}});
- Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createDynamicsCompressor:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
+ Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createWaveShaper:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
  voice.peer.ontrack({track:{id:'first',clone:()=>({stop(){}})}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
  voice.peer.ontrack({track:{id:'second',clone:()=>({stop(){}})}});for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,true);
  blocked=false;voice.resume();for(let n=0;n<10;n++)await Promise.resolve();assert.equal(events.filter(e=>e.type==='audio_playback').at(-1).blocked,false);voice.close();assert.equal(voice.playbackFailed.size,0);
@@ -110,7 +110,7 @@ test('repeated RTC track notifications keep one playback chain and an ended trac
  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
  const audios=[];globalThis.Audio=class{constructor(){audios.push(this);}play(){return Promise.resolve();}pause(){this.paused=true;}};
  const node=()=>({connect(){},disconnect(){},stream:new MediaStream([]),gain:{value:1},threshold:{},knee:{},ratio:{},attack:{},release:{}});
- Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createDynamicsCompressor:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
+ Object.assign(voice.context,{createGain:node,createMediaStreamDestination:node,createWaveShaper:node,createAnalyser:()=>({...node(),getFloatTimeDomainData:data=>data.fill(0)})});
  const track={id:'repeated',clone:()=>({stop(){}})};voice.peer.ontrack({track});const receiver=voice.receivers.get(track.id),output=voice.elements.get(track.id);
  voice.peer.ontrack({track});await Promise.resolve();
  assert.equal(audios.length,2,'one silent decoding helper and one processed player; duplicate track events must not orphan audible players');

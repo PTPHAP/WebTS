@@ -6,9 +6,9 @@ test('low resource mode is visible, persists locally and releases seasonal effec
  await fixture(page,{replies:{'/api/site':{site_name:'WebTS',season:'spring',title:'本地界面验收',announcements:[]}}});
  await page.goto('/app');
  const toggle=page.getByRole('switch',{name:'低占用模式'});
- await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');
+ await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');await expect(toggle).toContainText('已关闭');
  await expect(page.locator('.season-click-layer')).toHaveCount(1);
- await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');
+ await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');await expect(toggle).toContainText('已开启');await expect(page.getByText('低占用模式已开启：减少界面特效和电平显示刷新，语音降噪与加密保持原样。',{exact:true})).toBeVisible();
  await expect(page.locator('.app')).toHaveAttribute('data-low-resource','true');await expect(page.locator('.season-click-layer')).toHaveCount(0);
  expect(await page.evaluate(()=>localStorage.getItem('webts-low-resource'))).toBe('1');
  await page.reload();await expect(toggle).toHaveAttribute('aria-checked','true');

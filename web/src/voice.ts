@@ -146,7 +146,15 @@ export class Voice {
         if(generation===this.generation&&qualityPeer.connectionState==='disconnected')this.lost(true,'浏览器语音链路持续中断，正在自动重连并恢复频道。');
       },10000);
     };
-    this.lastMessage=Date.now();this.heartbeat=window.setInterval(()=>{if(generation===this.generation&&Date.now()-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');},5000);
+    this.lastMessage=performance.now();let checked=this.lastMessage,resumeUntil=0;
+    this.heartbeat=window.setInterval(()=>{
+      if(generation!==this.generation)return;
+      const now=performance.now();
+      // A suspended page may run this timer before its queued socket messages.
+      if(now-checked>15000)resumeUntil=now+5000;
+      checked=now;
+      if(now>=resumeUntil&&now-this.lastMessage>45000)this.lost(true,'网关超过 45 秒没有响应，正在自动重连。');
+    },5000);
     this.peer.onicecandidate=e=>{if(generation===this.generation&&e.candidate)this.send({type:'ice',candidate:e.candidate.toJSON()});};
     this.peer.ontrack=e=>{if(generation!==this.generation)return;this.bindTracks();if(this.receivers.has(e.track.id)){this.applyAudio();return;} const receiver=createReceiver(this.context!,e.track,e.receiver),audio = new Audio();this.receivers.set(e.track.id,receiver);audio.autoplay=true;audio.srcObject=receiver.stream;this.elements.set(e.track.id,audio);this.applyAudio();Promise.all([receiver.play(),audio.play()]).then(()=>{if(generation===this.generation&&this.receivers.get(e.track.id)===receiver){this.playbackFailed.delete(e.track.id);this.event({type:'audio_playback',blocked:this.playbackFailed.size>0});}}).catch(()=>{if(generation===this.generation&&this.receivers.get(e.track.id)===receiver){this.playbackFailed.add(e.track.id);this.event({type:'audio_playback',blocked:true});this.event({type:'notice',message:'浏览器暂停了音频，请点击“恢复音频”。'});}});e.track.onended=()=>{if(generation!==this.generation||this.receivers.get(e.track.id)!==receiver)return;audio.pause();audio.srcObject=null;this.elements.delete(e.track.id);receiver.destroy();this.receivers.delete(e.track.id);this.playbackFailed.delete(e.track.id);this.event({type:'audio_playback',blocked:this.playbackFailed.size>0});};};
     this.receiveTimer=window.setInterval(()=>{for(const receiver of this.receivers.values())receiver.tick(this.settings.receiveAutoGain);},50);
@@ -154,7 +162,7 @@ export class Voice {
     this.watchCapture(stream,generation);if (stream&&sendStream) this.detect(stream,sendStream);
     const socket = new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/connect`); this.socket=socket;
     socket.onopen=()=>{if(generation===this.generation){socket.send(JSON.stringify(request));this.send({type:'mute',muted:this.muted,deafened:this.deafened});this.sendTransmit();}};
-    socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=Date.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
+    socket.onmessage=e=>{if(generation!==this.generation)return;this.lastMessage=performance.now();let message;try{message=JSON.parse(e.data);}catch{this.lost(false,'网关消息无效，连接已停止。');return;}if(message.type==='disconnected'){this.lost(message.retryable===true,typeof message.message==='string'?message.message:this.failure);return;}if(message.type==='error'){this.failure=String(message.message);this.event(message);return;}this.handling=this.handling.then(async()=>{
       if(generation!==this.generation)return;
       if(message.type==='state'){
         const first=!this.ready;

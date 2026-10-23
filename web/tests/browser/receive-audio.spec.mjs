@@ -172,3 +172,26 @@ test('real audio graph retains output attenuation and mute when element volume i
  });
  expect(result.helperCopies).toBe(0);expect(result.half).toBeGreaterThan(.01);expect(result.quarter/result.half).toBeGreaterThan(.45);expect(result.quarter/result.half).toBeLessThan(.55);expect(result.agc).toBeGreaterThan(.01);expect(result.muted).toBeLessThan(.00001);expect(result.restored).toBeGreaterThan(.01);
 });
+
+test('background timer suspension preserves a healthy voice connection and still detects a silent gateway',async({page})=>{
+ await page.goto('/tests/browser/private-messaging.html');await page.waitForFunction(()=>!!window.audioFixture);await page.locator('body').click();
+ await page.clock.install();
+ await page.evaluate(async()=>{
+  const originalFetch=window.fetch;window.fetch=(url,options)=>String(url).split('?')[0]==='/api/rtc'?Promise.resolve(new Response('{"iceServers":[]}')):originalFetch(url,options);
+  window.backgroundSockets=[];window.backgroundEvents=[];
+  window.WebSocket=class{static OPEN=1;readyState=1;constructor(){window.backgroundSockets.push(this);queueMicrotask(()=>this.onopen?.());}send(){}close(){this.readyState=3;}};
+  window.backgroundVoice=new window.audioFixture.Voice(e=>window.backgroundEvents.push(e));
+  await window.backgroundVoice.connect({identity:'synthetic-only'},'',true);
+ });
+ try{
+  await page.clock.fastForward(65000);
+  expect(await page.evaluate(()=>window.backgroundSockets[0].readyState)).toBe(1);
+  await page.evaluate(()=>window.backgroundSockets[0].onmessage({data:'{"type":"heartbeat"}'}));
+  await page.clock.fastForward(5000);
+  expect(await page.evaluate(()=>window.backgroundEvents.filter(e=>e.type==='disconnected').length)).toBe(0);
+  // With regularly scheduled checks and no further messages, a real silence still expires.
+  for(let i=0;i<10;i++)await page.clock.fastForward(5000);
+  expect(await page.evaluate(()=>window.backgroundSockets[0].readyState)).toBe(3);
+  expect(await page.evaluate(()=>window.backgroundEvents.filter(e=>e.type==='disconnected').length)).toBe(1);
+ }finally{await page.evaluate(()=>window.backgroundVoice.close());}
+});

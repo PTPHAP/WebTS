@@ -8,7 +8,7 @@ test('low resource mode is visible, persists locally and releases seasonal effec
  const toggle=page.getByRole('switch',{name:'低占用模式'});
  await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');await expect(page.locator('.low-resource-state')).toHaveText('已关闭');
  await expect(page.locator('.season-click-layer')).toHaveCount(1);
- await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');await expect(page.locator('.low-resource-state')).toHaveText('已开启');await expect(page.getByText('低占用模式已开启：停止非设置页面的电平显示刷新并减少界面特效，语音降噪与加密保持原样。',{exact:true})).toBeVisible();
+ await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');await expect(page.locator('.low-resource-state')).toHaveText('已开启');await expect(page.getByText('低占用模式已开启：降低电平显示刷新频率并减少界面特效，语音降噪与加密保持原样。',{exact:true})).toBeVisible();
  await expect(page.locator('.app')).toHaveAttribute('data-low-resource','true');await expect(page.locator('.season-click-layer')).toHaveCount(0);
  expect(await page.evaluate(()=>localStorage.getItem('webts-low-resource'))).toBe('1');
  await page.reload();await expect(toggle).toHaveAttribute('aria-checked','true');

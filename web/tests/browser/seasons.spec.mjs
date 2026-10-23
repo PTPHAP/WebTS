@@ -133,7 +133,13 @@ test('low resource mode suppresses meter-driven React commits without reconnecti
  await page.goto('/app');await page.getByRole('button',{name:'连接服务器',exact:true}).first().click();await page.getByRole('checkbox',{name:'仅收听，不打开麦克风'}).check();await page.getByRole('button',{name:'连接',exact:true}).click();await expect.poll(()=>joins).toBe(1);
  const sample=async()=>{await page.waitForTimeout(200);const before=await page.evaluate(()=>window.__reactCommits);for(let i=0;i<30;i++){socket.send(JSON.stringify({type:'level',level:(i+1)/32,input_level:(i+1)/32}));await page.waitForTimeout(35);}return await page.evaluate(()=>window.__reactCommits)-before;};
  const normal=await sample();await page.getByRole('switch',{name:'低占用模式'}).check();const reduced=await sample();
- expect(normal).toBeGreaterThan(5);expect(reduced).toBeLessThan(normal/2);expect(joins).toBe(1);
+ expect(normal).toBeGreaterThan(5);expect(reduced).toBeGreaterThan(0);expect(reduced).toBeLessThan(normal/2);expect(joins).toBe(1);
+ await page.getByRole('button',{name:'语音设备设置',exact:true}).click();
+ const meter=page.getByLabel('处理后电平').locator('span');
+ await page.waitForTimeout(300);socket.send(JSON.stringify({type:'level',level:.75,input_level:.5}));
+ await expect(meter).toHaveAttribute('style',/width: 75%/);
+ await page.waitForTimeout(300);socket.send(JSON.stringify({type:'level',level:.25,input_level:.5}));
+ await expect(meter).toHaveAttribute('style',/width: 25%/);
  await test.info().attach('meter-commit-comparison',{body:JSON.stringify({eventsPerMode:30,normal,reduced,joins}),contentType:'application/json'});
 });
 

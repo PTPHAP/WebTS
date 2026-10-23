@@ -620,3 +620,38 @@ test('diagnostic snapshots follow live processing and disposal without exposing 
  await voice.configure({...voice.settings,noise:'rnnoise',keyboard:true});await voice.connect({identity:'fixture'},'',false);assert.equal(voice.diagnostics().processing,'keyboard');
  await voice.configure({...voice.settings,noise:'off'});assert.equal(voice.diagnostics().processing,'off');voice.context.state='suspended';assert.equal(voice.diagnostics().context,'suspended');voice.close();
 });
+
+test('a delayed background watchdog lets queued heartbeats arrive before reconnecting',async t=>{
+  let now=0;t.mock.method(performance,'now',()=>now);t.mock.method(Date,'now',()=>now);
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+  await voice.connect({identity:'fixture'},'',true);
+  now=5000;env.tick();now=65000;env.tick();
+  assert.equal(env.sockets[0].readyState,1,'a delayed timer is not evidence of network failure');
+  await env.message({type:'heartbeat'});now=70000;env.tick();
+  assert.equal(env.sockets.length,1);assert.equal(env.sockets[0].readyState,1);
+  assert.ok(!events.some(e=>e.type==='disconnected'));voice.close();
+});
+
+test('a genuinely silent gateway still reconnects after a background scheduling grace',async t=>{
+  let now=0;t.mock.method(performance,'now',()=>now);t.mock.method(Date,'now',()=>now);
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+  await voice.connect({identity:'fixture'},'',true);
+  now=65000;env.tick();assert.equal(env.sockets[0].readyState,1);
+  now=70000;env.tick();assert.equal(env.sockets[0].readyState,3);
+  assert.equal(events.filter(e=>e.type==='disconnected').length,1);voice.close();
+});
+
+test('silent open-mic, muted and listen-only sessions stay connected while gateway heartbeats arrive',async t=>{
+ let now=0;t.mock.method(performance,'now',()=>now);
+ for(const mode of ['open-mic','muted','listen-only']){
+  const env=browser(),events=[],voice=new Voice(e=>events.push(e));
+  await voice.connect({identity:'fixture'},'',mode==='listen-only');voice.setMode('open');
+  if(mode==='muted')voice.setMute(true,false);
+  const socket=env.sockets[0],start=now;
+  for(let elapsed=2000;elapsed<=1800000;elapsed+=2000){now=start+elapsed;await env.message({type:'heartbeat'});env.tick();}
+  assert.equal(socket.readyState,1,mode+' must support silent idling');
+  assert.equal(env.sockets.length,1);assert.equal(env.delays.size,0);
+  assert.ok(!events.some(e=>e.type==='disconnected'),mode+' must not disconnect because of speech inactivity');
+  voice.close();
+ }
+});

@@ -61,14 +61,16 @@ test('real RTC renegotiation reuses playback and remains bidirectional through m
  const result=await page.evaluate(async()=>{
   const {Voice,defaultAudioSettings}=window.audioFixture,pause=ms=>new Promise(r=>setTimeout(r,ms));
   const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),remote=new RTCPeerConnection({iceServers:[]});
-  const original={fetch:window.fetch,WebSocket:window.WebSocket,getUserMedia:navigator.mediaDevices.getUserMedia,Audio:window.Audio},players=[];
+  const microphone=context.createMediaStreamDestination(),microphoneGain=context.createGain();source.connect(microphoneGain);microphoneGain.connect(microphone);
+  const original={fetch:window.fetch,WebSocket:window.WebSocket,getUserMedia:navigator.mediaDevices.getUserMedia,Audio:window.Audio,connect:AudioNode.prototype.connect},players=[],connections=[];
   let voice,socket,remoteMeter,remotePlayback,answer,signalingError;const pending=[],errors=[];
   const deliver=m=>socket.onmessage?.({data:JSON.stringify(m)});
   const rms=analyser=>{const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);return Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);};
   try{
    window.Audio=function(...args){const audio=new original.Audio(...args);players.push(audio);return audio;};
+   AudioNode.prototype.connect=function(target,...args){connections.push([this,target]);return original.connect.call(this,target,...args);};
    source.frequency.value=440;source.connect(input);source.start();await context.resume();
-   navigator.mediaDevices.getUserMedia=async()=>input.stream.clone();window.fetch=(url,options)=>String(url).split('?')[0]==='/api/rtc'?Promise.resolve(new Response('{"iceServers":[]}')):original.fetch(url,options);
+   navigator.mediaDevices.getUserMedia=async()=>microphone.stream.clone();window.fetch=(url,options)=>String(url).split('?')[0]==='/api/rtc'?Promise.resolve(new Response('{"iceServers":[]}')):original.fetch(url,options);
    window.WebSocket=class{static OPEN=1;readyState=1;constructor(){socket=this;queueMicrotask(()=>this.onopen?.());}send(raw){const m=JSON.parse(raw);if(m.type==='answer'){answer=remote.setRemoteDescription(m.description).then(async()=>{for(const c of pending)await remote.addIceCandidate(c);});answer.catch(e=>signalingError=e.message);}if(m.type==='ice'){if(answer)answer.then(()=>remote.addIceCandidate(m.candidate)).catch(e=>signalingError=e.message);else pending.push(m.candidate);}}close(){this.readyState=3;}};
    remote.onicecandidate=e=>{if(e.candidate)deliver({type:'ice',candidate:e.candidate.toJSON()});};
    remote.ontrack=e=>{const node=context.createMediaStreamSource(new MediaStream([e.track]));remoteMeter=context.createAnalyser();node.connect(remoteMeter);remotePlayback=new Audio();remotePlayback.volume=0;remotePlayback.srcObject=new MediaStream([e.track]);remotePlayback.play().catch(e=>errors.push(e.message));};
@@ -76,7 +78,9 @@ test('real RTC renegotiation reuses playback and remains bidirectional through m
    deliver({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1}]});const offer=await remote.createOffer();await remote.setLocalDescription(offer);deliver({type:'offer',description:offer});
    const end=Date.now()+8000;while(Date.now()<end&&(voice.peer.connectionState!=='connected'||!voice.receivers.size||!remoteMeter||rms(remoteMeter)<.001))await pause(50);
    if(signalingError)throw Error(signalingError);if(!voice.receivers.size||!remoteMeter)throw Error('loopback did not receive audio');
-   const receiver=[...voice.receivers.values()][0],player=[...voice.elements.values()][0],meter=voice.context.createAnalyser();voice.context.createMediaStreamSource(receiver.stream).connect(meter);
+   const receiver=[...voice.receivers.values()][0],player=[...voice.elements.values()][0],rtpReceiver=voice.peer.getReceivers()[0],bufferHints={jitterSupported:'jitterBufferTarget'in rtpReceiver,playoutSupported:'playoutDelayHint'in rtpReceiver,jitter:rtpReceiver.jitterBufferTarget,playout:rtpReceiver.playoutDelayHint},meter=voice.context.createAnalyser(),expectedDirect=typeof voice.context.setSinkId==='function',playerMutedBefore=player.muted;
+   const streamMeter=voice.context.createAnalyser();voice.context.createMediaStreamSource(receiver.stream).connect(streamMeter);
+   if(expectedDirect){const output=connections.find(([,target])=>target===voice.context.destination)?.[0];if(!output)throw Error('No direct playback route');output.connect(meter);}else voice.context.createMediaStreamSource(receiver.stream).connect(meter);
    const helper=players.find(audio=>audio.srcObject?.getAudioTracks()[0]?.enabled===false);if(!helper)throw Error('No disabled helper clone');
    helper.muted=false;helper.volume=1;await helper.play(); // Deliberately defeat both element-level safeguards.
    const helperMeter=voice.context.createAnalyser(),helperSource=voice.context.createMediaStreamSource(helper.srcObject),zero=voice.context.createGain();zero.gain.value=0;helperSource.connect(helperMeter);helperMeter.connect(zero);zero.connect(voice.context.destination);
@@ -87,13 +91,19 @@ test('real RTC renegotiation reuses playback and remains bidirectional through m
    const reusedPlayer=[...voice.elements.values()][0]===player&&[...voice.receivers.values()][0]===receiver;
    const read=async()=>{await pause(200);return rms(meter);};
    voice.outputVolume(.25);for(const audio of voice.elements.values())audio.muted=true;const heard=await read(),sent=rms(remoteMeter);
-   voice.setMute(false,true);const muted=await read();voice.setMute(false,false);for(const audio of voice.elements.values())audio.muted=true;const restored=await read();
-   const helperRms=rms(helperMeter);helperSource.disconnect();helperMeter.disconnect();zero.disconnect();
+   voice.setMute(false,true);const muted=await read();voice.setMute(false,false);const playerMutedAfterRestore=player.muted;for(const audio of voice.elements.values())audio.muted=true;const restored=await read();
+   const helperRms=rms(helperMeter),unusedStreamRms=rms(streamMeter);helperSource.disconnect();helperMeter.disconnect();zero.disconnect();
+   await voice.configure({...voice.settings,ducking:1});microphoneGain.gain.value=0;await pause(500);const idleWithoutNoise=rms(meter),stillTransmitting=voice.active;
+   microphoneGain.gain.value=.1;await pause(400);const duckedDuringSpeech=rms(meter);
+   microphoneGain.gain.value=0;await pause(500);const afterSpeech=rms(meter);
    const state=voice.peer.connectionState,count=voice.elements.size,helperTrack=helper.srcObject.getAudioTracks()[0],snapshot=voice.diagnostics();voice.close();const closedSnapshot=voice.diagnostics();voice=undefined;
-   return {state,snapshot,closedSnapshot,repeatedEvents,reusedPlayer,players:count,heard,sent,muted,restored,helperRms,helperReleased:helperTrack.readyState==='ended',errors};
-  }finally{voice?.close();remotePlayback?.pause();if(remotePlayback)remotePlayback.srcObject=null;remote.close();source.stop();input.stream.getTracks().forEach(t=>t.stop());await context.close();window.fetch=original.fetch;window.WebSocket=original.WebSocket;window.Audio=original.Audio;navigator.mediaDevices.getUserMedia=original.getUserMedia;}
+   return {state,snapshot,closedSnapshot,repeatedEvents,reusedPlayer,players:count,heard,sent,muted,restored,idleWithoutNoise,stillTransmitting,duckedDuringSpeech,afterSpeech,helperRms,unusedStreamRms,helperReleased:helperTrack.readyState==='ended',errors,direct:receiver.direct,expectedDirect,playerMutedBefore,playerMutedAfterRestore,bufferHints};
+  }finally{voice?.close();remotePlayback?.pause();if(remotePlayback)remotePlayback.srcObject=null;remote.close();source.stop();input.stream.getTracks().forEach(t=>t.stop());await context.close();window.fetch=original.fetch;window.WebSocket=original.WebSocket;window.Audio=original.Audio;AudioNode.prototype.connect=original.connect;navigator.mediaDevices.getUserMedia=original.getUserMedia;}
  });
- expect(result.snapshot).toEqual({context:'running',processing:'off',receivers:1,players:1,pausedPlayers:0});expect(result.closedSnapshot).toEqual({context:'inactive',processing:'inactive',receivers:0,players:0,pausedPlayers:0});expect(result.errors).toEqual([]);expect(result.state).toBe('connected');expect(result.repeatedEvents).toBe(1);expect(result.reusedPlayer).toBe(true);expect(result.players).toBe(1);expect(result.heard).toBeGreaterThan(.001);expect(result.sent).toBeGreaterThan(.001);expect(result.muted).toBeLessThan(.00001);expect(result.restored).toBeGreaterThan(.001);expect(result.helperRms).toBe(0);expect(result.helperReleased).toBe(true);
+ expect(result.snapshot).toEqual({context:'running',processing:'off',receivers:1,players:1,pausedPlayers:0});expect(result.closedSnapshot).toEqual({context:'inactive',processing:'inactive',receivers:0,players:0,pausedPlayers:0});expect(result.errors).toEqual([]);expect(result.state).toBe('connected');expect(result.repeatedEvents).toBe(1);expect(result.reusedPlayer).toBe(true);expect(result.players).toBe(1);expect(result.heard).toBeGreaterThan(.001);expect(result.sent).toBeGreaterThan(.001);expect(result.muted).toBeLessThan(.00001);expect(result.restored).toBeGreaterThan(.001);expect(result.helperRms).toBe(0);expect(result.helperReleased).toBe(true);expect(result.direct).toBe(result.expectedDirect);expect(result.playerMutedBefore).toBe(result.expectedDirect);expect(result.playerMutedAfterRestore).toBe(result.expectedDirect);
+ expect(result.stillTransmitting).toBe(true);expect(result.idleWithoutNoise).toBeGreaterThan(.001);expect(result.duckedDuringSpeech).toBeLessThan(.00001);expect(result.afterSpeech).toBeGreaterThan(.001);
+ expect(result.bufferHints.jitterSupported).toBe(true);expect(result.bufferHints.jitter).toBe(0);if(result.bufferHints.playoutSupported)expect(result.bufferHints.playout).toBe(0);
+ if(result.direct)expect(result.unusedStreamRms).toBe(0);
 });
 
 test('real audio graph retains output attenuation and mute when element volume is ignored',async({page})=>{
@@ -104,7 +114,7 @@ test('real audio graph retains output attenuation and mute when element volume i
   const {createReceiver}=window.audioFixture,OriginalAudio=window.Audio,audios=[];
   // Reproduce only the ignored element-volume behavior; the graph below is real Web Audio.
   window.Audio=class{constructor(){audios.push(this);}get volume(){return 1;}set volume(_){}get muted(){return false;}set muted(_){}play(){this.plays=(this.plays??0)+1;return Promise.resolve();}pause(){}};
-  const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),silent=context.createGain();silent.gain.value=0;
+  const context=new AudioContext(),source=context.createOscillator(),input=context.createMediaStreamDestination(),silent=context.createGain();silent.gain.value=0;Object.defineProperty(context,'setSinkId',{value:undefined}); // Exercise element playback as on browsers without context sink selection.
   let receiver,meterSource;const analyser=context.createAnalyser();analyser.fftSize=2048;
   const read=async()=>{const rendered=context.currentTime+.16,deadline=Date.now()+3000;while(context.currentTime<rendered&&Date.now()<deadline)await new Promise(r=>setTimeout(r,20));if(context.currentTime<rendered)throw Error('Audio render clock did not advance');const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);return Math.sqrt(data.reduce((s,n)=>s+n*n,0)/data.length);};
   try{

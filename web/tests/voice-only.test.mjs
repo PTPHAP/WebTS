@@ -12,6 +12,19 @@ test('permissive transmission detection rejects isolated weak clicks and holds q
   assert.equal(activity(.01),false);assert.deepEqual(states,[true,false]);assert.throws(()=>activity(NaN),/probability/);
 });
 
+test('preparation retains a weak onset without transmitting or accumulating a whole idle period',()=>{
+  const events=[],activity=createVoiceActivity(value=>events.push(['speech',value]),value=>events.push(['prepare',value]));
+  for(let i=0;i<100;i++)assert.equal(activity(0),false);
+  assert.deepEqual(events,[]);
+  assert.equal(activity(.006),false);assert.deepEqual(events,[['prepare',true]]);
+  for(let i=0;i<5;i++)assert.equal(activity(0),false);
+  assert.deepEqual(events,[['prepare',true]],'an unvoiced consonant must not clear its own lead-in');
+  assert.equal(activity(0),false);assert.deepEqual(events.at(-1),['prepare',false]);
+  assert.equal(activity(.8),true);assert.deepEqual(events.slice(-2),[['prepare',true],['speech',true]],'prepare reaches the gateway before opening speech');
+  for(let i=0;i<42;i++)activity(0);
+  assert.deepEqual(events.slice(-2),[['speech',false],['prepare',false]]);
+});
+
 test('model probability, lookback, hysteresis and smooth tail preserve quiet speech without a level gate',()=>{
   const gate=createVoiceGate(),frame=probability=>{const samples=new Float32Array(480).fill(.00001);gate(samples,probability);return samples;};
   assert.ok(frame(.1).every(v=>v===0));const attack=frame(.9);assert.ok(attack[0]>0&&attack[479]===Math.fround(.00001));assert.ok(frame(.4).every(v=>v>0),'soft syllables sustain an open voice stream');

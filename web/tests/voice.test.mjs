@@ -26,7 +26,7 @@ function browser(microphoneError) {
   const delays=new Map();let clock=0;globalThis.window = {setInterval:callback=>{timers.push(callback);return timers.length;},setTimeout:(callback,ms)=>{const id=++clock;delays.set(id,{callback,ms});return id;},clearTimeout:id=>delays.delete(id)};
   globalThis.clearInterval = ()=>{};
   globalThis.MediaStream = class {constructor(tracks){this.tracks=tracks;}getAudioTracks(){return this.tracks;}getTracks(){return this.tracks;}};
-  globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);return {track,replaceTrack:async function(next){this.track=next;tracks.push(next);}};}close(){}};
+  globalThis.RTCPeerConnection = class {addTrack(track){tracks.push(track);return {track,replaceTrack:async function(next){this.track=next;tracks.push(next);}};}getTransceivers(){return this.transceivers??[];}close(){}};
   globalThis.AudioContext = class {
     constructor(options){this.options=options;this.state='suspended';this.resumes=0;contexts.push(this);}
     createMediaStreamSource(stream){return {connect(target){target.input=stream;connections.push(target);},disconnect(){}};}
@@ -240,12 +240,50 @@ test('autoplay resume waiting for a gesture cannot stall TS connect; stale devic
   const old=env.captured[0],ended=old.onended;await voice.connect({identity:'replacement'},'',true);old.readyState='ended';ended();assert.equal(env.delays.size,0);assert.equal(old.onended,null);voice.close();
 });
 
+test('disabling denoising with full ducking keeps idle reception audible and restores it after speech',async t=>{
+ const env=browser(),voice=new Voice(()=>{});let now=1000;t.mock.method(Date,'now',()=>now);
+ await voice.configure({...voice.settings,ducking:1});await voice.connect({identity:'fixture'},'',false);
+ const receiver={level:0,volume(value){this.level=value;},tick(){},destroy(){}};
+ voice.elements.set('remote',{volume:1,muted:false,pause(){}});voice.receivers.set('remote',receiver);voice.tracks.set('remote',2);voice.volume(2,.6);voice.outputVolume(.8);
+ env.processors[0].onspeech(true);assert.equal(receiver.level,0,'AI speech starts with the selected full ducking');
+ await voice.configure({...voice.settings,noise:'off'});
+ assert.equal(voice.active,true,'automatic transmission stays available without denoising');
+ assert.equal(receiver.level,.48,'idle capture must not permanently duck reception to zero');
+ env.captured[1].sample=.05;env.tick();assert.equal(receiver.level,0,'actual speech retains the selected 100 percent ducking');
+ env.captured[1].sample=0;now+=250;env.tick();assert.equal(receiver.level,.48,'silence restores per-member and output volume');
+ voice.setMode('ptt');voice.press(true);assert.equal(receiver.level,0);
+ voice.setMode('open');assert.equal(receiver.level,.48,'switching from held PTT to quiet automatic capture restores reception');
+ voice.setMute(false,true);assert.equal(receiver.level,0);voice.close();
+});
+
 test('speaking ducks remote audio without undoing per-member volume, mute or live settings',async()=>{
  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
  const audio={volume:0,muted:false,pause(){}},receiver={volume:value=>receiver.level=value,destroy(){}};voice.elements.set('remote',audio);voice.receivers.set('remote',receiver);voice.tracks.set('remote',2);voice.volume(2,.6);voice.outputVolume(.8);
  assert.equal(audio.volume,1);assert.equal(receiver.level,.48);env.processors[0].onspeech(true);assert.ok(Math.abs(receiver.level-.48*.65)<1e-9);
  voice.setMute(true,false);assert.equal(receiver.level,.48);voice.setMute(false,true);assert.equal(audio.muted,true);assert.equal(receiver.level,0);
  await voice.configure({...voice.settings,ducking:0});assert.equal(receiver.level,0);voice.setMute(false,false);assert.equal(receiver.level,.48);voice.close();
+});
+
+test('direct processed playback keeps the exported player silent and selects the context output',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
+ const selected=[],context=env.contexts[0];context.setSinkId=async id=>selected.push(id);
+ const audio={volume:0,muted:false,pause(){},setSinkId:async()=>{throw Error('a silent exported player must not select the device');}},receiver={direct:true,volume(value){this.level=value;},destroy(){}};
+ voice.elements.set('remote',audio);voice.receivers.set('remote',receiver);voice.outputVolume(.6);
+ assert.equal(audio.muted,true);assert.equal(receiver.level,.6);voice.setMute(false,true);assert.equal(receiver.level,0);voice.setMute(false,false);assert.equal(audio.muted,true);assert.equal(receiver.level,.6);
+ await voice.output('headset');assert.deepEqual(selected,['headset']);assert.equal(voice.sink,'headset');
+ context.setSinkId=async()=>{throw Error('device removed');};await assert.rejects(voice.output('missing'),/device removed/);assert.equal(voice.sink,'headset');voice.close();
+});
+
+test('a late TS speaker binds member volume to a browser receiver whose track ID remains unchanged',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
+ const audio={volume:1,muted:false,pause(){}},receiver={volume(value){this.level=value;},destroy(){}};
+ voice.elements.set('browser-track',audio);voice.receivers.set('browser-track',receiver);voice.volume(2,0);
+ voice.peer.transceivers=[{mid:'0',receiver:{track:{id:'browser-track'}}},{mid:'1',receiver:{track:{id:'other-browser-track'}}}];
+ voice.peer.remoteDescription={sdp:'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=msid:webts ts-2\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:1\r\na=msid:webts ts-9\r\n'};
+ const announce=async(track,client)=>{env.sockets[0].onmessage({data:JSON.stringify({type:'track',track,client})});await voice.handling;};
+ await announce('ts-9',9);await announce('ts-2',2);assert.equal(voice.tracks.get('browser-track'),2);assert.equal(voice.tracks.get('other-browser-track'),9);assert.equal(receiver.level,0,'member mute must apply even when the browser keeps its preallocated track UUID');
+ voice.volume(3,.4);voice.peer.remoteDescription.sdp=voice.peer.remoteDescription.sdp.replace('ts-2','ts-3');await announce('ts-3',3);
+ assert.equal(voice.tracks.get('browser-track'),3);assert.equal(receiver.level,.4,'reusing a transceiver must apply its new speaker volume');voice.close();
 });
 
 test('typing suppression sends only a local timing marker and stops after disconnect',async()=>{
@@ -289,8 +327,11 @@ test('turning off strict voice-only processing still ends TS speech in pauses; f
   await voice.connect({identity:'fixture'},'',false);
   assert.equal(env.tracks[0].enabled,true,'default microphone must be open');
   assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'continuous capture must not mean continuous TS speech');
-  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.pre_roll,true,'automatic speech needs a bounded leading-audio buffer before recognition arrives');
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.pre_roll,false,'long idle periods must not accumulate gateway lookback');
+  env.processors[0].onprepare(true);
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false);
   await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1,name:'default'}]});
+  assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.pre_roll,true,'uncertain first phonemes enable bounded lookback without opening speech');
   env.processors[0].onspeech(true);assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,true);
   env.processors[0].onspeech(false);await env.wait();assert.equal(env.sent.filter(event=>event.type==='transmit').at(-1)?.enabled,false,'native TS must receive an end marker during a pause');
   env.tick();
@@ -303,6 +344,19 @@ test('turning off strict voice-only processing still ends TS speech in pauses; f
   env.focus(false);voice.press(true);assert.equal(env.tracks[0].enabled,false);
   voice.setMode('open');assert.equal(env.tracks[0].enabled,true);
   voice.close();assert.equal(env.tracks[0].stopped,true);
+});
+
+test('preparation cannot transmit, bypass PTT or reuse a replaced recognizer',async()=>{
+  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
+  await env.message({type:'state',own:1,members:[{id:1,channel:1}],channels:[{id:1}]});
+  const original=env.processors[0],stale=original.onprepare;
+  original.onprepare(true);assert.equal(env.sent.at(-1).enabled,false);assert.equal(env.sent.at(-1).pre_roll,true);
+  const count=env.sent.length;original.onprepare(true);assert.equal(env.sent.length,count,'unchanged preparation must not flood control');
+  original.onprepare(false);assert.equal(env.sent.at(-1).pre_roll,false);
+  voice.setMode('ptt');const ptt=env.sent.length;original.onprepare(true);assert.equal(env.sent.length,ptt);voice.press(true);assert.equal(env.sent.at(-1).pre_roll,false);
+  voice.setMute(true,false);assert.equal(env.sent.findLast(e=>e.type==='transmit').pre_roll,false);assert.equal(env.sent.findLast(e=>e.type==='transmit').enabled,false);
+  await voice.configure({...voice.settings,keyboard:false});const replaced=env.sent.length;stale(true);assert.equal(env.sent.length,replaced);
+  voice.close();const closed=env.sent.length;stale(false);assert.equal(env.sent.length,closed);
 });
 
 test('listen-only never requests microphone or announces transmission', async()=>{
@@ -514,7 +568,7 @@ test('capture timeout releases late microphone and permission denial stays pause
 
 test('recovering capture retains active receivers and processor failure cannot leak raw audio afterward',async()=>{
   const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',false);
-  let destroyed=false;voice.receivers.set('remote',{destroy(){destroyed=true;},tick(){},setVolume(){}});
+  let destroyed=false;voice.receivers.set('remote',{destroy(){destroyed=true;},tick(){},volume(){}});
   voice.elements.set('remote',{pause(){},srcObject:{}});
   const old=env.captured[0],node=voice.noiseNode;
   old.readyState='ended';old.onended();await voice.microphoneTask;assert.equal(destroyed,false);assert.ok(voice.receivers.has('remote'));

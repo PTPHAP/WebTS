@@ -292,6 +292,14 @@ test('element output selection uses the device ID rather than the remote track I
  await voice.output('headset');assert.deepEqual(selected,['headset']);assert.equal(voice.sink,'headset');voice.close();
 });
 
+test('an old element sink selection cannot change players created by a new connection',async()=>{
+ const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'old'},'',true);let release;
+ voice.elements.set('old-track',{pause(){},setSinkId:()=>new Promise(r=>release=r)});
+ const selecting=voice.output('old-headset');voice.close();await voice.connect({identity:'new'},'',true);
+ const selected=[];voice.elements.set('new-track',{pause(){},setSinkId:async id=>selected.push(id)});
+ release();await selecting;assert.deepEqual(selected,[]);assert.equal(voice.sink,'');voice.close();
+});
+
 test('a late TS speaker binds member volume to a browser receiver whose track ID remains unchanged',async()=>{
  const env=browser(),voice=new Voice(()=>{});await voice.connect({identity:'fixture'},'',true);
  const audio={volume:1,muted:false,pause(){}},receiver={volume(value){this.level=value;},destroy(){}};

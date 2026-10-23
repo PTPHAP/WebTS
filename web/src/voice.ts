@@ -309,7 +309,7 @@ export class Voice {
   outputVolume(value:number){this.settings.volume=Math.max(0,Math.min(1,value));this.applyAudio();}
   setMute(muted:boolean,deafened:boolean){this.muted=muted;this.deafened=deafened;this.update();this.applyAudio();this.send({type:'mute',muted,deafened});}
   volume(client:number,value:number){this.volumes.set(client,value);this.applyAudio();}
-  async output(id:string){const context=this.context as (AudioContext & {setSinkId?:(id:string)=>Promise<void>})|undefined;if(context?.setSinkId)await context.setSinkId(id);if(context!==this.context)return;for(const[track,element]of this.elements){const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(!this.receivers.get(track)?.direct&&audio.setSinkId)await audio.setSinkId(id);}if(context===this.context)this.sink=id;}
+  async output(id:string){const context=this.context as (AudioContext & {setSinkId?:(id:string)=>Promise<void>})|undefined;if(context?.setSinkId)await context.setSinkId(id);if(context!==this.context)return;for(const[track,element]of this.elements){if(context!==this.context)return;const audio=element as HTMLAudioElement & {setSinkId?:(id:string)=>Promise<void>};if(!this.receivers.get(track)?.direct&&audio.setSinkId)await audio.setSinkId(id);}if(context===this.context)this.sink=id;}
   private bindTracks(){
     const peer=this.peer,sdp=peer?.remoteDescription?.sdp;if(!peer||!sdp)return;
     // A receive transceiver can keep its original browser track UUID when a later speaker joins.

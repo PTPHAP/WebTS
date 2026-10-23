@@ -136,6 +136,8 @@ test('season changes preserve live voice transport and a mounted watch player',a
   await expect.poll(()=>joins,{timeout:10000}).toBe(1);await expect(page.getByRole('button',{name:/^断开(连接|服务器)$/}).first()).toBeEnabled();
   const counts=await page.evaluate(()=>[window.__rtcCreations,window.__audioCreations]);
   await page.getByRole('button',{name:'联合观赛',exact:true}).click();await page.getByRole('button',{name:'加载官方播放器'}).click();const frame=page.locator('iframe');await expect(frame).toHaveCount(1);await frame.evaluate(n=>n.dataset.continuity='preserved');
+  const lowResource=page.getByRole('switch',{name:'低占用模式'});await lowResource.click();await expect(lowResource).toHaveAttribute('aria-checked','true');await lowResource.click();await expect(lowResource).toHaveAttribute('aria-checked','false');
+  expect(joins).toBe(1);expect(await page.evaluate(()=>[window.__rtcCreations,window.__audioCreations])).toEqual(counts);
   const panel=await appearance(page);await panel.getByRole('button',{name:'始终使用经典'}).click();await panel.getByRole('button',{name:'浅色',exact:true}).click();await panel.getByRole('button',{name:'关闭',exact:true}).click();
   f.publish('spring');await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
   await expect(frame).toHaveAttribute('data-continuity','preserved');expect(loads).toBe(1);expect(joins).toBe(1);expect(await page.evaluate(()=>[window.__rtcCreations,window.__audioCreations])).toEqual(counts);

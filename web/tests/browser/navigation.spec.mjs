@@ -2,6 +2,27 @@ import {test,expect} from '@playwright/test';
 
 import {appFixture as fixture} from './app-fixture.mjs';
 
+test('low resource mode is visible, persists locally and releases seasonal effects',async({page})=>{
+ await fixture(page,{replies:{'/api/site':{site_name:'WebTS',season:'spring',title:'本地界面验收',announcements:[]}}});
+ await page.goto('/app');
+ const toggle=page.getByRole('switch',{name:'低占用模式'});
+ await expect(toggle).toBeVisible({timeout:2000});await expect(toggle).toHaveAttribute('aria-checked','false');
+ await expect(page.locator('.season-click-layer')).toHaveCount(1);
+ await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','true');
+ await expect(page.locator('.app')).toHaveAttribute('data-low-resource','true');await expect(page.locator('.season-click-layer')).toHaveCount(0);
+ expect(await page.evaluate(()=>localStorage.getItem('webts-low-resource'))).toBe('1');
+ await page.reload();await expect(toggle).toHaveAttribute('aria-checked','true');
+ const mobile=test.info().project.name.includes('mobile');
+ for(const width of mobile?[390]:[1440,768]){
+  await page.setViewportSize({width,height:900});await page.reload();await expect(toggle).toBeVisible();await expect(toggle).toHaveAttribute('aria-checked','true');
+  if(width===390)await expect(page.locator('.app')).toHaveAttribute('data-layout','mobile');
+  const box=await toggle.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(await page.locator('.app').evaluate(n=>getComputedStyle(n).animationName)).toBe('none');
+  await page.screenshot({path:test.info().outputPath('low-resource-'+width+'.png')});
+ }
+ await toggle.click();await expect(toggle).toHaveAttribute('aria-checked','false');await expect(page.locator('.season-click-layer')).toHaveCount(1);
+});
+
 test('repeated navigation does not leave activity pages or duplicate voice bars in other views',async({page})=>{
   await fixture(page);
   const errors=[];
